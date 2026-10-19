@@ -284,6 +284,11 @@ fn load_icon() -> Option<Icon> {
 /// 追加一行日志。托盘应用没有控制台，出问题时用户能把这个文件发给我。
 pub fn log_line(message: &str) {
     use std::io::Write;
+    // 排他写：钩子线程、收包线程、UI 线程都会打日志，各自 open+append
+    // 时两次写会交错成 "[时间[] 时间...文字]" 这种半截行 —— 排障时最
+    // 需要的恰恰是时序，混一行就可能读反因果。
+    static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOG_LOCK.lock().ok();
     let dir = crate::config::config_dir();
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -1832,7 +1837,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.30",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.31",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

@@ -511,6 +511,16 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             let mut motions: usize = 0;
             // 转发位移流采样（前 30 笔，与接收端收到的流对比定罪负位移源头）
             let mut fwd_sample = String::new();
+            // 整轮位移记账：净位移 / 负向笔数与累计。
+            // "推过去 1 秒就被弹回来"必须分清两件事 —— 是我们的流真的
+            // 带着负位移把对端光标推回门口（Mac 侧钉扎 warp 泄漏/手飘），
+            // 还是流是正的、对端注入没生效。前 30 笔采样看不出来这个。
+            let mut sum_dx: i64 = 0;
+            let mut sum_dy: i64 = 0;
+            let mut neg_dx_count: usize = 0;
+            let mut neg_dx_sum: i64 = 0;
+            let mut min_dx: i32 = 0;
+            let mut max_dx: i32 = 0;
             // 越界被拒（对端没回应）的告警限流
             let mut last_begin_warn_ms: u64 = 0;
             while !stop.load(Ordering::Relaxed) {
@@ -518,11 +528,19 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 let sending = state.load(Ordering::Relaxed) == State::Sending as u8;
                 if was_sending && !sending && forwarded > 0 {
                     (log)(format!(
-                        "本轮转发结束：共 {forwarded} 笔（其中鼠标位移 {motions} 笔）"
+                        "本轮转发结束：共 {forwarded} 笔（鼠标位移 {motions} 笔，\
+                         净 dx={sum_dx} dy={sum_dy}，负向 {neg_dx_count} 笔/{neg_dx_sum}，\
+                         dx 范围 {min_dx}~{max_dx}）"
                     ));
                     forwarded = 0;
                     motions = 0;
                     fwd_sample.clear();
+                    sum_dx = 0;
+                    sum_dy = 0;
+                    neg_dx_count = 0;
+                    neg_dx_sum = 0;
+                    min_dx = 0;
+                    max_dx = 0;
                 }
                 was_sending = sending;
 
@@ -601,6 +619,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         forwarded += 1;
                         if let Event::Motion { dx, dy } = ev {
                             motions += 1;
+                            sum_dx += dx as i64;
+                            sum_dy += dy as i64;
+                            if dx < 0 {
+                                neg_dx_count += 1;
+                                neg_dx_sum += dx as i64;
+                            }
+                            min_dx = min_dx.min(dx);
+                            max_dx = max_dx.max(dx);
                             // 首笔位移打点：位移值异常（0/超大）一眼可见
                             if motions == 1 {
                                 (log)(format!("开始转发鼠标位移（首笔 dx={dx}, dy={dy}）"));
@@ -632,12 +658,15 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     Captured::End => {
                         // 紧急收回：先把按着的键补 up，再告诉对端松手
                         if state.load(Ordering::Relaxed) == State::Sending as u8 {
+                            // 先改状态再放抓取：顺序反过来的话，心跳守卫
+                            // 可能正好读到"状态还是 Sending、抓取已放开"
+                            // 这个瞬时错位，把刚交还的光标又抓回来。
+                            state.store(State::Idle as u8, Ordering::SeqCst);
                             capture_ref.set_grabbing(false);
                             for ev in pressed.drain(..) {
                                 out.send(&up_of(&ev));
                             }
                             out.send(&Event::Leave);
-                            state.store(State::Idle as u8, Ordering::SeqCst);
                             (log)("键鼠已收回（Ctrl+Alt+Esc）".to_string());
                             // 屏幕还在对端的话，一起切回来
                             if let Some(cb) = on_panic.as_ref() {
@@ -764,6 +793,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 // 事件没人注入，两边就都卡死了（v0.6.5 踩过）。
                                 // 不比较先后——双方同时推门时两边都让路，
                                 // 最坏结果是这一轮谁也没拿到，再推一次即可。
+                                // 先改状态再放抓取（见 Esc 分支同一说明）
+                                state.store(State::Receiving as u8, Ordering::SeqCst);
                                 if let Some(cap) = capture_rx.as_ref() {
                                     cap.set_grabbing(false);
                                 }
@@ -771,7 +802,6 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     inject.apply(&up_of(&ev));
                                 }
                                 out.send(&Event::Leave);
-                                state.store(State::Receiving as u8, Ordering::SeqCst);
                                 last_seq = seq;
                                 injected = 0;
                                 verify = None;
@@ -851,10 +881,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 没人接收的方向转发，两台机器的键鼠全卡死 ——
                         // 这就是"键鼠突然都不能动了"的根源（v0.6.5 踩过）。
                         if state.load(Ordering::Relaxed) == State::Sending as u8 {
+                            // 先改状态再放抓取：心跳守卫每秒查一次不变式，
+                            // 顺序反了就会撞见"还在 Sending、抓取已放开"
+                            // 的瞬时错位，反手再抓一次 —— 用户感知是交还
+                            // 之后光标还卡半秒（实测日志有这串）。
+                            state.store(State::Idle as u8, Ordering::SeqCst);
                             if let Some(cap) = capture_rx.as_ref() {
                                 cap.set_grabbing(false);
                             }
-                            state.store(State::Idle as u8, Ordering::SeqCst);
                             reclaim_rx.store(now_ms(), Ordering::SeqCst);
                             (log)("对端把控制权还回来了，键鼠已收回本机".to_string());
                         }
@@ -1171,9 +1205,22 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     if c.revive_tap() {
                         (log)("⚠️ 事件钩子被系统禁用（守卫发现），已强制重开".to_string());
                     }
-                    let want = me == State::Sending as u8;
+                    // **现场重读状态，不用本轮开头缓存的 `me`**。
+                    // 缓存的是这句 Ping 之前的值，而状态是收包线程在改，
+                    // 中间可能刚好发生了一次交还：缓存说还在 Sending，
+                    // 抓取却已经放开 → 判成"在转发却没抓" → 立刻反手
+                    // 又抓回来。用户感知就是「回到 Mac 之后光标还要卡一下」
+                    //（实测日志：交还同一秒内先"已重新抓住"、下一秒
+                    // "不在转发却还抓着，已放开"）。
+                    //
+                    // 两次读夹住 is_grabbing()：前后不一致说明检查期间
+                    // 状态在变，这一拍不判定。配合各条释放路径"先改
+                    // state 再放开抓取"的顺序，误判窗口才真正关死。
+                    let s_before = state.load(Ordering::SeqCst);
                     let have = c.is_grabbing();
-                    if want != have {
+                    let s_after = state.load(Ordering::SeqCst);
+                    let want = s_before == State::Sending as u8;
+                    if s_before == s_after && want != have {
                         c.set_grabbing(want);
                         (log)(if want {
                             "⚠️ 状态错位已纠正：在转发但抓取标志是关的（两边光标同步的根源），已重新抓住"
