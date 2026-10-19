@@ -296,7 +296,23 @@ pub fn start_capture(
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(16));
             tick = tick.wrapping_add(1);
-            let target = shared_for_pin.lock().ok().and_then(|s| s.pin);
+            // 钉扎点与抓取标志**一起**读，且必须真的在转发才动手。
+            //
+            // v0.6.40：以前只读 pin。释放路径和这一拍并发时，这里可能
+            // 拿着"释放前读到的 pin"继续往下跑，最后那句无条件的
+            // CGAssociate(false) 落在 set_grabbing(false) 的
+            // CGAssociate(true) **之后** —— 终态是"光标与鼠标断开"。
+            // 而之后没有任何路径会把它接回去：进被控状态时抓取标志
+            // 本来就是 false，守卫看着"一致"，不会动它。结果 = Mac 被
+            // 控时注入的事件推不动真实光标（日志实锤：账本走 271 点、
+            // 真实光标动 0.0 点），几秒后被判"注入失效"把键鼠抢回去。
+            let (target, grabbing) = match shared_for_pin.lock() {
+                Ok(s) => (s.pin, s.grabbing.load(Ordering::Relaxed)),
+                Err(_) => continue,
+            };
+            if !grabbing {
+                continue;
+            }
             let Some(target) = target else {
                 continue;
             };
@@ -347,8 +363,18 @@ pub fn start_capture(
                     }
                 }
                 // 无条件重申断开：系统会悄悄重置关联，每 16ms 顶回去，
-                // 把漂移按死在一帧内
-                CGAssociateMouseAndMouseCursorPosition(false);
+                // 把漂移按死在一帧内。**断言前再确认一次抓取还开着**：
+                // 释放可能刚好落在这一拍中间（v0.6.40），这时反而要把
+                // 光标接回去并立刻收手，别把断开状态留给被控期。
+                let still = shared_for_pin
+                    .lock()
+                    .map(|s| s.grabbing.load(Ordering::Relaxed))
+                    .unwrap_or(false);
+                if still {
+                    CGAssociateMouseAndMouseCursorPosition(false);
+                } else {
+                    CGAssociateMouseAndMouseCursorPosition(true);
+                }
             }
         });
     }

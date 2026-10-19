@@ -888,6 +888,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             injected = 0;
                             verify = None;
                             suspect = 0;
+                            // 接管这一刻强制"放开抓取"：幂等调用，作用是
+                            // 无条件重申 CGAssociate(true) + 清钉扎点。
+                            // 光标若不是关联着的，注入的位移一个像素都推
+                            // 不动（v0.6.40 的根因），进来先把这件事做实，
+                            // 别等 0.8 秒后的守卫。
+                            if let Some(cap) = capture_rx.as_ref() {
+                                cap.set_grabbing(false);
+                            }
                             // 光标落点：多屏共享按出门高度进门；跟随画面模式
                             // 没有"门"的概念，居中。重复的 Enter 不再挪，
                             // 免得光标莫名跳一下。
@@ -1082,9 +1090,18 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                             continue;
                                         }
                                         suspect += 1;
+                                        // 判"失效"之前先做一次最廉价的自愈：
+                                        // 重申光标关联（幂等）。v0.6.40 的根因
+                                        // 就是光标被留在"断开"状态，注入推不动；
+                                        // 接回去之后第二个窗口往往就正常了，
+                                        // 比直接把键鼠抢回来对用户友好得多。
+                                        if let Some(cap) = capture_rx.as_ref() {
+                                            cap.set_grabbing(false);
+                                        }
                                         (log)(format!(
                                             "疑似注入失效（账本走 {ledger_moved:.0} 点、\
-                                             真实光标动 {real_moved:.1} 点），复检中……"
+                                             真实光标动 {real_moved:.1} 点），\
+                                             已重申光标关联，复检中……"
                                         ));
                                     }
                                     // 注入正常（或只是顶死在屏幕边上）：重开窗口
@@ -1287,6 +1304,17 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         });
                     } else if want {
                         c.set_grabbing(true);
+                    } else if s_before == s_after {
+                        // v0.6.40：**没在转发、抓取标志也是关的**，看着一切
+                        // 一致，但光标可能还挂在"已断开"的残留状态里 —— 钉扎
+                        // 线程最后一次 CGAssociate(false) 落在了释放之后（见
+                        // mac.rs 钉扎线程注释）。这时本机被对端控制，注入的
+                        // 位移完全推不动真实光标，几秒后就会被判"注入失效"把
+                        // 键鼠抢回去，用户感知是「Windows 推过来控制不了 Mac」。
+                        // set_grabbing(false) 是幂等的：它无条件重申
+                        // CGAssociate(true)，顺手把 pin 清空。每 0.8 秒一次，
+                        // 残留错位最多活一个心跳周期。
+                        c.set_grabbing(false);
                     }
                 }
 
