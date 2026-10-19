@@ -1,0 +1,46 @@
+[package]
+name = "inputswitch"
+version = "0.1.0"
+edition = "2021"
+description = "跨平台显示器输入源切换（Windows / macOS / Linux）"
+license = "MIT"
+
+[features]
+default = ["tray"]
+tray = ["dep:tray-icon", "dep:tao", "dep:image", "dep:global-hotkey", "dep:wry"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 配对签名 + 文件校验。都是纯 Rust，交叉编译到 Windows 不需要 C 工具链。
+hmac = "0.12"
+sha2 = "0.10"
+
+tray-icon = { version = "0.19", optional = true }
+tao = { version = "0.30", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+global-hotkey = { version = "0.6", optional = true }
+chacha20poly1305 = "0.11.0"
+
+# 面板的原生窗口：把系统 WebView（macOS WKWebView / Windows WebView2）挂进 tao 的窗口。
+# 只在有系统 WebView 的两个平台上引入，Linux 保持走浏览器。
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+wry = { version = "0.57", optional = true }
+
+# 命令行诊断工具：控制台子系统，在终端里能看到输出
+[[bin]]
+name = "inputswitch-cli"
+path = "src/main.rs"
+
+# 托盘本体：Windows 下必须是 windows 子系统，否则双击会弹一个黑框
+[[bin]]
+name = "InputSwitch"
+path = "src/gui.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

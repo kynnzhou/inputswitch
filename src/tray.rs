@@ -1,0 +1,2591 @@
+//! 托盘 UI + 全局热键。
+//!
+//! 设计目标：**不打开终端就能用**。菜单里直接列出各输入口，点一下就切；
+//! 切成功后自动把「名称→VCP 取值」记进 profile，并记下热键目标。
+//!
+//! 所有 DDC 操作都放到工作线程：一次切换要等 2–3 秒看显示器有没有离开本机，
+//! 放在 UI 线程会卡住菜单。
+
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering as AtomicOrdering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
+use tao::dpi::LogicalSize;
+use tao::event::{ElementState, Event, StartCause, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::keyboard::{KeyCode, ModifiersState};
+use tao::window::{Window, WindowBuilder};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+
+use crate::clipboard::Watcher;
+use crate::kvm;
+use crate::config::Config;
+use crate::models::{Presence, VCP_BRIGHTNESS, VCP_INPUT_SOURCE};
+use crate::panel::{self, Action, Snapshot};
+use crate::panelwin::Panel;
+use crate::peer::{Mesh, Peer};
+use crate::{clipboard, transfer};
+use crate::Switcher;
+
+// 托盘的定位：**只放"不开窗口就能做完的事"**。
+//
+// 看一眼当前口、一键切过去、打开控制面板、退出。
+// 凡是控制面板里已经有的（配对、传文件、热键、开机自启、检测、扫描、剪贴板），
+// 这里一律不再重复一份 —— 两处都能改的东西，出问题时最难查是哪边生效。
+
+const MENU_QUIT: &str = "quit";
+/// 共用键鼠开关
+const MENU_KVM: &str = "toggle-kvm";
+/// 在两种模式之间切换：跟随画面 ↔ 多屏共享
+const MENU_KVM_MODE: &str = "kvm-mode";
+const MENU_KVM_SIDE: &str = "kvm-side:";
+/// `switch:<name>:<decimal value>`
+const ID_SWITCH: &str = "switch:";
+/// `peer:<node>:<value>` —— 直接切到某台对端机器占用的口
+const ID_PEER: &str = "peer:";
+/// 打开控制面板（程序自己的窗口）
+const ID_PANEL: &str = "open-panel";
+/// 面板实际监听的端口。build_menu 要拿它拼菜单项，所以放静态里。
+static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// 当前的共用键鼠实例。
+///
+/// 放静态而不是传参：整个进程只有一个，而需要它的地方分散在 UI 线程
+/// （菜单开关）、工作线程（切屏后叫键鼠跟过去）、面板（按钮）。
+/// 硬传下去要给 `engine_loop` 加一整串参数，收益不抵成本。
+static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
+
+/// 取当前实例的克隆。没有就是共用键鼠没开。
+fn kvm_now() -> Option<Arc<kvm::Kvm>> {
+    KVM.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// 从在线对端里挑出该用哪个：优先上次记住的那个，找不到才退回第一个。
+/// 局域网里只要出现过第三台装过本程序的机器（旧电脑自启没关很常见），
+/// peers.first() 就会稳定选错人 —— 两边各自对着错的机器发心跳，
+/// 谁也等不到回应，表现就是"两边都空闲、对端没回应"。
+fn pick_peer<'a>(peers: &'a [Peer], remembered: &str) -> Option<&'a Peer> {
+    if !remembered.is_empty() {
+        if let Some(p) = peers.iter().find(|p| p.node == remembered) {
+            return Some(p);
+        }
+    }
+    peers.first()
+}
+
+/// 启动共用键鼠。菜单和面板共用这一份。
+///
+/// 两处各写一遍的话，迟早会漂：菜单改完忘了改面板，面板点了没反应，
+/// 而日志里看不出是哪条路径走的。
+fn kvm_boot(
+    config: &mut Config,
+    peer: &Peer,
+    tx: &mpsc::Sender<Command>,
+    log: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<(Arc<kvm::Kvm>, String), String> {
+    // 紧急收回（Ctrl+Alt+Esc）要能连画面一起切回来。
+    // 只收回键鼠的话，用户"能操作本机了，但看不见本机"，等于卡在原地。
+    let panic_tx = tx.clone();
+    let own_v = config.own_value;
+    let own_n = config.own_input.clone();
+    let on_panic: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        if own_v > 0 {
+            let name = if own_n.is_empty() {
+                format!("0x{own_v:02X}")
+            } else {
+                own_n.clone()
+            };
+            let _ = panic_tx.send(Command::SwitchRaw { name, value: own_v });
+        }
+    });
+
+    let mode = kvm::Mode::parse(&config.kvm.mode).unwrap_or(kvm::Mode::Follow);
+    let role = kvm::Role::parse(&config.kvm.role).unwrap_or(kvm::Role::Console);
+    let side = kvm::event::Side::parse(&config.kvm.side).unwrap_or_default();
+    let handle = Arc::new(kvm::start(kvm::Options {
+        peer: peer.addr.ip(),
+        mode,
+        role,
+        side,
+        base_port: config.network.port,
+        // 配对过就加密事件流（等价于 Deskflow 的默认 TLS）
+        key: crate::pair::link_key(&config.pair.code),
+        on_panic: Some(on_panic),
+        log,
+    })?);
+
+    let text = match (mode, role) {
+        (kvm::Mode::Follow, kvm::Role::Console) => format!(
+            "共用键鼠已开启：本机是键鼠端，画面切到 {} 时键鼠自动跟过去",
+            peer.node
+        ),
+        (kvm::Mode::Follow, kvm::Role::Remote) => format!(
+            "共用键鼠已开启：本机不抓键鼠，等 {} 那边切过来接管",
+            peer.node
+        ),
+        (kvm::Mode::Edge, _) => format!(
+            "共用键鼠已开启：鼠标推到屏幕{}侧越界到 {}",
+            side_label(&config.kvm.side),
+            peer.node
+        ),
+    };
+    // 记住这次用的对端：下次自动恢复/重开时优先找它。
+    // 记住的和这次选的不一样 = 上次那台不在线，退回了第一个 ——
+    // 局域网里多一台装过本程序的机器就会发生，必须说清楚。
+    if config.kvm.peer_node != peer.node {
+        if !config.kvm.peer_node.is_empty() {
+            log_line(&format!(
+                "上次的对端 {} 不在线，这次先用 {}（若局域网里还有别的机器装过本程序，建议关掉它的自启，免得又选错）",
+                config.kvm.peer_node, peer.node
+            ));
+        }
+        config.kvm.peer_node = peer.node.clone();
+        let _ = config.save();
+    }
+    Ok((handle, text))
+}
+
+/// 「重新检测显示器」的结论。工作线程写，UI 线程压快照时取走。
+/// 用静态是因为这条结论要横跨两个线程、又不值得为它加一条事件通道。
+static PORT_NOTE: Mutex<String> = Mutex::new(String::new());
+
+/// 本机此刻有没有接通的显示器。
+///
+/// 画面在对面那台时，本机显卡这边就是"没接显示器"，枚举结果为 0 ——
+/// 这不是故障，但必须让面板说清楚，否则用户只会看到一句"没报输入源"。
+static HAS_DISPLAY: AtomicBool = AtomicBool::new(false);
+
+/// 把 "ctrl+alt+s" 写成人看的 "Ctrl + Alt + S"。
+fn pretty_hotkey(spec: &str) -> String {
+    if spec.trim().is_empty() {
+        return "未设置".to_string();
+    }
+    spec.split('+')
+        .map(|part| match part.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "alt" | "option" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            "cmd" | "super" | "win" | "meta" => "Cmd".to_string(),
+            other => other.to_uppercase(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// 一行菜单项：口的名字、菜单显示文本、VCP 取值、状态。
+struct PortRow {
+    /// 存进配置与命令里的名字
+    name: String,
+    /// 菜单上显示的文字
+    label: String,
+    value: u16,
+    verified: bool,
+    current: bool,
+    /// 这个口上有没有主机（本机自己 / 对端报告 / 实测）
+    presence: Presence,
+}
+
+/// 菜单里的输入口列表完全来自这台显示器自己的 profile。
+///
+/// profile 的输入源由显示器自报的能力表（VCP 0xDF）生成，见
+/// `Switcher::sync_profile`。所以换成任何显示器都能列出它自己的口，
+/// 不需要改一行代码 —— 这就是"通用"的落点。
+fn port_rows(config: &Config, profile_key: &str, current: Option<u16>) -> Vec<PortRow> {
+    let Some(profile) = config.profile_for(profile_key) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<PortRow> = profile
+        .inputs
+        .iter()
+        .map(|src| PortRow {
+            name: src.name.clone(),
+            label: config.label_for(&src.name),
+            value: src.value,
+            verified: src.verified,
+            current: current == Some(src.value),
+            presence: src.presence,
+        })
+        .collect();
+    rows.sort_by_key(|r| r.value);
+    rows
+}
+
+/// 按名字在一台显示器的 profile 里查取值。
+fn configured_value(config: &Config, profile_key: &str, name: &str) -> Option<u16> {
+    config.profile_for(profile_key)?.find(name).map(|s| s.value)
+}
+
+enum Command {
+    /// 切屏，并且如果键鼠开着就跟过去（正常路径）
+    SwitchRaw { name: String, value: u16 },
+    /// 只切画面，键鼠留在本机。面板上的「仅切换画面」走这条
+    SwitchOnly { name: String, value: u16 },
+    SetTarget { name: String, value: u16 },
+    ClearTarget,
+    Rescan,
+    /// 每 5 秒的轻量心跳：只做广播同步和状态推送，**不碰重 DDC**。
+    ///
+    /// 以前这里发的是 Rescan —— 全量重读 EDID + 能力表，一次就是十几笔
+    /// I2C 事务。显示器刚切回来、链路还在重新协商的那几秒正好撞上这波
+    /// 读取，Apple Silicon 上会把 WindowServer 顶进看门狗超时（实测整机关机）。
+    /// 重活只留给用户主动点的「重新检测显示器」。
+    Heartbeat,
+    /// 重新体检显示器对软件切换的支持情况（只读，不动画面）
+    CheckSupport,
+    /// 扫描每个口上有没有主机（会真的切屏）
+    ScanPorts,
+    /// 对端剪贴板传来了新文本，交给 UI 线程写进本机剪贴板
+    RemoteClipboard(String),
+    /// 本机读不到 DDC（画面在对面），请对端替我把画面切回这个口
+    AskPeerSwitch { value: u16 },
+}
+
+enum UserEvent {
+    Status {
+        text: String,
+        target: String,
+        /// 当前显示器在配置里的身份键，菜单按它取输入口列表
+        profile_key: String,
+        /// 支持性体检结论，显示在状态行下面
+        support: String,
+    },
+    /// 面板上点了需要主线程才能做的事（开文件选择器、开浏览器、改配置）
+    Panel(Action),
+    /// 对端发来的剪贴板文本
+    RemoteClipboard(String),
+    /// 传输进度 / 结果提示
+    Transfer(String),
+    /// 文件收完了，通知一下
+    Saved(Vec<PathBuf>),
+}
+
+/// 当前显示器的身份键；屏幕已经切走时为空串。
+fn profile_key_of(switcher: &Switcher) -> String {
+    switcher
+        .pick_display(None)
+        .map(|d| switcher.identity(&d))
+        .unwrap_or_default()
+}
+
+fn load_icon() -> Option<Icon> {
+    let bytes = include_bytes!("../assets/menubar@2x.png");
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
+/// 追加一行日志。托盘应用没有控制台，出问题时用户能把这个文件发给我。
+pub fn log_line(message: &str) {
+    use std::io::Write;
+    let dir = crate::config::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("app.log"))
+    {
+        let _ = writeln!(file, "[{}] {}", local_stamp(), message);
+    }
+}
+
+/// 本地时间戳 YYYY-MM-DD HH:MM:SS，不引第三方日期库。
+fn local_stamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + local_offset_secs();
+    let days = secs.div_euclid(86_400);
+    let rest = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y,
+        m,
+        d,
+        rest / 3600,
+        (rest % 3600) / 60,
+        rest % 60
+    )
+}
+
+/// UTC 与本地时区差（秒）。用系统 API 取，避免硬编码夏令时。
+fn local_offset_secs() -> i64 {
+    #[cfg(unix)]
+    {
+        // 用 libc 的 localtime_r 读 tm_gmtoff
+        #[repr(C)]
+        struct Tm {
+            tm_sec: i32,
+            tm_min: i32,
+            tm_hour: i32,
+            tm_mday: i32,
+            tm_mon: i32,
+            tm_year: i32,
+            tm_wday: i32,
+            tm_yday: i32,
+            tm_isdst: i32,
+            tm_gmtoff: i64,
+            tm_zone: *const std::os::raw::c_char,
+        }
+        extern "C" {
+            fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let mut tm = Tm {
+            tm_sec: 0,
+            tm_min: 0,
+            tm_hour: 0,
+            tm_mday: 1,
+            tm_mon: 0,
+            tm_year: 70,
+            tm_wday: 0,
+            tm_yday: 0,
+            tm_isdst: 0,
+            tm_gmtoff: 0,
+            tm_zone: std::ptr::null(),
+        };
+        unsafe {
+            localtime_r(&now, &mut tm);
+        }
+        tm.tm_gmtoff
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+/// Howard Hinnant 的 civil_from_days：把「1970-01-01 起的天数」转成公历。
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// 本机当前占用的 VCP 取值，未知时为 None。
+fn own_value(mesh: &Mesh) -> Option<u16> {
+    let (_, value) = mesh.own();
+    if value > 0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+/// 菜单内容的指纹。
+///
+/// 存在的理由只有一个：**macOS 上 `NSStatusItem.menu` 一旦被替换，
+/// 已经展开的菜单会立刻收起来**。而每 5 秒一次的状态刷新原本无条件
+/// 重建菜单，于是用户点开菜单后最多 5 秒它自己就没了 —— 这就是那个 bug。
+///
+/// 先把"菜单会长成什么样"压缩成一个字符串，和上次比；一样就完全不碰菜单。
+fn menu_signature(
+    status: &str,
+    config: &Config,
+    peers: &[Peer],
+    current: Option<u16>,
+    profile_key: &str,
+    support: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let mut sig = String::with_capacity(384);
+    let _ = write!(sig, "{status}\u{1f}{profile_key}\u{1f}{support}\u{1e}");
+    for row in port_rows(config, profile_key, current) {
+        let _ = write!(
+            sig,
+            "{}|{}|{}|{}|{}|{:?}\u{1e}",
+            row.name, row.label, row.value, row.verified, row.current, row.presence
+        );
+    }
+    for peer in peers {
+        let _ = write!(
+            sig,
+            "{}|{}|{}|{}\u{1e}",
+            peer.node, peer.own_input, peer.own_value, peer.ddc_ok
+        );
+    }
+    // 共用键鼠的开关、模式与越界方向（菜单里这三样会变）
+    let _ = write!(
+        sig,
+        "kvm={}\u{1e}mode={}\u{1e}side={}",
+        config.kvm.enabled, config.kvm.mode, config.kvm.side
+    );
+    sig
+}
+
+/// 退场菜单的养老院。
+///
+/// `set_menu` 替换旧菜单时会 drop 旧的 `Menu`（连同全部 `MenuChild`），
+/// 但 AppKit 侧还握着旧 NSMenuItem 的引用 —— 点击分发在菜单收起**之后**
+/// 才执行（`_performPostTrackingDismissalActions`），这几十毫秒的窗口里
+/// 旧菜单项的原生对象若还活着而 Rust 侧已释放，点击就会摸到悬空指针，
+/// panic → abort（实测崩了三次，菜单点击时必现窗口）。
+///
+/// 所以每次替换菜单前，把旧菜单的克隆（`Menu` 内部是 Rc，克隆共享底层
+/// 对象）搬进这里住 60 秒再退役：在途点击依然摸得到有效的 MenuChild，
+/// 只是事件带着旧 id 回来，按 id 分发的处理器会安全忽略或照常执行。
+thread_local! {
+    static RETIRED_MENUS: RefCell<Vec<(Instant, tray_icon::menu::Menu)>> = const { RefCell::new(Vec::new()) };
+    /// 当前挂在托盘上的菜单的克隆。下次替换时它就是要被 drop 的那个，
+    /// 提前把克隆送进养老院。
+    static ACTIVE_MENU: RefCell<Option<tray_icon::menu::Menu>> = const { RefCell::new(None) };
+}
+
+fn retire_menu(menu: tray_icon::menu::Menu) {
+    RETIRED_MENUS.with(|cell| {
+        let mut list = cell.borrow_mut();
+        list.retain(|(t, _)| t.elapsed() < Duration::from_secs(60));
+        list.push((Instant::now(), menu));
+    });
+}
+
+/// 内容变了才重建菜单。返回 true 表示这次真的换了。
+fn refresh_menu(
+    tray: &mut Option<TrayIcon>,
+    sig: &mut String,
+    status: &str,
+    config: &Config,
+    peers: &[Peer],
+    current: Option<u16>,
+    profile_key: &str,
+    support: &str,
+) -> bool {
+    let now = menu_signature(status, config, peers, current, profile_key, support);
+    if now == *sig {
+        return false;
+    }
+    *sig = now;
+    if let Some(tray) = tray.as_mut() {
+        let menu = build_menu(status, config, peers, current, profile_key, support);
+        // set_menu 会 drop 上一个菜单（连同全部 MenuChild），而 AppKit 可能
+        // 还握着旧菜单项等分发在途的点击 —— 先把它的克隆送进养老院，
+        // 让底层对象再活 60 秒
+        ACTIVE_MENU.with(|cell| {
+            if let Some(old) = cell.borrow_mut().take() {
+                retire_menu(old);
+            }
+            *cell.borrow_mut() = Some(menu.clone());
+        });
+        let _ = tray.set_menu(Some(Box::new(menu)));
+    }
+    true
+}
+
+fn build_menu(
+    status: &str,
+    config: &Config,
+    peers: &[Peer],
+    current: Option<u16>,
+    profile_key: &str,
+    support: &str,
+) -> Menu {
+    let menu = Menu::new();
+    let _ = menu.append(&MenuItem::new(status, false, None));
+    // 第二行：这台显示器到底能不能被软件切，以及已经标出几个口有主机
+    if !support.is_empty() {
+        let mut line = support.to_string();
+        if let Some(profile) = config.profile_for(profile_key) {
+            let total = profile.inputs.len();
+            let occupied = profile
+                .inputs
+                .iter()
+                .filter(|s| s.presence == Presence::Occupied)
+                .count();
+            if total > 0 {
+                line.push_str(&format!(" · {} 个口", total));
+                if occupied > 0 {
+                    line.push_str(&format!("，{} 个有主机", occupied));
+                }
+            }
+        }
+        let _ = menu.append(&MenuItem::new(line, false, None));
+    }
+
+    // 对端机器：它自己广播了占用的口，直接给出"切到某台机器"，不用猜口名
+    let known: Vec<&Peer> = peers.iter().filter(|p| p.knows_port()).collect();
+    if !known.is_empty() {
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        for peer in known {
+            let port_label = if peer.own_input.is_empty() {
+                format!("0x{:02X}", peer.own_value)
+            } else {
+                format!("{} · 0x{:02X}", config.label_for(&peer.own_input), peer.own_value)
+            };
+            let id = format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value);
+            let _ = menu.append(&MenuItem::with_id(
+                id,
+                format!("切到 {}（{}）", peer.node, port_label),
+                true,
+                None,
+            ));
+        }
+    }
+
+    let _ = menu.append(&PredefinedMenuItem::separator());
+
+    // 切换子菜单：口列表来自显示器自报的能力表，不是硬编码
+    let rows = port_rows(config, profile_key, current);
+    let switch_menu = Submenu::new("切换输入源", true);
+    if rows.is_empty() {
+        let _ = switch_menu.append(&MenuItem::new(
+            "没读到输入口 · 去控制面板点「重新检测显示器」",
+            false,
+            None,
+        ));
+    }
+    for row in &rows {
+        let id = format!("{}{}:{}", ID_SWITCH, &row.name, row.value);
+        let head = if row.current { "✓ " } else { "　" };
+        let mut tail = String::new();
+        if row.current {
+            tail.push_str(" · 本机");
+        }
+        // 有没有主机：这是用户最想知道的一件事，直接写在口名后面
+        if row.presence != Presence::Occupied {
+            tail.push_str(row.presence.mark());
+        } else if !row.current {
+            tail.push_str(" · 有主机");
+        }
+        if !row.verified && row.presence == Presence::Unknown {
+            tail.push_str(" · 未确认");
+        }
+        let text = format!("{}{}  (0x{:02X}){}", head, row.label, row.value, tail);
+        let _ = switch_menu.append(&MenuItem::with_id(id, text, true, None));
+    }
+    // 没有扫描过就提示一句，别让人以为"没有主机"是本来就有的信息
+    if rows
+        .iter()
+        .any(|r| !r.current && r.presence == Presence::Unknown)
+    {
+        let _ = switch_menu.append(&PredefinedMenuItem::separator());
+        let _ = switch_menu.append(&MenuItem::new(
+            "哪个口接了主机：控制面板 → 扫描哪个口有主机",
+            false,
+            None,
+        ));
+    }
+    let _ = menu.append(&switch_menu);
+
+    // ---- 从这里开始，所有能改配置的东西都在控制面板里，菜单不再重复第二份 ----
+    // 热键、热键目标、检测支持性、扫描口、配对、传文件、开机自启、剪贴板、网络，
+    // 面板里各有对应卡片；同一件事有两个入口，出问题时最难查是哪边生效。
+
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    // 两种模式的措辞必须不一样 —— 看菜单就知道自己在哪种场景里，
+    // 而不是像之前那样无论什么场景都写"鼠标推到边缘"。
+    let mode_is_follow = config.kvm.mode != "edge";
+    let mode_hint = if mode_is_follow {
+        "跟随画面：画面切到对端时键鼠跟过去".to_string()
+    } else {
+        format!("多屏共享：鼠标推到{}侧越界", side_label(&config.kvm.side))
+    };
+    let kvm_text = if config.kvm.enabled {
+        format!("共用键鼠 · 已开启（{mode_hint}）点这里关闭")
+    } else {
+        format!("共用键鼠 · 开启（{mode_hint}）")
+    };
+    let _ = menu.append(&MenuItem::with_id(MENU_KVM, kvm_text, true, None));
+    let other = if mode_is_follow {
+        "  改用多屏共享（两台各有屏幕和键鼠）"
+    } else {
+        "  改用跟随画面（一套键鼠，跟屏幕走）"
+    };
+    let _ = menu.append(&MenuItem::with_id(MENU_KVM_MODE, other, true, None));
+
+    // 多屏共享必须知道对端屏幕在本机哪一侧，不然鼠标推错边永远越不过去。
+    // 两台要各配各的：Mac 选"对端在右"，Windows 那台就要选"对端在左"。
+    if !mode_is_follow {
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        let _ = menu.append(&MenuItem::new("对端屏幕在本机哪一侧？（两台各配各的）", false, None));
+        for (value, label) in [
+            ("right", "右侧"),
+            ("left", "左侧"),
+            ("top", "上方"),
+            ("bottom", "下方"),
+        ] {
+            let mark = if config.kvm.side == value { "✓" } else { "　" };
+            let _ = menu.append(&MenuItem::with_id(
+                format!("{MENU_KVM_SIDE}{value}"),
+                format!("{mark} 对端在{label}"),
+                true,
+                None,
+            ));
+        }
+    }
+
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&MenuItem::with_id(ID_PANEL, "打开控制面板…", true, None));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&MenuItem::with_id(MENU_QUIT, "退出", true, None));
+    menu
+}
+
+fn open_config_dir() {
+    let dir = crate::config::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        let _ = crate::hidden::quiet(&mut cmd).arg(&dir).spawn();
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("explorer");
+        let _ = crate::hidden::quiet(&mut cmd).arg(&dir).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("xdg-open");
+        let _ = crate::hidden::quiet(&mut cmd).arg(&dir).spawn();
+    }
+}
+
+/// 配对码显示在菜单里时只露头尾：菜单截图、录屏都可能把它带出去。
+fn mask_code(code: &str) -> String {
+    let code = code.trim();
+    if code.len() <= 4 {
+        return "*".repeat(code.chars().count());
+    }
+    let chars: Vec<char> = code.chars().collect();
+    let head: String = chars.iter().take(2).collect();
+    let tail: String = chars.iter().skip(chars.len() - 2).collect();
+    format!("{head}**{tail}")
+}
+
+fn open_path(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    let _ = crate::hidden::quiet(&mut cmd).spawn();
+}
+
+/// 调系统文件选择器。浏览器给不了本地绝对路径，只能走系统对话框。
+fn pick_files() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = "set out to \"\"\nrepeat with f in (choose file with multiple selections allowed)\nset out to out & (POSIX path of f) & linefeed\nend repeat\nreturn out";
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", script])
+            .output();
+        return match output {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+    #[cfg(windows)]
+    {
+        let script = "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect = $true; if ($d.ShowDialog() -eq 'OK') { $d.FileNames }";
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command", script])
+            .output();
+        return match output {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args(["--file-selection", "--multiple", "--separator", "\n"])
+            .output();
+        return match output {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+}
+
+fn pick_folder() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "POSIX path of (choose folder)"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+    #[cfg(windows)]
+    {
+        let script = "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }";
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command", script])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args(["--file-selection", "--directory"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!path.is_empty()).then(|| PathBuf::from(path))
+    }
+}
+
+/// 选文件并发给对端。
+///
+/// 连"弹文件选择器"一起放到后台线程：系统对话框是阻塞的，
+/// 挂在 UI 线程上会让菜单和面板在整个选择过程中都没有响应。
+fn start_send(
+    config: &Config,
+    mesh: &Mesh,
+    proxy: &EventLoopProxy<UserEvent>,
+    status: &mut String,
+) {
+    let peers = mesh.live_peers();
+    let Some(peer) = peers.first().cloned() else {
+        *status = "局域网里没找到对端，先让对面那台也开着本程序".to_string();
+        return;
+    };
+    let key = crate::pair::link_key(&config.pair.code);
+    let node = config.node.clone();
+    let ip = peer.addr.ip();
+    let port = config.transfer.port;
+    let peer_name = peer.node.clone();
+    let proxy_ui = proxy.clone();
+    let proxy_progress = proxy.clone();
+    *status = "正在选择文件…".to_string();
+
+    thread::spawn(move || {
+        let files = pick_files();
+        if files.is_empty() {
+            let _ = proxy_ui.send_event(UserEvent::Transfer(String::new()));
+            return;
+        }
+        let count = files.len();
+        let _ = proxy_ui.send_event(UserEvent::Transfer(format!("正在发送 {count} 个文件…")));
+        // 256KB 一个包，1GB 文件能回调四千次；只在百分比变化时才通知 UI
+        let mut last_pct = u64::MAX;
+        let result = transfer::send(ip, port, &node, &files, key, |sent, total| {
+            let pct = if total == 0 { 100 } else { sent * 100 / total };
+            if pct != last_pct {
+                last_pct = pct;
+                let _ =
+                    proxy_progress.send_event(UserEvent::Transfer(format!("正在发送… {pct}%")));
+            }
+        });
+        let note = match result {
+            Ok(message) => format!("{message} → {peer_name}"),
+            Err(err) => format!("发送失败：{err}"),
+        };
+        let _ = proxy_ui.send_event(UserEvent::Transfer(note));
+    });
+}
+
+/// 把当前所有状态压成面板要的一份快照。
+#[allow(clippy::too_many_arguments)]
+fn update_snapshot(
+    snapshot: &Arc<Mutex<Snapshot>>,
+    status: &str,
+    support: &str,
+    target: &str,
+    config: &Config,
+    profile_key: &str,
+    peers: &[Peer],
+    current: Option<u16>,
+    mesh: &Mesh,
+    transfer_note: &str,
+) {
+    let mut snap = snapshot.lock().unwrap();
+    snap.node = config.node.clone();
+    snap.status = status.to_string();
+    snap.support = support.to_string();
+    snap.hotkey = pretty_hotkey(&config.hotkey);
+    snap.target = if target.is_empty() {
+        "未设置".to_string()
+    } else {
+        config.label_for(target)
+    };
+    snap.paired = config.pair.is_set();
+    snap.pair_code = config.pair.code.clone();
+    snap.rejected = mesh.rejected();
+    snap.replayed = mesh.replayed();
+    snap.peer_verified = peers.iter().filter(|p| p.paired).count();
+    snap.has_display = HAS_DISPLAY.load(AtomicOrdering::SeqCst);
+    snap.own_value = config.own_value;
+    // 共用键鼠：开没开、跑哪种模式、现在键鼠在哪边
+    snap.kvm = match kvm_now() {
+        Some(handle) => panel::KvmView {
+            on: true,
+            mode: handle.mode().as_str().to_string(),
+            role: handle.role().as_str().to_string(),
+            state: handle.state().label().to_string(),
+            peer_alive: handle.peer_alive(),
+        },
+        None => panel::KvmView {
+            on: false,
+            mode: config.kvm.mode.clone(),
+            role: config.kvm.role.clone(),
+            state: "未启动".to_string(),
+            peer_alive: false,
+        },
+    };
+    snap.port_note = PORT_NOTE
+        .lock()
+        .map(|note| note.clone())
+        .unwrap_or_default();
+    snap.autostart = crate::autostart::is_enabled();
+    snap.clipboard = config.clipboard.enabled;
+    snap.inbox = config.transfer.inbox_dir().display().to_string();
+    snap.port = PANEL_PORT.load(AtomicOrdering::SeqCst);
+    snap.transfer = transfer_note.to_string();
+    snap.identity = profile_key.to_string();
+    snap.display = config
+        .profile_for(profile_key)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "—".to_string());
+    snap.current = current.unwrap_or(0);
+    snap.current_name = current
+        .and_then(|value| config.input_name_of(profile_key, value))
+        .map(|name| config.label_for(&name))
+        .unwrap_or_default();
+
+    snap.peers = peers
+        .iter()
+        .map(|peer| panel::PeerView {
+            node: peer.node.clone(),
+            addr: peer.addr.ip().to_string(),
+            input: peer.own_input.clone(),
+            label: if peer.own_input.is_empty() {
+                String::new()
+            } else {
+                config.label_for(&peer.own_input)
+            },
+            value: peer.own_value,
+            paired: peer.paired,
+            knows_port: peer.knows_port(),
+            needs_pair: peer.wants_pair && !config.pair.is_set(),
+        })
+        .collect();
+
+    snap.inputs = port_rows(config, profile_key, current)
+        .into_iter()
+        .map(|row| panel::InputView {
+            name: row.name,
+            label: row.label,
+            value: row.value,
+            current: row.current,
+            presence: match row.presence {
+                Presence::Occupied => "occupied",
+                Presence::Idle => "idle",
+                Presence::Invalid => "invalid",
+                Presence::Unknown => "unknown",
+            }
+            .to_string(),
+            verified: row.verified,
+        })
+        .collect();
+}
+
+fn status_text(switcher: &mut Switcher) -> String {
+    let displays = switcher.displays();
+    if displays.is_empty() {
+        return "本机没有接通的显示器（画面在对面那台）".to_string();
+    }
+    let display = &displays[0];
+    // 静默期（显示器刚切回来）用记忆里的口拼状态，绝不再发 DDC 读
+    if switcher.ddc_quiet() {
+        let known = if switcher.config.own_input.is_empty() {
+            format!("输入源 0x{:02X}", switcher.config.own_value)
+        } else {
+            switcher.config.own_input.clone()
+        };
+        return format!("{} · {}", display.name, known);
+    }
+    let cap = switcher.capability(display);
+    let known = switcher
+        .current_input_name(display)
+        .unwrap_or_else(|| "输入源未知".to_string());
+    let read_ok = switcher.backend().get_vcp(display, VCP_BRIGHTNESS).is_some();
+    if read_ok {
+        format!("{} · {}", display.name, known)
+    } else {
+        format!("{} · {} {}", display.name, cap.mark(), "仅可写")
+    }
+}
+
+fn parse_hotkey(spec: &str) -> Option<HotKey> {
+    let mut modifiers = Modifiers::empty();
+    let mut code = None;
+    for token in spec.to_lowercase().split('+') {
+        match token.trim() {
+            "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+            "alt" | "option" => modifiers |= Modifiers::ALT,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "cmd" | "super" | "win" | "meta" => modifiers |= Modifiers::SUPER,
+            "" => {}
+            other => code = Some(code_of(other)?),
+        }
+    }
+    code.map(|c| HotKey::new(Some(modifiers), c))
+}
+
+/// 键名 → 键码。覆盖字母、数字、F1–F12，够录制任意常用组合。
+fn code_of(token: &str) -> Option<Code> {
+    Some(match token {
+        "space" => Code::Space,
+        "f1" => Code::F1,
+        "f2" => Code::F2,
+        "f3" => Code::F3,
+        "f4" => Code::F4,
+        "f5" => Code::F5,
+        "f6" => Code::F6,
+        "f7" => Code::F7,
+        "f8" => Code::F8,
+        "f9" => Code::F9,
+        "f10" => Code::F10,
+        "f11" => Code::F11,
+        "f12" => Code::F12,
+        "0" => Code::Digit0,
+        "1" => Code::Digit1,
+        "2" => Code::Digit2,
+        "3" => Code::Digit3,
+        "4" => Code::Digit4,
+        "5" => Code::Digit5,
+        "6" => Code::Digit6,
+        "7" => Code::Digit7,
+        "8" => Code::Digit8,
+        "9" => Code::Digit9,
+        "a" => Code::KeyA,
+        "b" => Code::KeyB,
+        "c" => Code::KeyC,
+        "d" => Code::KeyD,
+        "e" => Code::KeyE,
+        "f" => Code::KeyF,
+        "g" => Code::KeyG,
+        "h" => Code::KeyH,
+        "i" => Code::KeyI,
+        "j" => Code::KeyJ,
+        "k" => Code::KeyK,
+        "l" => Code::KeyL,
+        "m" => Code::KeyM,
+        "n" => Code::KeyN,
+        "o" => Code::KeyO,
+        "p" => Code::KeyP,
+        "q" => Code::KeyQ,
+        "r" => Code::KeyR,
+        "s" => Code::KeyS,
+        "t" => Code::KeyT,
+        "u" => Code::KeyU,
+        "v" => Code::KeyV,
+        "w" => Code::KeyW,
+        "x" => Code::KeyX,
+        "y" => Code::KeyY,
+        "z" => Code::KeyZ,
+        _ => return None,
+    })
+}
+
+/// 录制时把物理键码转成规范的键名。
+fn key_token(code: KeyCode) -> Option<&'static str> {
+    Some(match code {
+        KeyCode::Space => "space",
+        KeyCode::F1 => "f1",
+        KeyCode::F2 => "f2",
+        KeyCode::F3 => "f3",
+        KeyCode::F4 => "f4",
+        KeyCode::F5 => "f5",
+        KeyCode::F6 => "f6",
+        KeyCode::F7 => "f7",
+        KeyCode::F8 => "f8",
+        KeyCode::F9 => "f9",
+        KeyCode::F10 => "f10",
+        KeyCode::F11 => "f11",
+        KeyCode::F12 => "f12",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::KeyA => "a",
+        KeyCode::KeyB => "b",
+        KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",
+        KeyCode::KeyE => "e",
+        KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",
+        KeyCode::KeyH => "h",
+        KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",
+        KeyCode::KeyK => "k",
+        KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",
+        KeyCode::KeyN => "n",
+        KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",
+        KeyCode::KeyQ => "q",
+        KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",
+        KeyCode::KeyT => "t",
+        KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyW => "w",
+        KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",
+        KeyCode::KeyZ => "z",
+        _ => return None,
+    })
+}
+
+/// 把当前按下的修饰键 + 主键拼成配置里的写法。
+/// 必须带至少一个修饰键，否则会把普通打字也吃成热键。
+fn compose_spec(mods: ModifiersState, token: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if mods.control_key() {
+        parts.push("ctrl");
+    }
+    if mods.alt_key() {
+        parts.push("alt");
+    }
+    if mods.shift_key() {
+        parts.push("shift");
+    }
+    if mods.super_key() {
+        parts.push("cmd");
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push(token);
+    Some(parts.join("+"))
+}
+
+/// 换一个全局热键：先注册新的，成功再注销旧的；失败则把旧的装回去。
+fn apply_hotkey(
+    manager: &mut Option<GlobalHotKeyManager>,
+    current: &mut Option<HotKey>,
+    hotkey_id: &mut Option<u32>,
+    spec: &str,
+) -> Result<(), String> {
+    let Some(next) = parse_hotkey(spec) else {
+        return Err(format!("不认识的组合键：{}", spec));
+    };
+    let Some(mgr) = manager.as_mut() else {
+        return Err("热键管理器没有初始化".to_string());
+    };
+    if let Some(old) = current.as_ref() {
+        if old.id() == next.id() {
+            return Ok(());
+        }
+    }
+    let previous = current.take();
+    match mgr.register(next) {
+        Ok(()) => {
+            if let Some(old) = previous {
+                let _ = mgr.unregister(old);
+            }
+            *current = Some(next);
+            *hotkey_id = Some(next.id());
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(old) = previous {
+                let _ = mgr.register(old);
+                *current = Some(old);
+            }
+            Err(format!("这个组合被系统或别的程序占用了：{}", err))
+        }
+    }
+}
+
+/// 把"本机现在占哪个口"同步给局域网广播。
+///
+/// 只有屏幕在本机时才读得到 VCP 0x60；读不到就保持上一次的值，
+/// 对面仍然能看到"这台机器上次占的是哪个口"。
+///
+/// 返回本次读到的当前输入值（读不到返回 None）。不管有没有落盘，
+/// 调用方都可以拿它判断"画面现在在哪"。
+fn sync_own(switcher: &mut Switcher, mesh: &Mesh) -> Option<u16> {
+    // 静默期（显示器刚离开/回来）不读 DDC，保持上一次的值即可
+    if switcher.ddc_quiet() {
+        return None;
+    }
+    // 画面正显示对端时，0x60 读到的是**对端的口**。有的显示器切走后
+    // 仍挂在本机拓扑里、DDC 照答不误（实测），照单全收会把对端的口记成
+    // "本机的口"——之后对端请我们把画面切回去时，value != own 走错分支，
+    // 键鼠收不回来（实测踩过）。两个信号任一命中就跳过：
+    // 1) KVM 正在转发（键鼠已跟过去 = 画面在对端那边）
+    // 2) 对端广播过它自己就挂在这个口
+    let sending = kvm_now().map_or(false, |h| h.state() == kvm::State::Sending);
+    let Some(display) = switcher.pick_display(None) else {
+        return None;
+    };
+    let Some(value) = switcher.backend().get_vcp(&display, VCP_INPUT_SOURCE) else {
+        return None;
+    };
+    let peer_port = mesh
+        .live_peers()
+        .iter()
+        .any(|p| p.knows_port() && p.own_value == value);
+    if !sending && !peer_port {
+        let key = switcher.identity(&display);
+        let name = switcher
+            .config
+            .input_name_of(&key, value)
+            .unwrap_or_else(|| format!("0x{value:02X}"));
+        // 顺手落盘：屏幕被切走之后就读不到了，这个值是请求对端切回来的唯一依据
+        switcher.config.remember_own(&name, value);
+        mesh.set_own(&name, value);
+    }
+    Some(value)
+}
+
+/// 体检结论：第一个字符串放菜单第二行，第二个是完整说明（进日志/状态栏）。
+///
+/// `support::check` 会做一次写探测，约 1 秒，所以调用方必须缓存结果，
+/// 不能挂在每 5 秒一次的状态刷新里。
+fn inspect(switcher: &Switcher) -> (String, String) {
+    let Some(display) = switcher.pick_display(None) else {
+        return (String::new(), "屏幕不在本机，无法检测".to_string());
+    };
+    let caps = switcher.capabilities(&display);
+    let report = crate::support::check(switcher.backend(), &display, caps);
+    let verdict = report.verdict();
+
+    let line = format!("{} {}", verdict.mark(), verdict.label());
+
+    let mut detail = report.headline();
+    if !verdict.advice().is_empty() {
+        detail.push_str("。");
+        detail.push_str(verdict.advice());
+    }
+    (line, detail)
+}
+
+/// 把对端广播的"我挂在某个口"直接记成本地结论。
+///
+/// 这条情报完全免费：对面自己读到的值，我们连 DDC 都不用发。
+/// 所以不用等用户点「扫描输入口」，开机几秒后菜单就会显示
+/// 「DP（Windows 那台）· 有主机」。
+fn absorb_peer_ports(switcher: &mut Switcher, mesh: &Mesh) {
+    let Some(display) = switcher.pick_display(None) else {
+        return;
+    };
+    let items: Vec<(u16, Presence)> = mesh
+        .live_peers()
+        .into_iter()
+        .filter(|p| p.knows_port())
+        .map(|p| (p.own_value, Presence::Occupied))
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    let key = switcher.identity(&display);
+    switcher.config.set_presence(&key, &items);
+}
+
+/// 工作线程：独占一个 Switcher，串行处理 DDC 指令。
+/// 执行一次切屏，并按结果决定键鼠跟不跟过去。
+///
+/// `follow = false` 是"只想换个画面"，比如自己接了两个显示口想切着看，
+/// 或者故意让键鼠留在本机操作。这时候不能顺手把键鼠也带走。
+fn do_switch(
+    switcher: &mut Switcher,
+    mesh: &Mesh,
+    name: &str,
+    value: u16,
+    follow: bool,
+) -> String {
+    // 切走之前先把自己的口记下来，切完就读不到了
+    let _ = sync_own(switcher, mesh);
+    let own = switcher.config.own_value;
+
+    // ---- 顺序很关键：**先交键鼠，再切画面** ----
+    //
+    // 反过来（先切画面、再交键鼠）会有一个死局：画面已经切走之后，本机的
+    // DDC 通道就断了，如果这时候发现键鼠没交出去，恢复起来要绕远路。
+    //
+    // 但键鼠交不出去时**不再拒绝切换**：键鼠物理上接在本机，
+    // 就算画面切走了，本机热键照样能切回来，不存在真正的死局。
+    // 硬拒切的代价是"开了共用键鼠就连画面都切不了"（实测反馈），
+    // 所以现在降级放行：画面照切，状态里说明键鼠留在本机。
+    let mut handed = false;
+    let mut stranded: Option<String> = None;
+    let mut reclaimed = false;
+    if follow {
+        match kvm_now() {
+            // 多屏共享模式下两边对等，切屏跟键鼠没有关系，别乱动
+            Some(handle) if value != own && handle.mode() == kvm::Mode::Follow => {
+                match handle.follow() {
+                    Ok(()) => handed = true,
+                    Err(err) => stranded = Some(err),
+                }
+            }
+            // 切回自己占的口（对端请我们切回去，或热键目标就是本机）：
+            // 键鼠必须回本机，这跟「交给对端」是相反方向的同一个动作
+            Some(handle) if value == own => {
+                handle.give_back();
+                reclaimed = true;
+            }
+            _ => {}
+        }
+    }
+
+    // 8 秒校验窗：实测这台显示器从收到 DDC 到离开本机拓扑要 2~6 秒不等，
+    // 2 秒窗口会频繁误判失败，进而把刚交出去的键鼠收回来
+    let outcome = switcher.switch_raw(name, value, Duration::from_secs(8));
+
+    // 失败分两种，处理完全不同：
+    //
+    // 确凿失败（那个口没信号，显示器自己弹回来了）：画面明明在本机，
+    // 键鼠必须立刻回本机。
+    //
+    // 模糊失败（校验窗超时 + VCP 读不到目标值）：这台显示器切到别的输入源
+    // 后**并不离开 macOS 拓扑**（EDID 一直活着），VCP 读值也不更新——两个
+    // 成功信号全部失效，但画面实际是切成功的（18:00 日志实锤：转发了
+    // 1625 笔事件后误判失败、键鼠被抢收，用户看到「刚切过去能用，过一会
+    // 就不能用」）。所以模糊失败时键鼠留在对端不动；真没切过去的话，
+    // 用户按热键（Ctrl+Alt+Esc）收回兜底，转发中热键实测可用。
+    let mut handed_ambiguous = false;
+    if handed && !outcome.ok {
+        if outcome.definite {
+            if let Some(handle) = kvm_now() {
+                handle.give_back();
+            }
+        } else {
+            switcher.suppress_ddc(Duration::from_secs(4));
+            handed_ambiguous = true;
+        }
+    }
+
+    if outcome.ok || handed_ambiguous {
+        if handed_ambiguous {
+            format!(
+                "键鼠已交给对端；显示器切换没能确认（{}）。\
+                 若画面还在本机，按热键 {} 可收回键鼠",
+                outcome.message,
+                pretty_hotkey(&switcher.config.hotkey)
+            )
+        } else if reclaimed {
+            format!(
+                "画面已切回 {name}（键鼠已收回本机）"
+            )
+        } else {
+            match stranded {
+                Some(err) => format!(
+                    "已切到 {name}，但键鼠留在本机（{err}）。\
+                     按热键 {} 可把画面切回来",
+                    pretty_hotkey(&switcher.config.hotkey)
+                ),
+                None => format!("已切到 {name}（键鼠已跟过去）"),
+            }
+        }
+    } else if reclaimed && !outcome.ok {
+        // 切回本机时键鼠已经收回来了，画面切没切成是另一回事，别吓唬人
+        format!("键鼠已收回本机；{}", outcome.message)
+    } else {
+        outcome.message
+    }
+}
+
+fn engine_loop(
+    mut switcher: Switcher,
+    rx: Receiver<Command>,
+    proxy: EventLoopProxy<UserEvent>,
+    mesh: Mesh,
+) {
+    /// 只在状态真的变了才往 UI 线程丢事件。
+    ///
+    /// 5 秒一次的自动刷新绝大多数时候结论完全一样，无条件重发会让 UI 层
+    /// 每 5 秒重建一次菜单，macOS 上就表现为"菜单点开几秒后自己消失"。
+    fn push(
+        proxy: &EventLoopProxy<UserEvent>,
+        switcher: &Switcher,
+        target: &str,
+        text: String,
+        support: &str,
+        last: &mut String,
+    ) {
+        let key = profile_key_of(switcher);
+        // 顺便刷新"本机有没有显示器"：面板要靠它区分"没接显示器"和"显示器不报口"
+        let has_display = !switcher.displays().is_empty();
+        let had_display = HAS_DISPLAY.swap(has_display, AtomicOrdering::SeqCst);
+        // 画面刚切回本机（用户按了显示器面板按钮、或对面替我们切回来了）：
+        // 键鼠必须立刻回到本机，否则就变成"看着本机的画面、操作着对面"。
+        if has_display && !had_display {
+            if let Some(handle) = kvm_now() {
+                handle.give_back();
+            }
+        }
+        let sig = format!("{key}\u{1f}{target}\u{1f}{text}\u{1f}{support}");
+        if *last == sig {
+            return;
+        }
+        *last = sig;
+        let _ = proxy.send_event(UserEvent::Status {
+            text,
+            target: target.to_string(),
+            profile_key: key,
+            support: support.to_string(),
+        });
+    }
+
+    let mut last_push = String::new();
+    // 上一轮见到的显示器名集合，心跳里用来发现拓扑变化（零 I2C 开销）
+    let mut last_topology: Vec<String> = Vec::new();
+    let start_target = switcher.config.hotkey_target.clone();
+    let _ = sync_own(&mut switcher, &mesh);
+    absorb_peer_ports(&mut switcher, &mesh);
+    let text = status_text(&mut switcher);
+    // 只算一次：写探测要 1 秒，不能跟着状态刷新反复跑
+    let mut support = inspect(&switcher).0;
+    push(&proxy, &switcher, &start_target, text, &support, &mut last_push);
+
+    while let Ok(command) = rx.recv() {
+        match command {
+            Command::SwitchRaw { name, value } => {
+                let text = do_switch(&mut switcher, &mesh, &name, value, true);
+                log_line(&text);
+                let target = switcher.config.hotkey_target.clone();
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+            Command::SwitchOnly { name, value } => {
+                let text = do_switch(&mut switcher, &mesh, &name, value, false);
+                log_line(&text);
+                let target = switcher.config.hotkey_target.clone();
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+            Command::SetTarget { name, value } => {
+                // 只设热键目标，不往 profile 里写没验证过的值：
+                // 否则"未确认"标记会被标准值污染，下次就看不出哪个口是真的试出来的
+                let _ = value;
+                switcher.config.hotkey_target = name.clone();
+                let _ = switcher.config.save();
+                log_line(&format!("热键目标设为 {}", name));
+                let text = format!("热键目标已设为 {}", switcher.config.label_for(&name));
+                push(&proxy, &switcher, &name, text, &support, &mut last_push);
+            }
+            Command::ClearTarget => {
+                switcher.config.hotkey_target.clear();
+                let _ = switcher.config.save();
+                push(
+                    &proxy,
+                    &switcher,
+                    "",
+                    "已取消热键目标".to_string(),
+                    &support,
+                    &mut last_push,
+                );
+            }
+            Command::Rescan => {
+                // 这一步必须真的重读：缓存里存着上一次的失败结论，
+                // 不清掉的话这个按钮点了等于没点（用户报的就是这个）
+                let report = switcher.rescan();
+                log_line(&format!("重新检测：{report}"));
+                if let Ok(mut note) = PORT_NOTE.lock() {
+                    *note = report.clone();
+                }
+                let _ = sync_own(&mut switcher, &mesh);
+                absorb_peer_ports(&mut switcher, &mesh);
+                let target = switcher.config.hotkey_target.clone();
+                let mut text = status_text(&mut switcher);
+                if text.is_empty() {
+                    text = report;
+                }
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+            Command::Heartbeat => {
+                // 拓扑变化（显示器离开/回到本机）只靠枚举就能发现，零 I2C 开销。
+                // 刚回来的头几秒链路还在重新协商，静默期把 DDC 读取全部挡掉。
+                let displays_now: Vec<String> = switcher
+                    .displays()
+                    .into_iter()
+                    .map(|d| d.name)
+                    .collect();
+                if displays_now != last_topology {
+                    switcher.suppress_ddc(Duration::from_secs(4));
+                    last_topology = displays_now;
+                }
+                let current = sync_own(&mut switcher, &mesh);
+                absorb_peer_ports(&mut switcher, &mesh);
+                // 自证收回安全网：VCP 当前值已经是本机的口，而键鼠还在往外
+                // 转发 —— 画面已经回本机了（对面代切、用户按了显示器按钮、
+                // 或对端消息在网络里丢了），键鼠必须立刻回来。
+                // 「拓扑离开→回来」信号对从不离开本机拓扑的显示器永远不
+                // 触发（实测），这条 VCP 判据是唯一可靠的兜底。
+                // 注意要在 sync_own 之后比：刚才那次读值如果发现画面回本机，
+                // 会顺手把 own 修正成正确值，陈旧的污染值不会误伤判断。
+                // ⚠️ 只在跟随画面模式下有效：多屏共享（edge）模式显示器根本
+                // 不切换输入源，VCP 永远等于自己的口 —— 不加这个守卫，转发
+                // 最多 5 秒就会被误收回来（实测踩过）。
+                // ⚠️ 模式要读 KVM 运行时实例的 mode()，不能读
+                // switcher.config —— 菜单/面板改的是 UI 线程那份 config，
+                // switcher 这份是启动时的旧副本，永远比对新（实测踩过）。
+                if let Some(handle) = kvm_now() {
+                    if handle.state() == kvm::State::Sending && handle.mode() != kvm::Mode::Edge {
+                        if let Some(v) = current {
+                            if v > 0 && v == switcher.config.own_value {
+                                handle.give_back();
+                            }
+                        }
+                    }
+                }
+                let target = switcher.config.hotkey_target.clone();
+                let text = status_text(&mut switcher);
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+            Command::AskPeerSwitch { value } => {
+                // 本机没有接通的显示器，自己发不出 DDC；但对面那台现在握着画面，
+                // 它的 DDC 是通的 —— 让它替我们把画面切到这个口。
+                let peers = mesh.live_peers();
+                let mut sent = 0usize;
+                for peer in &peers {
+                    if mesh.send_command(
+                        &peer.node,
+                        "switch",
+                        serde_json::json!({ "input": "", "value": value }),
+                    ) {
+                        sent += 1;
+                        log_line(&format!("已请 {} 把画面切到 0x{value:02X}", peer.node));
+                    }
+                }
+                let text = if sent == 0 {
+                    "没有在线对端可以代切".to_string()
+                } else {
+                    format!("已请对端把画面切到 0x{value:02X}，几秒后屏幕会回来")
+                };
+                let target = switcher.config.hotkey_target.clone();
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+            Command::RemoteClipboard(text) => {
+                // 写剪贴板得回主线程，这里只负责转交
+                let _ = proxy.send_event(UserEvent::RemoteClipboard(text));
+            }
+            Command::CheckSupport => {
+                let (line, detail) = inspect(&switcher);
+                support = line;
+                log_line(&format!("支持性检测：{}", detail));
+                let target = switcher.config.hotkey_target.clone();
+                push(&proxy, &switcher, &target, detail, &support, &mut last_push);
+            }
+            Command::ScanPorts => {
+                let target = switcher.config.hotkey_target.clone();
+                log_line("开始扫描输入口");
+
+                // 物理试探有个硬前提：**切走之后得有谁把画面送回来**。
+                // 本机一旦失去 DDC 就再也发不出指令，这个前提不成立时切过去就是单程票。
+                let peers_now = mesh.live_peers();
+                let local_paired = switcher.config.pair.is_set();
+                let blocked: Vec<String> = peers_now
+                    .iter()
+                    .filter(|p| p.wants_pair && !local_paired)
+                    .map(|p| p.node.clone())
+                    .collect();
+                let can_relay = !peers_now.is_empty() && blocked.is_empty();
+                let skip_reason: Option<String> = if peers_now.is_empty() {
+                    Some("局域网里没有别的机器在跑本程序，切过去就回不来".to_string())
+                } else if !blocked.is_empty() {
+                    Some(format!(
+                        "{} 设了配对码而本机没设，它会把代切请求当成未签名的包丢掉 —— \
+                         两边填同一个码再来",
+                        blocked.join("、")
+                    ))
+                } else {
+                    None
+                };
+
+                push(
+                    &proxy,
+                    &switcher,
+                    &target,
+                    if can_relay {
+                        "正在扫描，屏幕会黑几次…".to_string()
+                    } else {
+                        "正在汇总已知信息（不做切屏试探）…".to_string()
+                    },
+                    &support,
+                    &mut last_push,
+                );
+
+                // 对面自己报过的口直接采信，这些不用切屏试探
+                let peer_ports: Vec<(String, u16)> = peers_now
+                    .iter()
+                    .filter(|p| p.knows_port())
+                    .map(|p| (p.node.clone(), p.own_value))
+                    .collect();
+                if !peer_ports.is_empty() {
+                    log_line(&format!("局域网里有 {} 台对端主动报了口", peer_ports.len()));
+                }
+                if let Some(reason) = &skip_reason {
+                    log_line(&format!("跳过切屏试探：{reason}"));
+                }
+
+                let relay_mesh = mesh.clone();
+                // 空切片 = 一个口都不物理试探，只汇总本机与对端已经报过的信息
+                let no_probe: [u16; 0] = [];
+                let only = if can_relay {
+                    None
+                } else {
+                    Some(no_probe.as_slice())
+                };
+                let result = switcher.scan_presence(
+                    &peer_ports,
+                    Duration::from_secs(10),
+                    true,
+                    only,
+                    |home| {
+                        // 对面要是会丢弃未签名包，发也白发；直接说没送出去
+                        if !can_relay {
+                            return false;
+                        }
+                        let nodes: Vec<String> = relay_mesh
+                            .live_peers()
+                            .into_iter()
+                            .map(|p| p.node)
+                            .collect();
+                        let mut sent = false;
+                        for node in nodes {
+                            if relay_mesh.send_command(
+                                &node,
+                                "switch",
+                                serde_json::json!({ "input": "", "value": home }),
+                            ) {
+                                sent = true;
+                            }
+                        }
+                        sent
+                    },
+                    |step| log_line(step),
+                );
+
+                let text = match result {
+                    Ok(report) => {
+                        let occupied: Vec<String> = report
+                            .ports
+                            .iter()
+                            .filter(|p| p.presence == Presence::Occupied)
+                            .map(|p| p.name.clone())
+                            .collect();
+                        let idle = report
+                            .ports
+                            .iter()
+                            .filter(|p| p.presence == Presence::Idle)
+                            .count();
+                        let mut text = if occupied.is_empty() {
+                            "扫描完成：没找到有主机的口".to_string()
+                        } else {
+                            format!("扫描完成：{} 有主机", occupied.join("、"))
+                        };
+                        if idle > 0 {
+                            text.push_str(&format!("，{} 个口无信号", idle));
+                        }
+                        if !report.back_home {
+                            text.push_str(
+                                "。画面没能自动切回本机 —— 要么在对面那台点一下切换，\
+                                 要么用显示器 OSD 手动切回来",
+                            );
+                        }
+                        if let Some(reason) = &skip_reason {
+                            text.push_str(&format!("。这次没有切屏试探：{reason}"));
+                        }
+                        if let Some(reason) = &report.aborted {
+                            log_line(reason);
+                        }
+                        text
+                    }
+                    Err(err) => format!("扫描失败：{}", err),
+                };
+                // 扫描刚结束时 DDC 常有一段静默期，这时重跑体检会误判成"通道不通"，
+                // 所以只把自己的口同步一下，体检结论沿用原来的。
+                let _ = sync_own(&mut switcher, &mesh);
+                log_line(&text);
+                push(&proxy, &switcher, &target, text, &support, &mut last_push);
+            }
+        }
+    }
+}
+
+pub fn run() -> ! {
+    // panic 一律先落日志再走原有流程：release 配置是 panic=abort，
+    // 没有这条的话 abort 之后连 panic 内容都查不到（托盘菜单点击崩溃
+    // 悬了三轮才靠符号化定位，有这条下次直接看日志）
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            log_line(&format!("PANIC: {info}"));
+            default_hook(info);
+        }));
+    }
+
+    let switcher = Switcher::new();
+    let config_snapshot = switcher.config.clone();
+
+    // 局域网：既是"对面那台替我做不了的事"，也是"哪台机器在哪个口"的信息来源
+    let ddc_ok = switcher.pick_display(None).is_some();
+    let mesh = Mesh::new(
+        config_snapshot.node.clone(),
+        config_snapshot.network.port,
+        ddc_ok,
+    );
+    // 有配对码就立刻上签名：之后的广播和指令都要过 HMAC 校验
+    mesh.set_key(crate::pair::link_key(&config_snapshot.pair.code));
+
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+
+    // 热键必须在本线程注册，manager 必须活到进程结束；
+    // 用户在菜单里改热键时要能注销旧的、注册新的，所以三个状态都得可变。
+    let mut hotkey_id: Option<u32> = None;
+    let mut current_hotkey: Option<HotKey> = None;
+    let mut hotkey_manager: Option<GlobalHotKeyManager> = None;
+    {
+        if let Some(hotkey) = parse_hotkey(&switcher.config.hotkey) {
+            if let Ok(created) = GlobalHotKeyManager::new() {
+                if created.register(hotkey).is_ok() {
+                    hotkey_id = Some(hotkey.id());
+                    current_hotkey = Some(hotkey);
+                }
+                hotkey_manager = Some(created);
+            }
+        }
+    }
+
+    // 录制新热键用的小窗口：平时隐藏，点"按下新的组合键"时才弹出来抢焦点。
+    // tao 不能只监听全局按键，必须有个窗口来收键盘事件。
+    let record_window: Option<Window> = WindowBuilder::new()
+        .with_title("按下新的组合键（Esc 取消）")
+        .with_inner_size(LogicalSize::new(420.0, 120.0))
+        .with_resizable(false)
+        .with_always_on_top(true)
+        .with_visible(false)
+        .build(&event_loop)
+        .ok();
+    if record_window.is_some() {
+        log_line("热键录制窗口已就绪");
+    } else {
+        log_line("警告：热键录制窗口创建失败，菜单里只能选预设组合");
+    }
+
+    let (tx, rx) = mpsc::channel::<Command>();
+
+    if config_snapshot.network.enabled {
+        let tx_relay = tx.clone();
+        let started = mesh.start(Box::new(move |action, args| match action.as_str() {
+            "switch" => {
+                if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
+                    let value = args.get("value").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                    let _ = tx_relay.send(Command::SwitchRaw {
+                        name: input.to_string(),
+                        value,
+                    });
+                }
+            }
+            "clipboard" => {
+                if let Some(text) = args.get("text").and_then(|v| v.as_str()) {
+                    let _ = tx_relay.send(Command::RemoteClipboard(text.to_string()));
+                }
+            }
+            _ => {}
+        }));
+        if started.is_err() {
+            log_line("局域网监听启动失败，仅本机模式");
+        }
+    }
+
+    // 控制面板：浏览器就是 UI，跨平台一致，不用再引一套 GUI 框架
+    let snapshot: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(Snapshot::default()));
+    {
+        let snapshot = snapshot.clone();
+        let tx_panel = tx.clone();
+        let proxy_panel = proxy.clone();
+        let dispatch: panel::Dispatcher = Arc::new(move |action: Action| match action {
+            Action::Switch { name, value, follow } => {
+                // 只换画面时不带走键鼠：用户可能就是想在本机继续敲命令，
+                // 顺手把键鼠也扔过去会让他连本机都操作不了
+                let cmd = if follow {
+                    Command::SwitchRaw { name, value }
+                } else {
+                    Command::SwitchOnly { name, value }
+                };
+                let _ = tx_panel.send(cmd);
+            }
+            Action::SetTarget { name, value } => {
+                let _ = tx_panel.send(Command::SetTarget { name, value });
+            }
+            Action::ClearTarget => {
+                let _ = tx_panel.send(Command::ClearTarget);
+            }
+            Action::Rescan => {
+                let _ = tx_panel.send(Command::Rescan);
+            }
+            Action::ScanPorts => {
+                let _ = tx_panel.send(Command::ScanPorts);
+            }
+            Action::CheckSupport => {
+                let _ = tx_panel.send(Command::CheckSupport);
+            }
+            Action::AskPeer(value) => {
+                let _ = tx_panel.send(Command::AskPeerSwitch { value });
+            }
+            // 其余的要在主线程做（开对话框、改配置、起浏览器）
+            other => {
+                let _ = proxy_panel.send_event(UserEvent::Panel(other));
+            }
+        });
+        match panel::start(snapshot.clone(), dispatch, 47833) {
+            Ok(port) => {
+                PANEL_PORT.store(port, AtomicOrdering::SeqCst);
+                log_line(&format!("控制面板：http://127.0.0.1:{port}/"));
+            }
+            Err(err) => log_line(&format!("控制面板启动失败：{err}")),
+        }
+    }
+
+    // 文件接收服务
+    let inbox_shared: Arc<Mutex<PathBuf>> =
+        Arc::new(Mutex::new(config_snapshot.transfer.inbox_dir()));
+    if config_snapshot.transfer.enabled {
+        let proxy_saved = proxy.clone();
+        let inbox_for_log = config_snapshot.transfer.inbox_dir();
+        match transfer::serve(
+            inbox_shared.clone(),
+            config_snapshot.transfer.port,
+            crate::pair::link_key(&config_snapshot.pair.code),
+            |message| log_line(&format!("[传输] {message}")),
+            move |saved| {
+                let _ = proxy_saved.send_event(UserEvent::Saved(saved));
+            },
+        ) {
+            Ok(()) => log_line(&format!("接收目录：{}", inbox_for_log.display())),
+            Err(err) => log_line(&format!("文件接收服务启动失败：{err}")),
+        }
+    }
+
+    {
+        let proxy = proxy.clone();
+        let mesh = mesh.clone();
+        thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
+    }
+    log_line(&format!(
+        "启动：热键={} 目标={} 节点={}",
+        if hotkey_id.is_some() { "已注册" } else { "注册失败" },
+        config_snapshot.hotkey_target,
+        config_snapshot.node
+    ));
+
+    let mut tray: Option<TrayIcon> = None;
+    let mut status = "正在检测显示器…".to_string();
+    let mut target = config_snapshot.hotkey_target.clone();
+    let mut config = config_snapshot;
+    let mut profile_key = String::new();
+    let mut support = String::new();
+    // 上一次画出来的菜单长什么样。内容没变就不重建 —— 见 menu_signature 的注释。
+    let mut menu_sig = String::new();
+    let mut last_rescan = Instant::now();
+    let mut recording = false;
+    let mut record_mods = ModifiersState::empty();
+    // 剪贴板：先取一次基线，否则启动瞬间会把用户手上已有的内容当成"新复制"
+    let mut watcher = Watcher::default();
+    let _ = watcher.poll();
+    let mut transfer_note = String::new();
+    // 控制面板：第一次点菜单才建窗口，之后关闭只是隐藏，再点秒开
+    let mut panel_win: Option<Panel> = None;
+    // 共用键鼠：开着的时候它会一直占着 CGEventTap / 低级钩子
+    let mut kvm_handle: Option<Arc<kvm::Kvm>> = None;
+    // 上次退出时共用键鼠是开着的，这次启动要自动恢复一次
+    let mut kvm_restored = false;
+    // 用户点了面板窗口的关闭按钮：等这轮事件处理完再真正释放
+    let mut panel_stale = false;
+
+    event_loop.run(move |event, elwt, control_flow| {
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(400));
+
+        match event {
+            Event::NewEvents(StartCause::Init) => {
+                let peers = mesh.live_peers();
+                let menu = build_menu(
+                    &status,
+                    &config,
+                    &peers,
+                    own_value(&mesh),
+                    &profile_key,
+                    &support,
+                );
+                let mut builder = TrayIconBuilder::new()
+                    .with_menu(Box::new(menu))
+                    .with_tooltip("InputSwitch · 显示器输入源切换");
+                if let Some(icon) = load_icon() {
+                    builder = builder.with_icon(icon);
+                } else {
+                    log_line("警告：菜单栏图标解码失败");
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    builder = builder.with_icon_as_template(true);
+                }
+                match builder.build() {
+                    Ok(created) => {
+                        tray = Some(created);
+                        menu_sig = menu_signature(
+                            &status,
+                            &config,
+                            &peers,
+                            own_value(&mesh),
+                            &profile_key,
+                            &support,
+                        );
+                        log_line("托盘图标已创建");
+                    }
+                    Err(err) => log_line(&format!("托盘创建失败：{}", err)),
+                }
+
+                // 自测 / 需要直接进面板时用：INPUTSWITCH_OPEN_PANEL=1 启动即弹面板
+                if std::env::var("INPUTSWITCH_OPEN_PANEL").is_ok() {
+                    let port = PANEL_PORT.load(AtomicOrdering::SeqCst);
+                    if port != 0 {
+                        match Panel::open(elwt, port, "InputSwitch 控制面板") {
+                            Ok(created) => {
+                                created.show();
+                                panel_win = Some(created);
+                                log_line("控制面板窗口已自动打开");
+                            }
+                            Err(err) => log_line(&format!("控制面板窗口创建失败：{err}")),
+                        }
+                    }
+                }
+            }
+
+            Event::UserEvent(UserEvent::Status {
+                text,
+                target: t,
+                profile_key: key,
+                support: s,
+            }) => {
+                status = text;
+                target = t;
+                config = Config::load();
+                if !key.is_empty() {
+                    profile_key = key;
+                }
+                if !s.is_empty() {
+                    support = s;
+                }
+                let peers = mesh.live_peers();
+
+                // 上次退出时共用键鼠开着 → 这次等对端一出现就自动恢复。
+                // 少了这一步，用户每重启一次程序都要手动点一次菜单，
+                // 而"键鼠交不出去"的表现又很像功能坏了，很容易误判。
+                if !kvm_restored && config.kvm.enabled {
+                    if let Some(peer) = pick_peer(&peers, &config.kvm.peer_node) {
+                        if kvm_handle.is_none() {
+                            kvm_restored = true;
+                            let log: Arc<dyn Fn(String) + Send + Sync> =
+                                Arc::new(|text| log_line(&text));
+                            match kvm_boot(&mut config, peer, &tx, log) {
+                                Ok((handle, text)) => {
+                                    kvm_handle = Some(handle.clone());
+                                    if let Ok(mut slot) = KVM.lock() {
+                                        *slot = Some(handle);
+                                    }
+                                    log_line(&format!("{text}（自动恢复上次的设置）"));
+                                }
+                                Err(err) => {
+                                    // 这里不弹设置页：开机自启时弹窗会吓人
+                                    log_line(&format!("共用键鼠没能自动恢复：{err}"));
+                                }
+                            }
+                        }
+                    }
+                } else if !config.kvm.enabled {
+                    kvm_restored = true;
+                }
+
+                refresh_menu(
+                    &mut tray,
+                    &mut menu_sig,
+                    &status,
+                    &config,
+                    &peers,
+                    own_value(&mesh),
+                    &profile_key,
+                    &support,
+                );
+            }
+
+            Event::UserEvent(UserEvent::Panel(action)) => match action {
+                Action::Pair(code) => {
+                    let code = code.trim().to_string();
+                    config.pair.code = code.clone();
+                    let _ = config.save();
+                    mesh.set_key(crate::pair::link_key(&code));
+                    status = if code.is_empty() {
+                        // 空码 = 取消配对：mesh 会真的把 key 置空（link_key 对空串返回 None），
+                        // 之后本机不再签名也不再验签。这句必须把后果说全，不然用户不知道
+                        // 自己刚把门打开了。
+                        "已取消配对：本机不再校验签名，同一网段的任何设备都能发指令。\
+                         对面还留着码的话，它会拒收你的指令，两边都要取消或重新填同一个码"
+                            .to_string()
+                    } else {
+                        format!("已保存配对码 {}，对面填同一个码就能连上", mask_code(&code))
+                    };
+                    log_line(&status);
+                }
+                Action::GenerateCode => {
+                    let code = crate::pair::random_code();
+                    config.pair.code = code.clone();
+                    let _ = config.save();
+                    mesh.set_key(crate::pair::link_key(&code));
+                    status = format!("新配对码 {}，请在对面填同一个", code);
+                    log_line(&status);
+                }
+                Action::ToggleAutostart(on) => {
+                    let result = if on {
+                        crate::autostart::enable()
+                    } else {
+                        crate::autostart::disable()
+                    };
+                    status = match result {
+                        Ok(()) => {
+                            if on {
+                                "已开启开机自启".to_string()
+                            } else {
+                                "已关闭开机自启".to_string()
+                            }
+                        }
+                        Err(err) => format!("开机自启设置失败：{err}"),
+                    };
+                }
+                Action::ToggleClipboard(on) => {
+                    config.clipboard.enabled = on;
+                    let _ = config.save();
+                    if on {
+                        let _ = watcher.poll();
+                    }
+                    status = if on {
+                        "剪贴板同步已开启".to_string()
+                    } else {
+                        "剪贴板同步已关闭".to_string()
+                    };
+                    log_line(&status);
+                }
+                Action::ChooseInbox => {
+                    if let Some(dir) = pick_folder() {
+                        config.transfer.inbox = dir.display().to_string();
+                        let _ = config.save();
+                        *inbox_shared.lock().unwrap() = dir.clone();
+                        status = format!("接收目录已改为 {}", dir.display());
+                        log_line(&status);
+                    }
+                }
+                Action::OpenInbox => {
+                    let dir = config.transfer.inbox_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    open_path(&dir);
+                }
+                Action::SendFiles => start_send(&config, &mesh, &proxy, &mut status),
+                Action::KvmPower(on) => {
+                    if !on {
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                            status = "共用键鼠已关闭".to_string();
+                        }
+                    } else if kvm_handle.is_some() {
+                        status = "共用键鼠已经在运行".to_string();
+                    } else {
+                        let peers = mesh.live_peers();
+                        match pick_peer(&peers, &config.kvm.peer_node) {
+                            None => {
+                                status = "局域网里没找到对端，先让另一台开着本程序".to_string();
+                            }
+                            Some(peer) => {
+                                let log: Arc<dyn Fn(String) + Send + Sync> =
+                                    Arc::new(|text| log_line(&text));
+                                match kvm_boot(&mut config, peer, &tx, log) {
+                                    Ok((handle, text)) => {
+                                        kvm_handle = Some(handle.clone());
+                                        if let Ok(mut slot) = KVM.lock() {
+                                            *slot = Some(handle);
+                                        }
+                                        config.kvm.enabled = true;
+                                        let _ = config.save();
+                                        status = text;
+                                    }
+                                    Err(err) => {
+                                        kvm::open_settings();
+                                        status = format!(
+                                            "共用键鼠开不了：{err}（已经打开设置页，勾上本程序再点一次）"
+                                        );
+                                        config.kvm.enabled = false;
+                                        let _ = config.save();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    log_line(&status);
+                }
+                Action::KvmMode(mode) => {
+                    // 两种模式的物理前提不同，切换必须重启实例：
+                    // 边缘跨界要在「没抓取时」盯屏幕边缘，跟随画面则完全不动。
+                    let next = if mode == "edge" { "edge" } else { "follow" };
+                    let changed = config.kvm.mode != next;
+                    config.kvm.mode = next.to_string();
+                    let _ = config.save();
+                    if changed {
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                            status = if next == "edge" {
+                                "已切到多屏共享（两台各有屏幕和键鼠）。共用键鼠需要重新打开"
+                                    .to_string()
+                            } else {
+                                "已切到跟随画面（一套键鼠，跟屏幕走）。共用键鼠需要重新打开"
+                                    .to_string()
+                            };
+                        } else {
+                            status = if next == "edge" {
+                                "已切到多屏共享：鼠标推到边缘越界".to_string()
+                            } else {
+                                "已切到跟随画面：画面切到哪台，键鼠跟到哪台".to_string()
+                            };
+                        }
+                    } else {
+                        status = format!("已经是{}模式", if next == "edge" { "多屏共享" } else { "跟随画面" });
+                    }
+                    log_line(&status);
+                }
+                Action::KvmRole(role) => {
+                    let next = if role == "remote" { "remote" } else { "console" };
+                    let changed = config.kvm.role != next;
+                    config.kvm.role = next.to_string();
+                    let _ = config.save();
+                    if changed {
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                        }
+                        status = if next == "console" {
+                            "已设为键鼠端（本机插着键鼠）。共用键鼠需要重新打开".to_string()
+                        } else {
+                            "已设为被控端（键鼠在对面）。共用键鼠需要重新打开".to_string()
+                        };
+                    } else {
+                        status = "角色没变".to_string();
+                    }
+                    log_line(&status);
+                }
+                Action::KvmHandOver => {
+                    status = match kvm_now() {
+                        Some(handle) => match handle.follow() {
+                            Ok(()) => "键鼠已交给对端（画面这边黑着是正常的）".to_string(),
+                            Err(err) => format!("交不出去：{err}"),
+                        },
+                        None => "共用键鼠没开，先在面板上打开它".to_string(),
+                    };
+                    log_line(&status);
+                }
+                Action::KvmTakeBack => {
+                    if let Some(handle) = kvm_now() {
+                        handle.give_back();
+                        status = "键鼠已收回本机".to_string();
+                    } else {
+                        status = "共用键鼠没开".to_string();
+                    }
+                    log_line(&status);
+                }
+                Action::RecordHotkey => {
+                    // 面板上点「改键」→ 弹出这个常驻的原生小窗抢焦点收键盘事件。
+                    // 网页里收不到全局组合键，只能这么绕。
+                    if let Some(win) = record_window.as_ref() {
+                        recording = true;
+                        record_mods = ModifiersState::empty();
+                        win.set_visible(true);
+                        win.set_focus();
+                        status = "请按下新的组合键（Esc 取消）…".to_string();
+                    } else {
+                        status = "这台机器打不开录制窗口，请直接改配置里的 hotkey".to_string();
+                    }
+                    log_line(&status);
+                }
+                Action::OpenConfigDir => open_config_dir(),
+                _ => {}
+            },
+
+            Event::UserEvent(UserEvent::RemoteClipboard(text)) => {
+                // NSPasteboard 只能在主线程碰，所以绕一圈回到这里
+                if config.clipboard.enabled && clipboard::write_text(&text) {
+                    watcher.mark_seen(&text);
+                }
+            }
+
+            Event::UserEvent(UserEvent::Transfer(note)) => {
+                transfer_note = note.clone();
+                log_line(&note);
+            }
+
+            Event::UserEvent(UserEvent::Saved(paths)) => {
+                if let Some(first) = paths.first() {
+                    status = format!("接收了 {} 个文件 → {}", paths.len(), first.display());
+                }
+                transfer_note.clear();
+                log_line(&status);
+            }
+
+            Event::MainEventsCleared => {
+                // 面板窗口已经被用户关掉，这里才真正释放（WebView 会先于窗口 drop）
+                if panel_stale {
+                    panel_win = None;
+                    panel_stale = false;
+                    log_line("控制面板窗口已关闭");
+                }
+                // 面板状态 + 剪贴板轮询：都挂在 400ms 的 tick 上，不额外开线程
+                {
+                    let peers = mesh.live_peers();
+                    update_snapshot(
+                        &snapshot,
+                        &status,
+                        &support,
+                        &target,
+                        &config,
+                        &profile_key,
+                        &peers,
+                        own_value(&mesh),
+                        &mesh,
+                        &transfer_note,
+                    );
+                    if config.clipboard.enabled {
+                        if let Some(text) = watcher.poll() {
+                            let mut sent = 0;
+                            for peer in &peers {
+                                if mesh.send_command(
+                                    &peer.node,
+                                    "clipboard",
+                                    serde_json::json!({ "text": text }),
+                                ) {
+                                    sent += 1;
+                                }
+                            }
+                            if sent > 0 {
+                                log_line(&format!("剪贴板已同步（{} 字）", text.chars().count()));
+                            }
+                        }
+                    }
+
+                    // 统一收口：内容真的变了才重画菜单（签名一样就不碰，
+                    // 否则 macOS 会把用户正打开着的菜单关掉）
+                    refresh_menu(
+                        &mut tray,
+                        &mut menu_sig,
+                        &status,
+                        &config,
+                        &peers,
+                        own_value(&mesh),
+                        &profile_key,
+                        &support,
+                    );
+                }
+
+                while let Ok(event) = MenuEvent::receiver().try_recv() {
+                    let id = event.id.0.as_str();
+                    if id == MENU_QUIT {
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                        }
+                        std::process::exit(0);
+                    } else if id == ID_PANEL {
+                        let port = PANEL_PORT.load(AtomicOrdering::SeqCst);
+                        // 已经有窗口就只是叫到前面来；没有才建，建不出来退回浏览器
+                        if panel_win.is_none() && port != 0 {
+                            match Panel::open(elwt, port, "InputSwitch 控制面板") {
+                                Ok(created) => {
+                                    log_line("控制面板窗口已创建");
+                                    panel_win = Some(created);
+                                }
+                                Err(err) => log_line(&format!("控制面板窗口创建失败：{err}")),
+                            }
+                        }
+                        match panel_win.as_ref() {
+                            Some(win) => win.show(),
+                            None => {
+                                if !panel::open_in_browser(port) {
+                                    status = "打不开控制面板，请手动访问 127.0.0.1 上的面板"
+                                        .to_string();
+                                }
+                            }
+                        }
+                    } else if id == MENU_KVM {
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                            status = "共用键鼠已关闭".to_string();
+                            log_line(&status);
+                        } else {
+                            let peers = mesh.live_peers();
+                            match pick_peer(&peers, &config.kvm.peer_node) {
+                                None => {
+                                    status = "局域网里没找到对端，先让另一台开着本程序".to_string();
+                                    log_line(&status);
+                                }
+                                Some(peer) => {
+                                    let log: Arc<dyn Fn(String) + Send + Sync> =
+                                        Arc::new(|text| log_line(&text));
+                                    match kvm_boot(&mut config, peer, &tx, log) {
+                                        Ok((handle, text)) => {
+                                            kvm_handle = Some(handle.clone());
+                                            if let Ok(mut slot) = KVM.lock() {
+                                                *slot = Some(handle);
+                                            }
+                                            config.kvm.enabled = true;
+                                            let _ = config.save();
+                                            status = text;
+                                        }
+                                        Err(err) => {
+                                            // 十有八九是没授权：直接把设置页推给用户
+                                            kvm::open_settings();
+                                            status = format!(
+                                                "共用键鼠开不了：{err}（已经打开设置页，勾上本程序再点一次）"
+                                            );
+                                            config.kvm.enabled = false;
+                                            let _ = config.save();
+                                        }
+                                    }
+                                    log_line(&status);
+                                }
+                            }
+                        }
+                    } else if id == MENU_KVM_MODE {
+                        // 两种模式的物理前提不同，切换必须重启实例：
+                        // 边缘跨界要在"没抓取时"盯屏幕边缘，跟随画面则完全不动。
+                        let next = if config.kvm.mode == "edge" {
+                            "follow".to_string()
+                        } else {
+                            "edge".to_string()
+                        };
+                        config.kvm.mode = next.clone();
+                        let _ = config.save();
+                        let was_on = kvm_handle.take();
+                        if let Some(handle) = was_on.as_ref() {
+                            handle.stop();
+                        }
+                        if let Ok(mut slot) = KVM.lock() {
+                            *slot = None;
+                        }
+                        status = if next == "edge" {
+                            "已切到多屏共享：两台各有屏幕和键鼠，鼠标推到边缘越界".to_string()
+                        } else {
+                            "已切到跟随画面：一套键鼠，画面切到哪台就跟到哪台".to_string()
+                        };
+                        if was_on.is_some() {
+                            status.push_str("（共用键鼠已关闭，请重新打开）");
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                        }
+                        log_line(&status);
+                    } else if let Some(side_value) = id.strip_prefix(MENU_KVM_SIDE) {
+                        // 改越界方向。抓取钩子里记死了旧方向，KVM 开着就必须
+                        // 重启实例；直接自动重开，别让用户再手动点一遍。
+                        if config.kvm.side != side_value {
+                            config.kvm.side = side_value.to_string();
+                            let _ = config.save();
+                            let was_on = kvm_handle.take();
+                            if let Some(handle) = was_on.as_ref() {
+                                handle.stop();
+                            }
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            if was_on.is_none() {
+                                status =
+                                    format!("对端方向已改为{}侧，下次开启共用键鼠生效", side_label(side_value));
+                                log_line(&status);
+                            } else {
+                                let peers_now = mesh.live_peers();
+                                match pick_peer(&peers_now, &config.kvm.peer_node) {
+                                    None => {
+                                        config.kvm.enabled = false;
+                                        let _ = config.save();
+                                        status = format!(
+                                            "对端方向已改为{}侧；没找到对端，共用键鼠已关闭，请重新打开",
+                                            side_label(side_value)
+                                        );
+                                        log_line(&status);
+                                    }
+                                    Some(peer) => {
+                                        let log: Arc<dyn Fn(String) + Send + Sync> =
+                                            Arc::new(|text| log_line(&text));
+                                        match kvm_boot(&mut config, peer, &tx, log) {
+                                            Ok((handle, text)) => {
+                                                kvm_handle = Some(handle.clone());
+                                                if let Ok(mut slot) = KVM.lock() {
+                                                    *slot = Some(handle);
+                                                }
+                                                status = format!(
+                                                    "对端方向已改为{}侧，{}",
+                                                    side_label(side_value),
+                                                    text
+                                                );
+                                            }
+                                            Err(err) => {
+                                                config.kvm.enabled = false;
+                                                let _ = config.save();
+                                                status = format!(
+                                                    "对端方向已改为{}侧，但共用键鼠重启失败：{err}",
+                                                    side_label(side_value)
+                                                );
+                                            }
+                                        }
+                                        log_line(&status);
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(rest) = id.strip_prefix(ID_SWITCH) {
+                        if let Some((name, value)) = parse_port(rest) {
+                            status = format!("正在切换到 {}…", name);
+                            let _ = tx.send(Command::SwitchRaw { name, value });
+                        }
+                    } else if let Some(rest) = id.strip_prefix(ID_PEER) {
+                        // 直接切到对端广播的那个口，不需要用户知道它叫 dp1 还是 usbc
+                        if let Some((node, value)) = rest.rsplit_once(':') {
+                            if let Ok(value) = value.parse::<u16>() {
+                                let name = mesh
+                                    .live_peers()
+                                    .into_iter()
+                                    .find(|p| p.node == node)
+                                    .map(|p| p.own_input)
+                                    .unwrap_or_default();
+                                status = format!("正在切到 {}…", node);
+                                let _ = tx.send(Command::SwitchRaw {
+                                    name,
+                                    value,
+                                });
+                            }
+                        }
+                    }
+                    let peers = mesh.live_peers();
+                    refresh_menu(
+                        &mut tray,
+                        &mut menu_sig,
+                        &status,
+                        &config,
+                        &peers,
+                        own_value(&mesh),
+                        &profile_key,
+                        &support,
+                    );
+                }
+
+                while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+                    if Some(event.id) != hotkey_id {
+                        continue;
+                    }
+                    if event.state != global_hotkey::HotKeyState::Pressed {
+                        continue;
+                    }
+                    if target.is_empty() {
+                        status = "热键目标未设置：控制面板 → 输入源 → 设为目标".to_string();
+                    } else if let Some(value) = configured_value(&config, &profile_key, &target) {
+                        status = format!("正在切换到 {}…", target);
+                        let _ = tx.send(Command::SwitchRaw {
+                            name: target.clone(),
+                            value,
+                        });
+                    } else {
+                        // 宁可不切，也不要拿标准值瞎猜 —— 猜错会把屏幕切到空口上
+                        status = format!("热键目标 {} 没有对应的口，请在菜单里重新选", target);
+                    }
+                    let peers = mesh.live_peers();
+                    refresh_menu(
+                        &mut tray,
+                        &mut menu_sig,
+                        &status,
+                        &config,
+                        &peers,
+                        own_value(&mesh),
+                        &profile_key,
+                        &support,
+                    );
+                }
+
+                // 每 5 秒一次轻量心跳：只同步广播和状态。全量重扫（EDID+能力表，
+                // 十几笔 I2C）不能挂在这——显示器刚切回来时撞上这波读取，
+                // WindowServer 会卡进看门狗超时（实测整机关机）。重活只留给
+                // 用户主动点的「重新检测显示器」。
+                if last_rescan.elapsed() > Duration::from_secs(5) {
+                    let _ = tx.send(Command::Heartbeat);
+                    last_rescan = Instant::now();
+                }
+            }
+
+            // 录制窗口的键盘事件；面板窗口点关闭只是收起来，不销毁
+            Event::WindowEvent { event, window_id, .. } => match event {
+                // 面板窗口关掉：tao 没有 prevent_close，窗口会被系统销毁，
+                // 这里只做标记，等这一轮事件处理完再释放，避免在窗口回调里自毁。
+                WindowEvent::CloseRequested => {
+                    if panel_win.as_ref().is_some_and(|win| win.owns(window_id)) {
+                        panel_stale = true;
+                    } else {
+                        recording = false;
+                        if let Some(win) = record_window.as_ref() {
+                            win.set_visible(false);
+                        }
+                    }
+                }
+                // WebView 是子视图，窗口变大变小要手动跟
+                WindowEvent::Resized(_) => {
+                    if let Some(win) = panel_win.as_ref() {
+                        if win.owns(window_id) {
+                            win.fit();
+                        }
+                    }
+                }
+                WindowEvent::ModifiersChanged(mods) => record_mods = mods,
+                WindowEvent::KeyboardInput { event, .. } => {
+                    let from_record = record_window
+                        .as_ref()
+                        .is_some_and(|win| win.id() == window_id);
+                    if !recording || !from_record || event.state != ElementState::Pressed {
+                        return;
+                    }
+                    if event.physical_key == KeyCode::Escape {
+                        recording = false;
+                        if let Some(win) = record_window.as_ref() {
+                            win.set_visible(false);
+                        }
+                        status = "已取消录制".to_string();
+                        return;
+                    }
+                    let Some(token) = key_token(event.physical_key) else {
+                        return;
+                    };
+                    let Some(spec) = compose_spec(record_mods, token) else {
+                        // 只按住修饰键或只按普通键：继续等，不要吞掉
+                        status = "再带一个 Ctrl / Alt / Shift / Cmd 一起按".to_string();
+                        return;
+                    };
+                    match apply_hotkey(
+                        &mut hotkey_manager,
+                        &mut current_hotkey,
+                        &mut hotkey_id,
+                        &spec,
+                    ) {
+                        Ok(()) => {
+                            config.hotkey = spec.clone();
+                            let _ = config.save();
+                            status = format!("热键已改为 {}", pretty_hotkey(&spec));
+                            log_line(&status);
+                        }
+                        Err(err) => {
+                            status = err;
+                            log_line(&status);
+                        }
+                    }
+                    recording = false;
+                    if let Some(win) = record_window.as_ref() {
+                        win.set_visible(false);
+                    }
+                }
+                _ => {}
+            },
+
+            _ => {}
+        }
+    })
+}
+
+fn parse_port(rest: &str) -> Option<(String, u16)> {
+    let (name, value) = rest.split_once(':')?;
+    Some((name.to_string(), value.parse().ok()?))
+}
+
+/// 方向的中文名，菜单和状态文字都用它
+fn side_label(side: &str) -> &'static str {
+    match kvm::event::Side::parse(side) {
+        Some(kvm::event::Side::Left) => "左",
+        Some(kvm::event::Side::Top) => "上",
+        Some(kvm::event::Side::Bottom) => "下",
+        _ => "右",
+    }
+}

@@ -1,0 +1,6 @@
+/target
+/dist
+/.toolchain
+/.build
+*.log
+.DS_Store

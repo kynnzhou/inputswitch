@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InputSwitch · 切屏控制台</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #e5e5ea;
+    --blue: #007aff;
+    --green: #34c759;
+    --purple: #af52de;
+    --red: #ff3b30;
+    --orange: #ff9500;
+    --chip: #f2f2f7;
+    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --card: #2c2c2e;
+      --text: #f5f5f7;
+      --muted: #98989d;
+      --line: #3a3a3c;
+      --chip: #3a3a3c;
+      --shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 28px 16px 60px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 18px; display: flex; align-items: baseline; gap: 10px; }
+  h1 span { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .card {
+    background: var(--card); border-radius: 14px; padding: 16px;
+    box-shadow: var(--shadow); margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    margin: 0 0 12px; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .banner {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-radius: 12px; margin-bottom: 14px;
+    background: var(--chip); font-size: 13px;
+  }
+  .banner.ok { background: rgba(52,199,89,.14); color: var(--green); }
+  .banner.warn { background: rgba(255,149,0,.14); color: var(--orange); }
+  .banner b { font-weight: 600; }
+  .banner .sub { color: var(--muted); font-weight: 400; }
+  button {
+    font: inherit; border: 0; border-radius: 10px; padding: 9px 16px;
+    background: var(--chip); color: var(--text); cursor: pointer;
+    transition: transform .08s ease, filter .15s ease;
+  }
+  button:active { transform: scale(.98); }
+  button:hover { filter: brightness(.96); }
+  button.primary {
+    width: 100%; background: var(--blue); color: #fff;
+    font-size: 16px; font-weight: 600; padding: 16px; border-radius: 12px;
+    margin-bottom: 14px; text-align: center;
+  }
+  button.green { background: var(--green); color: #fff; font-weight: 600; }
+  button.purple { background: var(--purple); color: #fff; font-weight: 600; }
+  button.ghost { background: transparent; border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .grow { flex: 1; }
+  input[type=text] {
+    font: inherit; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    letter-spacing: .3em; width: 140px; text-align: center;
+  }
+  .ports { display: flex; flex-direction: column; gap: 6px; }
+  .port {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 10px; background: var(--chip);
+  }
+  .port.cur { outline: 2px solid var(--blue); background: rgba(0,122,255,.1); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--green); }
+  .dot.off { background: var(--line); }
+  .dot.bad { background: var(--red); }
+  .port .name { font-weight: 600; }
+  .port .meta { color: var(--muted); font-size: 12px; }
+  .tag {
+    font-size: 11px; padding: 2px 7px; border-radius: 6px;
+    background: var(--card); color: var(--muted); border: 1px solid var(--line);
+  }
+  .tag.blue { color: var(--blue); border-color: rgba(0,122,255,.35); }
+  .tag.green { color: var(--green); border-color: rgba(52,199,89,.35); }
+  .kv { display: grid; grid-template-columns: 132px 1fr; gap: 8px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .split { display: flex; gap: 10px; flex-wrap: wrap; }
+  .split > * { flex: 1; min-width: 180px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+  .progress { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; margin-top: 10px; }
+  .progress > i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .3s; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>切屏控制台 <span id="node">…</span></h1>
+
+  <div id="pairBanner" class="banner warn">正在读取状态…</div>
+
+  <div class="card">
+    <h2>配对</h2>
+    <div class="row">
+      <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
+      <button class="ghost" onclick="genCode()">随机生成</button>
+      <button class="green" onclick="savePair()">保存并连接</button>
+      <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
+    </div>
+    <div class="hint">两台机器填同一个码。保存后双方的消息都会签名，陌生人发不动你的显示器。码越长越安全。<br>
+      想换码就直接改上面的输入框再保存；想彻底关掉校验就点「取消配对」。</div>
+  </div>
+
+  <button id="mainSwitch" class="primary" onclick="quickSwitch()">切换画面</button>
+
+  <div class="card">
+    <h2>输入源</h2>
+    <div id="ports" class="ports"><div class="empty">读取中…</div></div>
+    <div class="hint" id="portHint"></div>
+  </div>
+
+  <div class="card">
+    <h2>共用键鼠</h2>
+    <div class="hint">先选你属于哪种情况，选错了会表现成"什么都不发生"。</div>
+
+    <div class="split" style="margin-top:10px">
+      <button id="kvmFollow" class="ghost" onclick="setKvmMode('follow')">
+        跟随画面 · 一套键鼠
+      </button>
+      <button id="kvmEdge" class="ghost" onclick="setKvmMode('edge')">
+        多屏共享 · 两台各一套
+      </button>
+    </div>
+    <div class="hint" id="kvmModeHint"></div>
+
+    <div class="split" style="margin-top:10px" id="kvmRoleRow">
+      <button id="kvmConsole" class="ghost" onclick="setKvmRole('console')">
+        键鼠插在本机
+      </button>
+      <button id="kvmRemote" class="ghost" onclick="setKvmRole('remote')">
+        键鼠在对面
+      </button>
+    </div>
+    <div class="hint" id="kvmRoleHint"></div>
+
+    <div class="switch" style="margin-top:12px">
+      <span>运行状态：<b id="kvmState">未启动</b></span>
+      <button id="kvmPower" class="green" onclick="toggleKvm()">开启</button>
+    </div>
+
+    <div class="split" style="margin-top:10px">
+      <button class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
+      <button class="ghost" onclick="post('/api/kvm-takeback')">收回键鼠</button>
+    </div>
+    <div class="hint">
+      跟随画面模式下，切屏成功时键鼠会自动跟过去，不用点上面这两个按钮；
+      它们只在"想先试试通不通"时用。紧急收回是 Ctrl+Alt+Esc，会连画面一起切回本机。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>局域网对端</h2>
+    <div id="peers"><div class="empty">还没发现同一局域网里的另一台机器</div></div>
+    <div class="hint">对端开着本程序就会自动出现。它占哪个口由它自己报告，不用你猜。</div>
+  </div>
+
+  <div class="card">
+    <h2>文件</h2>
+    <div class="split">
+      <button class="green" onclick="post('/api/send')">发送文件…</button>
+      <button onclick="post('/api/inbox')">改接收目录</button>
+      <button onclick="post('/api/open-inbox')">打开接收目录</button>
+    </div>
+    <div class="hint" id="inbox">接收目录：—</div>
+    <div id="transfer" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h2>设置</h2>
+    <dl class="kv">
+      <dt>显示器</dt><dd id="display">—</dd>
+      <dt>身份</dt><dd><code id="identity">—</code></dd>
+      <dt>支持性</dt><dd id="support">—</dd>
+      <dt>当前状态</dt><dd id="status">—</dd>
+      <dt>热键</dt><dd><span id="hotkey">—</span>
+        <button class="ghost" style="padding:2px 10px;font-size:12px;margin-left:10px" onclick="recHotkey()">改键</button>
+      </dd>
+      <dt>热键目标</dt><dd id="target">—</dd>
+    </dl>
+    <div class="switch">
+      <span>开机自启</span>
+      <button id="autoBtn" class="ghost" onclick="toggleAutostart()">—</button>
+    </div>
+    <div class="switch">
+      <span>同步剪贴板文本</span>
+      <button id="clipBtn" class="ghost" onclick="toggleClipboard()">—</button>
+    </div>
+    <div class="split" style="margin-top:12px">
+      <button class="ghost" onclick="post('/api/rescan')">重新检测显示器</button>
+      <button class="ghost" onclick="post('/api/scan')">扫描哪个口有主机</button>
+      <button class="ghost" onclick="post('/api/check')">检测支持性</button>
+    </div>
+    <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。<br>
+      每试一个口都得靠对面那台把画面切回来，所以对面必须开着本程序、并且两边填同一个配对码。
+      这两个条件不满足时，扫描只汇总已知信息，不会切屏。</div>
+    <div class="hint" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <span>配置文件和日志都在同一个目录里</span>
+      <button class="ghost" style="padding:4px 10px;font-size:12px;flex:none" onclick="post('/api/open-config')">打开配置文件夹</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let snap = null;
+let busy = false;
+/// 用户动过输入框就别再被后台轮询覆盖，否则清空的码会自己弹回来
+let codeDirty = false;
+
+async function api(path, body) {
+  const opt = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+  if (body) opt.body = JSON.stringify(body);
+  const res = await fetch(path, opt);
+  return res.json().catch(() => ({ ok: true }));
+}
+
+function post(path) {
+  if (busy) return;
+  api(path).then(pull);
+}
+
+async function pull() {
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    snap = await res.json();
+    render();
+  } catch (e) {
+    document.getElementById('pairBanner').textContent = '控制台与主程序失联了';
+  }
+}
+
+function render() {
+  if (!snap) return;
+  document.getElementById('node').textContent = snap.node || '';
+
+  const banner = document.getElementById('pairBanner');
+  if (snap.paired && snap.peer_verified > 0) {
+    banner.className = 'banner ok';
+    const rejected = snap.rejected
+      ? ` <span class="sub">· 另丢弃 ${snap.rejected} 个验签失败的包</span>` : '';
+    banner.innerHTML = `<b>✓ 配对成功 · 已连接</b> <span class="sub">双向消息已签名</span>${rejected}`;
+  } else if (snap.paired) {
+    // 只填了码、没有对端验过签：不能显示"已连接"，那是骗人的
+    banner.className = 'banner warn';
+    const hint = snap.rejected
+      ? `<br><span class="sub">对端发来的 ${snap.rejected} 个包验签没过 —— 多半是两边码不一样，或有一边还是老版本</span>`
+      : '';
+    banner.innerHTML = `<b>已填配对码，但还没有对端通过验签</b>${hint}`;
+  } else {
+    banner.className = 'banner warn';
+    banner.innerHTML = '<b>未配对</b> <span class="sub">同一网段的任何设备都能给你的显示器发指令</span>';
+  }
+  const replayNote = snap.replayed
+    ? `<br><span class="sub">另有 ${snap.replayed} 个重复包被忽略（局域网重发，正常现象）</span>` : '';
+  if (replayNote) banner.innerHTML += replayNote;
+  const codeInput = document.getElementById('code');
+  // 只在用户没动过输入框时才用服务端值回填。
+  // 原来是无条件回填，导致清空后 1.2 秒又被拉回旧码 —— 看起来就像"取消不了"。
+  if (!codeDirty && document.activeElement !== codeInput) {
+    codeInput.value = snap.pair_code || '';
+  }
+  document.getElementById('unpairBtn').style.display = snap.paired ? '' : 'none';
+
+  // 主按钮：优先推到对端占的口；本机没显示器时改成"请对端把画面切回来"
+  const main = document.getElementById('mainSwitch');
+  const peer = (snap.peers || []).find(p => p.knows_port);
+  const blind = snap.has_display === false;
+  if (blind && snap.own_value && (snap.peers || []).length) {
+    main.textContent = `请 ${peer ? peer.node : '对端'} 把画面切回本机（0x${snap.own_value.toString(16).toUpperCase().padStart(2, '0')}）`;
+    main.dataset.value = snap.own_value;
+    main.dataset.action = 'peer';
+    main.disabled = false;
+  } else if (peer && peer.value && !blind) {
+    const tail = kvmFollowing() ? '（键鼠跟过去）' : '';
+    main.textContent = `切到 ${peer.node} · ${peer.label || peer.input || '0x' + peer.value.toString(16)}${tail}`;
+    main.dataset.value = peer.value;
+    main.dataset.name = peer.input || '';
+    main.dataset.action = 'local';
+    main.disabled = false;
+  } else if (snap.inputs && snap.inputs.length) {
+    const others = snap.inputs.filter(i => !i.current && i.presence !== 'invalid');
+    const cur = others[0] || snap.inputs.find(i => !i.current) || snap.inputs[0];
+    main.textContent = `切到 ${cur.label}${kvmFollowing() ? '（键鼠跟过去）' : ''}`;
+    main.dataset.value = cur.value;
+    main.dataset.name = cur.name;
+    main.dataset.action = 'local';
+    main.disabled = false;
+  } else {
+    main.textContent = blind ? '本机没接显示器，画面在另一台上' : '没有检测到输入源';
+    main.disabled = true;
+  }
+
+  // 输入源列表
+  const ports = document.getElementById('ports');
+  ports.innerHTML = '';
+  (snap.inputs || []).forEach(i => {
+    const el = document.createElement('div');
+    el.className = 'port' + (i.current ? ' cur' : '');
+    const presence = i.presence === 'occupied' ? '<span class="tag green">有主机</span>'
+      : i.presence === 'idle' ? '<span class="tag">无信号</span>'
+      : i.presence === 'invalid' ? '<span class="tag">该口不存在</span>' : '';
+    el.innerHTML = `
+      <span class="dot ${i.current ? 'on' : (i.presence === 'occupied' ? 'on' : 'off')}"></span>
+      <div class="grow">
+        <div class="name">${esc(i.label)} ${i.current ? '<span class="tag blue">本机</span>' : ''}</div>
+        <div class="meta">0x${i.value.toString(16).toUpperCase().padStart(2, '0')} ${i.verified ? '· 已验证' : ''}</div>
+      </div>
+      ${presence}
+      <button class="ghost" onclick="setTarget(${i.value})">设为目标</button>
+      <button class="primary" style="width:auto;margin:0;padding:8px 14px;font-size:13px"
+        onclick="switchTo(${i.value})" ${i.current ? 'disabled' : ''}>切换</button>`;
+    ports.appendChild(el);
+  });
+  if (!(snap.inputs || []).length) {
+    if (blind) {
+      // 这不是故障：画面在另一台机器上，本机这边连显示器都没枚举到，
+      // DDC 通道根本不存在，所以自己无论如何切不回来 —— 只能请对端代劳。
+      ports.innerHTML = `
+        <div class="empty">本机现在没有接通的显示器 —— 画面正显示另一台机器。</div>
+        <div class="empty" style="margin-top:6px">屏幕被切走之后，本机读不到显示器，也发不出切换指令。要拿回画面，需要由当前握着画面的那台来切。</div>
+        ${snap.own_value ? `<button class="ghost" style="margin-top:10px" onclick="askPeer(${snap.own_value})">请对端把画面切回本机（0x${snap.own_value.toString(16).toUpperCase().padStart(2, '0')}）</button>`
+          : '<div class="empty" style="margin-top:6px">本机还没记录过自己接在哪个口，等它接上显示器读一次就会记住。</div>'}`;
+    } else {
+      ports.innerHTML = `
+        <div class="empty">显示器在，但没有报输入源。</div>
+        <button class="ghost" style="margin-top:10px" onclick="post('/api/rescan')">重新检测</button>`;
+    }
+  }
+  renderKvm();
+
+  const count = (snap.inputs || []).length;
+  document.getElementById('portHint').textContent = snap.port_note
+    ? `上次检测：${snap.port_note}`
+    : (count ? `共 ${count} 个输入口。切过去之后本机的 DDC 通道会断，要从对面那台切回来。` : '');
+
+  // 对端
+  const peers = document.getElementById('peers');
+  peers.innerHTML = '';
+  if (!(snap.peers || []).length) {
+    peers.innerHTML = '<div class="empty">还没发现同一局域网里的另一台机器</div>';
+  } else {
+    snap.peers.forEach(p => {
+      const el = document.createElement('div');
+      el.className = 'port';
+      const label = p.knows_port
+        ? `接在 ${p.label || p.input}（0x${p.value.toString(16).toUpperCase().padStart(2, '0')}）`
+        : '口未知（它的屏幕此刻不在自己那边）';
+      // 对面设了码而本机没设：它会把我们发过去的指令全丢掉，
+      // 表现为"点了没反应"，不说清楚会一直找不到原因
+      const blocked = p.needs_pair
+        ? '<div class="meta" style="color:#e0a030">它设了配对码，本机没设 —— 发给它的指令会被丢弃，请两边填同一个码</div>'
+        : '';
+      el.innerHTML = `
+        <span class="dot ${p.knows_port ? 'on' : 'off'}"></span>
+        <div class="grow">
+          <div class="name">${esc(p.node)} ${p.paired ? '<span class="tag green">已配对</span>' : '<span class="tag">未配对</span>'}</div>
+          <div class="meta">${label} · ${esc(p.addr)}</div>
+          ${blocked}
+        </div>
+        <button class="ghost" onclick="post('/api/send')">发文件</button>`;
+      peers.appendChild(el);
+    });
+  }
+
+  document.getElementById('inbox').textContent = '接收目录：' + (snap.inbox || '—');
+  document.getElementById('transfer').textContent = snap.transfer || '';
+  document.getElementById('display').textContent = snap.display || '—';
+  document.getElementById('identity').textContent = snap.identity || '—';
+  document.getElementById('support').textContent = snap.support || '—';
+  document.getElementById('status').textContent = snap.status || '—';
+  document.getElementById('hotkey').textContent = snap.hotkey || '—';
+  document.getElementById('target').textContent = snap.target || '未设置';
+
+  const auto = document.getElementById('autoBtn');
+  auto.textContent = snap.autostart ? '已开启' : '已关闭';
+  auto.className = snap.autostart ? 'green' : 'ghost';
+  const clip = document.getElementById('clipBtn');
+  clip.textContent = snap.clipboard ? '已开启' : '已关闭';
+  clip.className = snap.clipboard ? 'green' : 'ghost';
+}
+
+function renderKvm() {
+  const k = snap.kvm || {};
+  const follow = k.mode !== 'edge';
+  const el = (id) => document.getElementById(id);
+
+  // 用 className 整体替换：green 和 ghost 同时在的话，样式取决于 CSS 顺序，
+  // 结果是"选中"看不出来
+  el('kvmFollow').className = follow ? 'green' : 'ghost';
+  el('kvmEdge').className = follow ? 'ghost' : 'green';
+  el('kvmModeHint').textContent = follow
+    ? '一套键鼠只插在一台机器上，显示器在两台之间切。画面切到哪台，键鼠跟到哪台 —— 另一台不需要接键鼠。'
+    : '两台机器各有自己的屏幕和键鼠，并排摆。光标推到屏幕边缘就越界到隔壁那台。';
+
+  // 角色只在「跟随画面」模式下有意义：多屏共享两边是对等的
+  el('kvmRoleRow').style.display = follow ? '' : 'none';
+  el('kvmRoleHint').style.display = follow ? '' : 'none';
+  if (follow) {
+    const localConsole = (k.role || 'console') !== 'remote';
+    el('kvmConsole').className = localConsole ? 'green' : 'ghost';
+    el('kvmRemote').className = localConsole ? 'ghost' : 'green';
+    el('kvmRoleHint').textContent = localConsole
+      ? '本机抓取键鼠并转发，画面切走时生效。'
+      : '本机只负责接收并注入，不抓取键鼠。';
+  }
+
+  const state = k.state || '未启动';
+  el('kvmState').textContent = k.on
+    ? (k.peer_alive ? state : state + '（对端没回应）')
+    : '未启动';
+  el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
+  el('kvmPower').textContent = k.on ? '关闭' : '开启';
+  el('kvmPower').className = k.on ? 'ghost' : 'green';
+}
+
+function esc(text) {
+  return String(text == null ? '' : text).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function switchTo(value) {
+  const main = document.getElementById('mainSwitch');
+  main.textContent = '切换中…';
+  api('/api/switch?value=' + value).then(() => setTimeout(pull, 700));
+}
+function setTarget(value) { api('/api/target?value=' + value).then(pull); }
+// 这次切屏会不会顺手把键鼠带走 —— 文案要跟实际行为一致，
+// 否则用户按了按钮发现鼠标没了会以为出 bug
+function kvmFollowing() {
+  const k = (snap && snap.kvm) || {};
+  return !!k.on && k.mode !== 'edge' && (k.role || 'console') === 'console';
+}
+
+function quickSwitch() {
+  const main = document.getElementById('mainSwitch');
+  const value = Number(main.dataset.value || 0);
+  if (!value) return;
+  // 本机没有显示器时，切换指令得由对端去发（它那边 DDC 才是通的）
+  if (main.dataset.action === 'peer') return askPeer(value);
+  switchTo(value);
+}
+function askPeer(value) {
+  const main = document.getElementById('mainSwitch');
+  main.textContent = '已请对端切换…';
+  main.disabled = true;
+  api('/api/ask-peer?value=' + value).then(() => setTimeout(pull, 1500));
+}
+function genCode() {
+  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+  document.getElementById('code').value = code;
+}
+function savePair() {
+  const code = document.getElementById('code').value.trim();
+  codeDirty = false;
+  api('/api/pair', { code }).then(pull);
+}
+function unpair() {
+  const ok = confirm(
+    '取消配对后，本机不再校验签名 —— 同一网段的任何设备都能给你的显示器发指令。\n\n' +
+    '对面那台如果还留着码，它会拒绝你发的所有指令（含代切请求），\n' +
+    '要么也去取消，要么两边重新填同一个码。\n\n确定要取消吗？'
+  );
+  if (!ok) return;
+  codeDirty = false;
+  document.getElementById('code').value = '';
+  api('/api/pair', { code: '' }).then(pull);
+}
+function toggleKvm() {
+  const on = snap && snap.kvm && snap.kvm.on;
+  api('/api/kvm?on=' + (on ? 'false' : 'true')).then(pull);
+}
+function setKvmMode(mode) { api('/api/kvm-mode?mode=' + mode).then(pull); }
+function setKvmRole(role) { api('/api/kvm-role?role=' + role).then(pull); }
+
+function toggleAutostart() { api('/api/autostart', { on: !snap.autostart }).then(pull); }
+function toggleClipboard() { api('/api/clipboard', { on: !snap.clipboard }).then(pull); }
+// 改键：网页里只能收到"焦点在这个页面上"的按键，录不出全局热键，
+// 所以让主程序弹它自己的小窗口来收，录完这里轮询会自动刷新。
+function recHotkey() {
+  api('/api/hotkey-record').then(() => {
+    document.getElementById('hotkey').textContent = '请到刚弹出的窗口里按…';
+  });
+}
+
+pull();
+setInterval(pull, 1200);
+</script>
+</body>
+</html>

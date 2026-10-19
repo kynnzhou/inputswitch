@@ -1,0 +1,54 @@
+#!/bin/bash
+# 链接器包装：用 Zig 自带的 mingw-w64 工具链把 Rust 目标链到 Windows。
+#
+# 做了两件事：
+# 1. 丢掉 `-Wl,-Bdynamic` / `-Wl,-Bstatic`。
+#    rustc 会把 mingw 的导入库放在 `-Bdynamic` 分组里，而 lld 在该分组下
+#    只接受真正的 DLL，不会回退到静态导入库（GNU ld 会回退，lld 不会），
+#    于是 `-lmsvcrt`、`-lwindows.0.52.0` 都会报 no_fallback 找不到。
+#    这些"库"其实都是静态导入库（.a），去掉分组指示后 lld 正常解析。
+# 2. 额外把 `-lwindows.0.52.0` 换成绝对路径，双保险。
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$HERE")"
+ZIG="${ZIG_BIN:-$ROOT/.toolchain/zig-aarch64-macos-0.15.2/zig}"
+
+if [ ! -x "$ZIG" ]; then
+  echo "找不到 zig：$ZIG" >&2
+  echo "运行 tools/setup-zig.sh 下载，或设置 ZIG_BIN 环境变量" >&2
+  exit 1
+fi
+
+WINLIB="$(ls "$HOME"/.cargo/registry/src/*/windows_x86_64_gnu-*/lib/libwindows.0.52.0.a 2>/dev/null | head -1)"
+
+args=()
+for a in "$@"; do
+  case "$a" in
+    -Wl,-Bdynamic|-Wl,-Bstatic) continue ;;
+    -l:libpthread.a)
+      # GNU ld 的 `-l:文件名` 语法 lld 不认，换绝对路径
+      if [ -f "$ROOT/.toolchain/winlibs/libpthread.a" ]; then
+        args+=("$ROOT/.toolchain/winlibs/libpthread.a")
+      else
+        args+=("$a")
+      fi
+      ;;
+    -lwindows.0.52.0)
+      if [ -n "$WINLIB" ]; then
+        args+=("$WINLIB")
+      else
+        args+=("$a")
+      fi
+      ;;
+    *) args+=("$a") ;;
+  esac
+done
+
+# 自造的 mingw 导入库目录（见 tools/make-winlibs.sh）
+WINLIBS="$ROOT/.toolchain/winlibs"
+if [ -d "$WINLIBS" ]; then
+  args+=("-L$WINLIBS")
+fi
+
+exec "$ZIG" cc -target x86_64-windows-gnu "${args[@]}"
