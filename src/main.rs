@@ -1128,7 +1128,7 @@ fn cmd_send(paths: &[String], wait_secs: u64) -> i32 {
     let files: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
     let key = inputswitch::pair::link_key(&config.pair.code);
     let mut last = 0u64;
-    let result = inputswitch::transfer::send(peer.addr.ip(), config.transfer.port, &config.node, &files, key, |sent, total| {
+    let result = inputswitch::transfer::send(peer.addr.ip(), config.transfer.port, &config.node, &files, key, false, |sent, total| {
         let pct = if total == 0 { 100 } else { sent * 100 / total };
         if pct / 10 != last / 10 {
             last = pct;
@@ -1162,13 +1162,21 @@ fn cmd_clip(text: Option<&str>) -> i32 {
                 1
             }
         }
-        None => match inputswitch::clipboard::read_text() {
-            Some(text) => {
-                println!("{}", text);
+        None => match inputswitch::clipboard::read_item() {
+            Some(inputswitch::clipboard::ClipItem::Text(t)) => {
+                println!("文本：{}", t.chars().count());
+                println!("{t}");
+                0
+            }
+            Some(inputswitch::clipboard::ClipItem::Files(v)) => {
+                println!("文件：{} 个", v.len());
+                for p in v {
+                    println!("{}", p.display());
+                }
                 0
             }
             None => {
-                println!("（剪贴板里没有文本）");
+                println!("（剪贴板里没有能识别的内容）");
                 0
             }
         },
@@ -1296,6 +1304,7 @@ fn cmd_kvm(peer: &str, mode: &str, role: &str, side: &str, seconds: u64) -> i32 
             key: inputswitch::pair::link_key(&config.pair.code),
             on_panic: None,
             log,
+            on_paste: None,
         };
         let kvm = match inputswitch::kvm::start(opts) {
             Ok(kvm) => kvm,

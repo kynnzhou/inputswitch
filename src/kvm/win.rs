@@ -350,6 +350,11 @@ impl Capture {
         self.grabbing.load(Ordering::Relaxed)
     }
 
+    /// 剪贴板"按需传文件"的粘贴键拦截只做在 macOS 一侧：
+    /// 物理键盘永远接着 Mac，任何方向粘贴的按键都先经过它的钩子。
+    /// Windows 端这里留空实现，保持两端接口一致。
+    pub fn set_paste_ready(&self, _on: bool) {}
+
     /// Windows 钩子没有"被系统禁用"的机制（低级钩子被拔是静默的，
     /// 另有兜底），恒返回 false。
     pub fn revive_tap(&self) -> bool {

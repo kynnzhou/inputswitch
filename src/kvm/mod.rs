@@ -170,6 +170,9 @@ pub enum Captured {
     Note(String),
     /// 按到了紧急收回（Ctrl+Alt+Esc）
     End,
+    /// 转发期间按下了 Ctrl+V，而本机手上有"本次复制的文件清单"。
+    /// 这个键已经被 tap 吞掉，交给上层去传文件、传完再补按。
+    PasteIntent,
 }
 
 #[cfg(target_os = "macos")]
@@ -249,6 +252,9 @@ pub struct Options {
     pub on_panic: Option<Arc<dyn Fn() + Send + Sync>>,
     /// 日志回调（从后台线程调，实现方自己要保证线程安全）
     pub log: Arc<dyn Fn(String) + Send + Sync>,
+    /// 转发期间用户按下 Ctrl+V 且手上有待传清单时的通知。
+    /// 从抓取线程的接收循环里调，实现方自己做线程安全（通常只是往事件队列塞一条）。
+    pub on_paste: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// 发送侧的共享状态。几个线程都要往里写，所以里面全是 Mutex。
@@ -314,6 +320,49 @@ impl Kvm {
     /// 对端是不是活着（最近收到过它的包）
     pub fn peer_alive(&self) -> bool {
         self.peer_seen.load(Ordering::Relaxed) && self.idle_ms() <= PEER_ALIVE_MS
+    }
+
+    /// 本机手上有"本次复制的文件清单" → 转发期间按 Ctrl+V 会被拦下来。
+    /// 只在托盘侧真的读到文件剪贴板时置 true，其余时间必须是 false，
+    /// 否则会误吞用户正常的 Ctrl+V。
+    pub fn set_paste_ready(&self, on: bool) {
+        if let Some(c) = self.capture.as_ref() {
+            c.set_paste_ready(on);
+        }
+    }
+
+    /// 补发一次 Ctrl+V 给对端：用户按的那一次已经被我们吞掉了，
+    /// 文件落盘之后由这里替他把粘贴动作做完。
+    ///
+    /// 固定补 Ctrl down → V down → V up → Ctrl up：用户按完 28 秒的传输，
+    /// 手早就松开了；重复发一次 Ctrl down 在 Windows 上只是重复按键，无害。
+    pub fn replay_paste_to_peer(&self) {
+        self.out.send(&Event::Key {
+            code: 0x3B,
+            down: true,
+        });
+        self.out.send(&Event::Key {
+            code: 0x09,
+            down: true,
+        });
+        self.out.send(&Event::Key {
+            code: 0x09,
+            down: false,
+        });
+        self.out.send(&Event::Key {
+            code: 0x3B,
+            down: false,
+        });
+    }
+
+    /// 把一次按键转发给对端。传输失败/取消时用它把用户原本那一下补回去，
+    /// 不让人感觉"按了没反应"。
+    pub fn send_key_to_peer(&self, code: u16) {
+        self.out.send(&Event::Key { code, down: true });
+        self.out.send(&Event::Key {
+            code,
+            down: false,
+        });
     }
 
     /// **画面切到对端了 → 把键鼠交过去。**
@@ -502,6 +551,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let last_rx_cap = last_rx.clone();
         let peer_seen_cap = peer_seen.clone();
         let reclaim_cap = last_reclaim_ms.clone();
+        let on_paste = opts.on_paste.clone();
         thread::spawn(move || {
             let mut pressed: Vec<Event> = Vec::new();
             // 转发统计：排障「键鼠到了对面却不动」时，需要知道 Mac 这边
@@ -654,6 +704,13 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     }
                     Captured::Note(text) => {
                         (log)(text);
+                    }
+                    Captured::PasteIntent => {
+                        // 键已经被 tap 吞掉了，这里只负责通知上层去传文件。
+                        // 不在这里做任何耗时动作 —— 这是抓取线程的接收循环。
+                        if let Some(cb) = on_paste.as_ref() {
+                            cb();
+                        }
                     }
                     Captured::End => {
                         // 紧急收回：先把按着的键补 up，再告诉对端松手

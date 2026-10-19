@@ -130,8 +130,17 @@ impl Transfer {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Clipboard {
+    /// 文本同步总开关（老行为，即时发）
     #[serde(default)]
     pub enabled: bool,
+    /// 文件/图片按需传输：复制时只记清单，对方按粘贴时才传。
+    /// 默认关，因为要两端都升到 v0.6.39 才有意义。
+    #[serde(default)]
+    pub files: bool,
+    /// 传完之后自动补按一次粘贴键（用户只按一次）。
+    /// 关掉的话，传完只提示"已就绪，请再按一次"。
+    #[serde(default = "default_true")]
+    pub auto_paste: bool,
 }
 
 /// 共用键鼠。两种模式，见 `kvm::Mode`。
@@ -187,7 +196,11 @@ impl Default for Kvm {
 
 impl Default for Clipboard {
     fn default() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            files: false,
+            auto_paste: true,
+        }
     }
 }
 

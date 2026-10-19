@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use crate::pair::{self, NonceCache};
 
 pub const PROTOCOL_VERSION: u32 = 1;
+/// 剪贴板文件按需传输的能力版本。1 = 认识 `clip_pull`、能按清单反向拉取。
+pub const CLIP_VERSION: u8 = 1;
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(2);
 const PEER_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -54,6 +56,10 @@ struct Message {
     /// HMAC-SHA256 前 16 字节的 hex。未配对时为空。
     #[serde(default)]
     mac: String,
+    /// 剪贴板文件按需传输的能力位：0/缺省 = 老版本，1 = 支持 clip_pull。
+    /// **不进 canonical**：老端不认识这个字段也能验签通过。
+    #[serde(default)]
+    clip_v: u8,
 }
 
 impl Message {
@@ -91,6 +97,8 @@ pub struct Peer {
     /// 对端设了配对码。本机要是没设，我们发过去的指令会被它当未签名包丢掉 ——
     /// 扫描时"请对面切回来"就会毫无反应，所以这一位必须提前知道。
     pub wants_pair: bool,
+    /// 对端的剪贴板文件传输能力（1 = 支持 clip_pull / 按需传文件）
+    pub clip_v: u8,
 }
 
 impl Peer {
@@ -252,6 +260,7 @@ impl Mesh {
                                     own_value,
                                     paired,
                                     wants_pair,
+                                    clip_v: msg.clip_v,
                                 },
                             );
                         }
@@ -286,6 +295,7 @@ impl Mesh {
                         own_input,
                         own_value,
                         mac: String::new(),
+                        clip_v: CLIP_VERSION,
                     };
                     if let Some(k) = *key.lock().unwrap() {
                         msg.mac = pair::sign(&k, &msg.canonical());
@@ -346,6 +356,7 @@ impl Mesh {
             own_input,
             own_value,
             mac: String::new(),
+            clip_v: CLIP_VERSION,
         };
         if let Some(k) = *self.key.lock().unwrap() {
             msg.mac = pair::sign(&k, &msg.canonical());

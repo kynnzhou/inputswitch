@@ -116,6 +116,12 @@ const FLAG_CAPS: u64 = 0x1_0000;
 
 /// Esc 的 keycode，配合 Ctrl+Alt 作为"交还控制"的手势
 const KEY_ESCAPE: u16 = 53;
+/// V 的 keycode。Windows 上的"粘贴"是 Ctrl+V，Mac 键盘的 Control 键
+/// （0x3B）转发到 Windows 是 VK_CONTROL —— 所以拦的是 Control，不是 Command。
+/// Command 在 Windows 侧映射成 Win 键（Win+V 是剪贴板历史，不是粘贴）。
+const KEY_V: u16 = 0x09;
+/// 左 Control 的 keycode（重放粘贴时补按用）
+const KEY_CONTROL_LEFT: u16 = 0x3B;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -196,6 +202,12 @@ struct Shared {
     /// 放在 Shared 里（而不是单独一把锁）：回调本来就已经拿着这把锁，
     /// 读钉扎点不用多进一次锁；锁内只做字段读写，不会有死锁。
     pin: Option<(f64, f64)>,
+    /// v0.6.39：本机手上有"本次复制的文件清单"，转发期间按 Ctrl+V 要拦下来，
+    /// 先传文件再补按。这是唯一会让 tap 主动吞键的新条件。
+    paste_ready: Arc<AtomicBool>,
+    /// 刚被吞掉的那个键码：它的 key-up 也要一起吞，否则对端会收到一个
+    /// 没有对应 down 的孤立 up（部分程序按这个判"按键卡住"）。
+    swallowed_key: Option<u16>,
 }
 
 pub struct Capture {
@@ -214,6 +226,8 @@ pub struct Capture {
     height: Arc<AtomicU64>,
     tap: Arc<AtomicUsize>,
     runloop: Arc<Mutex<Option<usize>>>,
+    /// 与 Shared 里同名标志共享：tray 手上有没有"待传的文件清单"
+    paste_ready: Arc<AtomicBool>,
 }
 
 /// 起一个后台线程跑 CGEventTap。返回的对象活着时抓取就有效。
@@ -249,6 +263,7 @@ pub fn start_capture(
         src as usize
     };
     let grab_lock: Mutex<()> = Mutex::new(());
+    let paste_ready = Arc::new(AtomicBool::new(false));
 
     let shared = Arc::new(Mutex::new(Shared {
         side,
@@ -259,6 +274,8 @@ pub fn start_capture(
         tap: tap_slot.clone(),
         tx,
         pin: None,
+        paste_ready: paste_ready.clone(),
+        swallowed_key: None,
     }));
 
     // 光标钉扎线程（v0.6.21 调整为兜底层）：转发期间光标必须停在钉扎点。
@@ -418,6 +435,7 @@ pub fn start_capture(
             height: height_atom,
             tap: tap_slot,
             runloop,
+            paste_ready,
         }),
         Ok(Err(err)) => Err(err),
         Err(_) => Err("抓取线程没有在 3 秒内就绪".to_string()),
@@ -438,6 +456,12 @@ impl Capture {
     #[allow(dead_code)]
     pub fn release(&self) {
         self.set_grabbing(false);
+    }
+
+    /// 告诉 tap："本机手上有本次复制的文件清单"。
+    /// 只在转发期间、按下 Ctrl+V 时才拦 —— 光标还在本机时按键不经过这段逻辑。
+    pub fn set_paste_ready(&self, on: bool) {
+        self.paste_ready.store(on, Ordering::Relaxed);
     }
 
     #[allow(dead_code)]
@@ -647,7 +671,7 @@ extern "C" fn callback(
             return event;
         }
 
-        let Ok(shared) = shared_ref.lock() else {
+        let Ok(mut shared) = shared_ref.lock() else {
             return event;
         };
         let grabbing = shared.grabbing.load(Ordering::Relaxed);
@@ -717,6 +741,26 @@ extern "C" fn callback(
                     && (flags & (FLAG_CONTROL | FLAG_OPTION)) == (FLAG_CONTROL | FLAG_OPTION)
                 {
                     let _ = shared.tx.send(Captured::End);
+                    return std::ptr::null_mut();
+                }
+                // v0.6.39：剪贴板文件按需传输。
+                // 转发期间（grabbing，上面已经判过）按下 **Ctrl+V**，且本机手上有
+                // "本次复制的文件清单" —— 把这个键吞掉，交给主线程去传文件；
+                // 传完由主线程补发一次 Ctrl+V。用户视角只有一个动作：按了一下粘贴。
+                //
+                // 为什么是 Control 不是 Command：Command(0x37) 在 win.rs 的映射表里
+                // 是 Win 键，Win+V 是剪贴板历史，不是粘贴。用户在 Windows 屏上
+                // 粘贴时按的就是 Mac 键盘的 Control 键（0x3B → VK_CONTROL）。
+                if down && code == KEY_V && (flags & FLAG_CONTROL) != 0
+                    && shared.paste_ready.load(Ordering::Relaxed)
+                {
+                    shared.swallowed_key = Some(code);
+                    let _ = shared.tx.send(Captured::PasteIntent);
+                    return std::ptr::null_mut();
+                }
+                // 被吞掉那个键的抬起也一起吞，别给对端留一个孤立的 key-up
+                if !down && shared.swallowed_key == Some(code) {
+                    shared.swallowed_key = None;
                     return std::ptr::null_mut();
                 }
                 emitted = Some(Event::Key { code, down });

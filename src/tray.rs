@@ -24,7 +24,7 @@ use tao::window::{Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use crate::clipboard::Watcher;
+use crate::clipboard::{ClipItem, Watcher};
 use crate::kvm;
 use crate::config::Config;
 use crate::models::{Presence, VCP_BRIGHTNESS, VCP_INPUT_SOURCE};
@@ -61,6 +61,14 @@ static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
 /// （菜单开关）、工作线程（切屏后叫键鼠跟过去）、面板（按钮）。
 /// 硬传下去要给 `engine_loop` 加一整串参数，收益不抵成本。
 static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
+
+/// 本机剪贴板里"等着按需传输"的文件清单。
+///
+/// 主线程轮询剪贴板时写入（只 stat，不读内容），引擎线程在用户按下
+/// Ctrl+V 时取走并发起传输。复制那一刻网络上不下发任何东西。
+static CLIP_PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// 一次只有一个剪贴板传输在跑。用户连按几次粘贴不该叠出几条连接。
+static CLIP_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// 取当前实例的克隆。没有就是共用键鼠没开。
 fn kvm_now() -> Option<Arc<kvm::Kvm>> {
@@ -109,6 +117,11 @@ fn kvm_boot(
     let mode = kvm::Mode::parse(&config.kvm.mode).unwrap_or(kvm::Mode::Follow);
     let role = kvm::Role::parse(&config.kvm.role).unwrap_or(kvm::Role::Console);
     let side = kvm::event::Side::parse(&config.kvm.side).unwrap_or_default();
+    // 转发期间按 Ctrl+V 且手上有待传清单：抓取层吞掉键，这里把它转给引擎线程
+    let paste_tx = tx.clone();
+    let on_paste: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let _ = paste_tx.send(Command::PasteIntent);
+    });
     let handle = Arc::new(kvm::start(kvm::Options {
         peer: peer.addr.ip(),
         mode,
@@ -119,6 +132,7 @@ fn kvm_boot(
         key: crate::pair::link_key(&config.pair.code),
         on_panic: Some(on_panic),
         log,
+        on_paste: Some(on_paste),
     })?);
 
     let text = match (mode, role) {
@@ -271,6 +285,9 @@ enum Command {
     ScanPorts,
     /// 对端剪贴板传来了新文本，交给 UI 线程写进本机剪贴板
     RemoteClipboard(String),
+    /// 共用键鼠转发期间用户按下了 Ctrl+V，且本机手上有待传的文件清单。
+    /// 这个键已经被抓取层吞掉，这里负责把文件传过去、传完补按。
+    PasteIntent,
     /// 本机读不到 DDC（画面在对面），请对端替我把画面切回这个口
     AskPeerSwitch { value: u16 },
 }
@@ -290,8 +307,11 @@ enum UserEvent {
     RemoteClipboard(String),
     /// 传输进度 / 结果提示
     Transfer(String),
-    /// 文件收完了，通知一下
-    Saved(Vec<PathBuf>),
+    /// 文件收完了，通知一下。第二个参数 = 这批是剪贴板按需传输
+    /// （要写进剪贴板），不是面板手动发文件。
+    Saved(Vec<PathBuf>, bool),
+    /// 剪贴板按需传输结束（成功/失败），主线程据此补按粘贴键
+    PasteDone(Result<String, String>),
 }
 
 /// 当前显示器的身份键；屏幕已经切走时为空串。
@@ -862,7 +882,7 @@ fn start_send(
         let _ = proxy_ui.send_event(UserEvent::Transfer(format!("正在发送 {count} 个文件…")));
         // 256KB 一个包，1GB 文件能回调四千次；只在百分比变化时才通知 UI
         let mut last_pct = u64::MAX;
-        let result = transfer::send(ip, port, &node, &files, key, |sent, total| {
+        let result = transfer::send(ip, port, &node, &files, key, false, |sent, total| {
             let pct = if total == 0 { 100 } else { sent * 100 / total };
             if pct != last_pct {
                 last_pct = pct;
@@ -1493,6 +1513,77 @@ fn engine_loop(
                 }
                 push(&proxy, &switcher, &target, text, &support, &mut last_push);
             }
+            Command::PasteIntent => {
+                // 用户在对端屏幕上按下了 Ctrl+V，那个键已经被抓取层吞掉。
+                // 这里起线程把文件推过去 —— 绝不能阻塞本循环，心跳和切屏
+                // 命令都还在后面排队。
+                if CLIP_BUSY.swap(true, AtomicOrdering::SeqCst) {
+                    log_line("上一批剪贴板文件还在传，这次粘贴先忽略");
+                    continue;
+                }
+                let files = CLIP_PENDING
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                if files.is_empty() {
+                    CLIP_BUSY.store(false, AtomicOrdering::SeqCst);
+                    if let Some(h) = kvm_now() {
+                        h.set_paste_ready(false);
+                        h.send_key_to_peer(0x09); // V
+                    }
+                    log_line("剪贴板里没有待传文件，这次粘贴按原样转发给对端");
+                    continue;
+                }
+                let peers = mesh.live_peers();
+                let want = switcher.config.kvm.peer_node.clone();
+                let peer = peers
+                    .iter()
+                    .find(|p| p.node == want)
+                    .cloned()
+                    .or_else(|| peers.first().cloned());
+                let Some(peer) = peer else {
+                    CLIP_BUSY.store(false, AtomicOrdering::SeqCst);
+                    if let Some(h) = kvm_now() {
+                        h.set_paste_ready(false);
+                        h.send_key_to_peer(0x09);
+                    }
+                    log_line("剪贴板传输失败：没有在线对端，这次粘贴按原样转发");
+                    continue;
+                };
+                let ip = peer.addr.ip();
+                let port = switcher.config.transfer.port;
+                let node = switcher.config.node.clone();
+                let key = crate::pair::link_key(&switcher.config.pair.code);
+                let count = files.len();
+                let peer_name = peer.node.clone();
+                let proxy_t = proxy.clone();
+                let proxy_p = proxy.clone();
+                log_line(&format!(
+                    "按需传输开始：{count} 个条目 → {peer_name}（正在整理清单并校验）"
+                ));
+                thread::spawn(move || {
+                    let _ = proxy_t.send_event(UserEvent::Transfer("正在准备文件…".to_string()));
+                    let mut last_pct = u64::MAX;
+                    let res = transfer::send(
+                        ip,
+                        port,
+                        &node,
+                        &files,
+                        key,
+                        true, // 这批是剪贴板按需传输：收端收完要写剪贴板
+                        |sent, total| {
+                            let pct = if total == 0 { 100 } else { sent * 100 / total };
+                            if pct != last_pct {
+                                last_pct = pct;
+                                let _ = proxy_p.send_event(UserEvent::Transfer(format!(
+                                    "剪贴板传输… {pct}%"
+                                )));
+                            }
+                        },
+                    );
+                    let _ = proxy_t.send_event(UserEvent::PasteDone(res));
+                });
+            }
             Command::Heartbeat => {
                 // 拓扑变化（显示器离开/回到本机）只靠枚举就能发现，零 I2C 开销。
                 // 刚回来的头几秒链路还在重新协商，静默期把 DDC 读取全部挡掉。
@@ -1876,8 +1967,8 @@ pub fn run() -> ! {
             config_snapshot.transfer.port,
             crate::pair::link_key(&config_snapshot.pair.code),
             |message| log_line(&format!("[传输] {message}")),
-            move |saved| {
-                let _ = proxy_saved.send_event(UserEvent::Saved(saved));
+            move |saved, clip| {
+                let _ = proxy_saved.send_event(UserEvent::Saved(saved, clip));
             },
         ) {
             Ok(()) => log_line(&format!("接收目录：{}", inbox_for_log.display())),
@@ -1891,7 +1982,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.38",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.39",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2260,9 +2351,54 @@ pub fn run() -> ! {
                 log_line(&note);
             }
 
-            Event::UserEvent(UserEvent::Saved(paths)) => {
-                if let Some(first) = paths.first() {
+            Event::UserEvent(UserEvent::Saved(paths, clip)) => {
+                if clip {
+                    // 剪贴板按需传输的落点：把收到的文件写进本机剪贴板，
+                    // 用户按下粘贴键时就直接是本地文件了（那一刻是纯本地操作）。
+                    if clipboard::write_files(&paths) {
+                        watcher.mark_written();
+                        status = format!("已接收 {} 个文件并放入剪贴板", paths.len());
+                    } else {
+                        status = format!("已接收 {} 个文件，但写入剪贴板失败", paths.len());
+                    }
+                } else if let Some(first) = paths.first() {
                     status = format!("接收了 {} 个文件 → {}", paths.len(), first.display());
+                }
+                transfer_note.clear();
+                log_line(&status);
+            }
+
+            Event::UserEvent(UserEvent::PasteDone(result)) => {
+                CLIP_BUSY.store(false, AtomicOrdering::SeqCst);
+                let pending = CLIP_PENDING.lock().map(|g| g.len()).unwrap_or(0);
+                if let Ok(mut slot) = CLIP_PENDING.lock() {
+                    slot.clear();
+                }
+                match result {
+                    Ok(msg) => {
+                        if let Some(h) = kvm_now() {
+                            h.set_paste_ready(false);
+                            if config.clipboard.auto_paste {
+                                // 用户按的那一下被我们吞掉了，这里替他把粘贴动作补完。
+                                // 注入事件带 INJECT_TAG，不会被当成"又一次要传"。
+                                h.replay_paste_to_peer();
+                            }
+                        }
+                        status = if config.clipboard.auto_paste {
+                            format!("已把 {pending} 个文件送到对端并替你按下粘贴（{msg}）")
+                        } else {
+                            format!("已把 {pending} 个文件送到对端：再按一次 Ctrl+V 即可")
+                        };
+                    }
+                    Err(err) => {
+                        if let Some(h) = kvm_now() {
+                            h.set_paste_ready(false);
+                            // 把用户原本那一下补回去：至少粘出剪贴板里原来的内容，
+                            // 不能让他觉得"粘贴键坏了"。
+                            h.send_key_to_peer(0x09); // V
+                        }
+                        status = format!("剪贴板文件传输失败：{err}");
+                    }
                 }
                 transfer_note.clear();
                 log_line(&status);
@@ -2291,21 +2427,64 @@ pub fn run() -> ! {
                         &transfer_note,
                     );
                     if config.clipboard.enabled {
-                        if let Some(text) = watcher.poll() {
-                            let mut sent = 0;
-                            for peer in &peers {
-                                if mesh.send_command(
-                                    &peer.node,
-                                    "clipboard",
-                                    serde_json::json!({ "text": text }),
-                                ) {
-                                    sent += 1;
+                        match watcher.poll() {
+                            Some(ClipItem::Text(text)) => {
+                                // 复制的是文本：走老路，即时发。
+                                // 同时清掉"待传文件"状态 —— 用户改主意了，
+                                // 再按 Ctrl+V 不该还去传上一条文件。
+                                CLIP_PENDING.lock().map(|mut g| g.clear()).ok();
+                                if let Some(h) = kvm_now() {
+                                    h.set_paste_ready(false);
+                                }
+                                let mut sent = 0;
+                                for peer in &peers {
+                                    if mesh.send_command(
+                                        &peer.node,
+                                        "clipboard",
+                                        serde_json::json!({ "text": text }),
+                                    ) {
+                                        sent += 1;
+                                    }
+                                }
+                                if sent > 0 {
+                                    log_line(&format!(
+                                        "剪贴板已同步（{} 字）",
+                                        text.chars().count()
+                                    ));
                                 }
                             }
-                            if sent > 0 {
-                                log_line(&format!("剪贴板已同步（{} 字）", text.chars().count()));
+                            Some(ClipItem::Files(paths)) => {
+                                // 复制的是文件：**一个字节都不发**。
+                                // 只在本机记住清单，把所有动作推迟到用户真的按下粘贴。
+                                if config.clipboard.files {
+                                    if !peers.iter().any(|p| p.clip_v >= 1) {
+                                        log_line(
+                                            "剪贴板里是文件，但对端版本不支持按需传输，已忽略",
+                                        );
+                                    } else {
+                                        let n = paths.len();
+                                        if let Ok(mut slot) = CLIP_PENDING.lock() {
+                                            *slot = paths;
+                                        }
+                                        if let Some(h) = kvm_now() {
+                                            h.set_paste_ready(true);
+                                        }
+                                        log_line(&format!(
+                                            "剪贴板里有 {n} 个文件：推到对端按 Ctrl+V 时才传"
+                                        ));
+                                    }
+                                }
                             }
+                            None => {}
                         }
+                    }
+
+                    // 每轮同步一次"能不能拦粘贴键"：用户完全可能先复制文件、
+                    // 后开共用键鼠（那时 poll 早就跑完了），只在 poll 里置位会漏。
+                    // 一个原子写，400ms 一次，开销可忽略。
+                    let pending_n = CLIP_PENDING.lock().map(|g| g.len()).unwrap_or(0);
+                    if let Some(h) = kvm_now() {
+                        h.set_paste_ready(pending_n > 0 && config.clipboard.files);
                     }
 
                     // 统一收口：内容真的变了才重画菜单（签名一样就不碰，

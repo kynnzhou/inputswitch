@@ -41,6 +41,11 @@ struct Hello {
     nonce: u64,
     mac: String,
     files: Vec<FileMeta>,
+    /// 这一批是"剪贴板按需传输"（用户在对面按了 Ctrl+V），不是面板手动发文件。
+    /// 收端据此决定要不要把落盘路径写进剪贴板。
+    /// **不进 canonical**：老端不认识这个字段，签名照样对得上。
+    #[serde(default)]
+    clip: bool,
 }
 
 impl Hello {
@@ -133,12 +138,15 @@ fn read_frame(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
 }
 
 /// 发给某台对端。`progress(sent, total)` 在传输过程中被反复调用。
+///
+/// `clip = true` 表示这是剪贴板按需传输：收端收完会把落盘路径写进剪贴板。
 pub fn send(
     ip: IpAddr,
     port: u16,
     node: &str,
     paths: &[PathBuf],
     key: Option<[u8; 32]>,
+    clip: bool,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<String, String> {
     let (local, metas) = collect(paths)?;
@@ -156,6 +164,7 @@ pub fn send(
         nonce: crate::peer::now_secs() ^ (total.wrapping_mul(2654435761)),
         mac: String::new(),
         files: metas.clone(),
+        clip,
     };
     if let Some(k) = key {
         hello.mac = pair::sign(&k, &hello.canonical());
@@ -202,7 +211,7 @@ pub fn serve<L, S>(
 ) -> std::io::Result<()>
 where
     L: Fn(String) + Send + Sync + 'static,
-    S: Fn(Vec<PathBuf>) + Send + Sync + 'static,
+    S: Fn(Vec<PathBuf>, bool) + Send + Sync + 'static,
 {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     let on_log = Arc::new(on_log);
@@ -218,10 +227,10 @@ where
                 // 目录可以在运行时改，每次取最新的
                 let dir = inbox.lock().unwrap().clone();
                 match receive_one(&mut stream, &dir, key, log.as_ref()) {
-                    Ok(saved) => {
+                    Ok((saved, clip)) => {
                         let text = format!("接收了 {} 个文件", saved.len());
                         log(text);
-                        saved_cb(saved.clone());
+                        saved_cb(saved.clone(), clip);
                         let done = Done {
                             ok: true,
                             message: String::new(),
@@ -257,7 +266,7 @@ fn receive_one<L>(
     inbox: &Path,
     key: Option<[u8; 32]>,
     log: &L,
-) -> Result<Vec<PathBuf>, String>
+) -> Result<(Vec<PathBuf>, bool), String>
 where
     L: Fn(String) + ?Sized,
 {
@@ -319,7 +328,7 @@ where
         std::fs::rename(&tmp, &target).map_err(|e| format!("收尾失败：{}", e))?;
         saved.push(target);
     }
-    Ok(saved)
+    Ok((saved, hello.clip))
 }
 
 /// 拒绝绝对路径和 `..`。
