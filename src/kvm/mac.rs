@@ -149,6 +149,11 @@ extern "C" {
     fn CGAssociateMouseAndMouseCursorPosition(connected: bool) -> c_int;
     /// 改写事件的绝对位置（全局显示坐标）。钉扎位移事件用。
     fn CGEventSetLocation(event: CGEventRef, location: CGPoint);
+    /// **无声移动光标**：把光标摆到指定位置，但不产生任何鼠标事件
+    ///（文档明说不生成事件）。所以不会回流进自己的 HID 钩子、不会被
+    /// 转发给对端 —— 这是唯一能绕开"事件改写影响不了 WindowServer
+    /// 原始指针通路"的手段。游戏锁鼠标（associate + 每帧回中）用的就是它。
+    fn CGDisplayMoveCursorToPoint(display: CGDirectDisplayID, point: CGPoint) -> c_int;
     fn CGMainDisplayID() -> CGDirectDisplayID;
     fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
     fn CGPreflightPostEventAccess() -> bool;
@@ -251,8 +256,12 @@ pub fn start_capture(
     {
         let shared_for_pin = shared.clone();
         let corr_for_pin = corrections.clone();
+        // 监测节拍：每 64 个 tick（约 1 秒）落一条"账面位置 vs 钉扎点"，
+        // 用来对账"系统 API 读数"和"用户肉眼所见"是否一致（v0.6.22 排障用）
+        let mut tick: u32 = 0;
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(16));
+            tick = tick.wrapping_add(1);
             let target = shared_for_pin.lock().ok().and_then(|s| s.pin);
             let Some(target) = target else {
                 continue;
@@ -265,6 +274,15 @@ pub fn start_capture(
                 let cur = CGEventGetLocation(ev);
                 CFRelease(ev as *const c_void);
                 let drift = (cur.x - target.0).abs() + (cur.y - target.1).abs();
+                if tick % 64 == 0 {
+                    if let Ok(s) = shared_for_pin.lock() {
+                        let n = corr_for_pin.load(Ordering::Relaxed);
+                        let _ = s.tx.send(Captured::Note(format!(
+                            "钉扎监测：账面光标({:.0},{:.0}) 钉扎点({:.0},{:.0}) 漂移{drift:.1} 累计拉回{n}",
+                            cur.x, cur.y, target.0, target.1
+                        )));
+                    }
+                }
                 if drift > 2.0 {
                     // 带标签的绝对定位事件，从会话层入流（理由见线程头注释）
                     let warp = CGEventCreateMouseEvent(
@@ -661,16 +679,18 @@ extern "C" fn callback(
             let _ = shared.tx.send(Captured::Input(ev));
         }
         if pass_through {
-            // 原始 delta 已经转发走了，这里把事件本身改成"原地不动"再放行。
-            // 为什么放行而不是吞掉：实测吞掉（返回 NULL）拦不住光标——
-            // tap 看到的 mouse-moved 是光标动过之后的"结果"；而改写会被
-            // 系统采纳（BetterMouse/LinearMouse 改加速度曲线的同一机制）：
-            // 系统按 delta 积分 → 零 delta = 冻结；按 location 摆放 →
-            // 每笔事件都是一次纠偏。两种实现下光标都停得住。
+            // 原始 delta 已经转发走了，这里把事件本身改成"原地不动"再放行
+            //（对"系统按事件摆光标"的实现仍是防线；实测 Darwin 27 不吃这套，
+            // 光标走的是 WindowServer 的原始指针通路）。
             CGEventSetIntegerValueField(event, FIELD_MOUSE_DELTA_X, 0);
             CGEventSetIntegerValueField(event, FIELD_MOUSE_DELTA_Y, 0);
             if let Some((px, py)) = shared.pin {
                 CGEventSetLocation(event, CGPoint { x: px, y: py });
+                // v0.6.22 无声回中（真正起作用的防线）：每笔位移事件转发完，
+                // 立刻把光标无声拉回钉扎点。CGDisplayMoveCursorToPoint 不产生
+                // 事件，不会回流自己的钩子、不会被转发；1000Hz 的回中让光标
+                // 物理上离不开钉扎点几像素 —— associate 失不失效都拦得住。
+                CGDisplayMoveCursorToPoint(CGMainDisplayID(), CGPoint { x: px, y: py });
             }
             return event;
         }
