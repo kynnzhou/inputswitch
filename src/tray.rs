@@ -300,25 +300,28 @@ pub fn log_line(message: &str) {
     }
 }
 
-/// 本地时间戳 YYYY-MM-DD HH:MM:SS，不引第三方日期库。
+/// 本地时间戳 YYYY-MM-DD HH:MM:SS.mmm，不引第三方日期库。
+/// 毫秒是排障刚需：交还/进门这类"差几百毫秒"的手感问题，秒级时间戳
+/// 根本看不出谁慢（v0.6.32 起统一带毫秒）。
 fn local_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-        + local_offset_secs();
+        .unwrap_or_default();
+    let secs = now.as_secs() as i64 + local_offset_secs();
+    let millis = now.subsec_millis();
     let days = secs.div_euclid(86_400);
     let rest = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
         y,
         m,
         d,
         rest / 3600,
         (rest % 3600) / 60,
-        rest % 60
+        rest % 60,
+        millis
     )
 }
 
@@ -1837,7 +1840,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.31",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.33",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

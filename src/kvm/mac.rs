@@ -205,6 +205,9 @@ pub struct Capture {
     /// 并发交错会留下「标志=true（在转发）但光标关联还开着」的错位 ——
     /// 表现是两边光标同步移动、控制权像还在对端（实测踩过）。
     grab_lock: Mutex<()>,
+    /// 交还 warp 专用的私有事件源（存 usize 保 Send）。见 set_grabbing 里
+    /// 关于 0.25 秒抑制窗口的注释。
+    warp_source: usize,
     /// 钉扎拉回次数（associate 失效的证据，日志诊断用）
     corrections: Arc<AtomicU64>,
     width: Arc<AtomicU64>,
@@ -232,6 +235,20 @@ pub fn start_capture(
     let tap_slot: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     let runloop: Arc<Mutex<Option<usize>>> = Arc::new(Mutex::new(None));
     let corrections: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    // 交还 warp 用的私有事件源。**必须在此刻就把 local events suppression
+    // interval 设成 0**：CGWarpMouseCursorPosition 之后系统默认会忽略硬件
+    // 鼠标事件 0.25 秒（Apple 未写进文档，Ventura/Sonoma/Sequoia 实测都在），
+    // 用户感知就是「从对端回到 Mac，光标先冻一下才跟着手走」。
+    // 抑制间隔挂在事件源上，所以给 warp 单独开一个源、把它清零，
+    // 别去动 CGEventSourceCreate(null) 那个全局默认源。
+    let warp_source = unsafe {
+        let src = CGEventSourceCreate(0 /* kCGEventSourceStateCombinedSessionState */);
+        if !src.is_null() {
+            CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0);
+        }
+        src as usize
+    };
+    let grab_lock: Mutex<()> = Mutex::new(());
 
     let shared = Arc::new(Mutex::new(Shared {
         side,
@@ -394,7 +411,8 @@ pub fn start_capture(
         Ok(Ok(())) => Ok(Capture {
             shared,
             grabbing,
-            grab_lock: Mutex::new(()),
+            grab_lock,
+            warp_source,
             corrections,
             width: width_atom,
             height: height_atom,
@@ -532,7 +550,25 @@ impl Capture {
                         y: h - 16.0,
                     },
                 };
+                // 关键（v0.6.32）：warp 之后系统会在 **0.25 秒内忽略硬件
+                // 鼠标事件** —— Apple 没写进文档，但 Ventura/Sonoma/
+                // Sequoia 全都在，Hammerspoon 为此专门开过 issue。
+                // 用户感知就是「从 Windows 推回 Mac，光标先冻一下才跟着手
+                // 走」；而反方向（Mac→Windows）本机不做 warp，所以从不卡 ——
+                // 「一边快一边慢」的根源就在这里。
+                // 修法：抑制间隔挂在事件源上，先把 warp 专用源的抑制间隔
+                // 清零，再 warp；最后补一笔 associate(true) 把 warp 隐式
+                // 留下的断开状态收干净。
+                let src = self.warp_source as CGEventSourceRef;
+                if !src.is_null() {
+                    CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0);
+                }
+                // 顺序照 Deskflow/Barrier：先断开 → 摆位 → 再交还硬件。
+                // 反过来的话，「已关联、光标还在门口 1 点内」的那几微秒里
+                // 钩子会把撞边当成"又要出去"，立刻再抓一次 —— 门口乒乓。
+                CGAssociateMouseAndMouseCursorPosition(false);
                 CGWarpMouseCursorPosition(spot);
+                CGAssociateMouseAndMouseCursorPosition(true);
             }
         }
     }
