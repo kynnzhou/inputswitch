@@ -1,7 +1,10 @@
 //! Windows 的键鼠抓取与注入。
 //!
 //! 抓取用低级钩子 `WH_MOUSE_LL` / `WH_KEYBOARD_LL`：钩子回调返回非零即
-//! 拦下事件，鼠标不会移动 —— 这是 Windows 上实现"抓住光标"的唯一途径。
+//! 拦下事件 —— **按键和点击拦得住，指针移动拦不住**（v0.6.41 实锤：
+//! 吞掉 WM_MOUSEMOVE 之后光标照走，一路顶到屏幕边上被系统钳死，位置不再
+//! 变化，算出来的位移退化成 0/±1）。所以抓取期间必须自己把光标按在
+//! 钉扎点上，见 `set_pin` / `pin_back_if_drifted`。
 //! 钩子必须跑在**有消息循环**的线程上，所以这里单开一个线程跑 `GetMessageW`。
 //!
 //! 注入用 `SendInput`，并且给自己的事件打上 `dwExtraInfo` 标记：
@@ -366,6 +369,28 @@ impl Capture {
         if was == on {
             return;
         }
+        // 抓取：先落钉扎点（光标往屏内收一截），再开始转发。
+        // 见 set_pin 注释 —— 不钉的话光标贴边被系统钳住，位移就没了。
+        let geo = STATE
+            .lock()
+            .ok()
+            .and_then(|s| s.as_ref().map(|m| m.lock().map(|x| {
+                (
+                    x.ox.load(Ordering::Relaxed),
+                    x.oy.load(Ordering::Relaxed),
+                    x.width.load(Ordering::Relaxed) as i32,
+                    x.height.load(Ordering::Relaxed) as i32,
+                )
+            }).unwrap_or((0, 0, 0, 0))))
+            .unwrap_or((0, 0, 0, 0));
+        let (ox, oy, gw, gh) = geo;
+        if on {
+            if gw > 0 && gh > 0 {
+                set_pin(ox, oy, gw, gh);
+            }
+        } else {
+            clear_pin();
+        }
         // 松手时把光标挪回边缘内侧 —— 只在多屏共享模式下有意义。
         // 离门 16 点：太贴门口的话手一抖就又越界了。
         // 跟随画面模式下屏幕刚切回来，光标原地不动才对。
@@ -512,6 +537,12 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
         if let Some(ev) = emitted {
             let _ = shared.tx.send(Captured::Input(ev));
         }
+        // 位移算完再拽回钉扎点：顺序反了的话，先拽再算会凭空多出一笔
+        // 反方向的位移（拽回去多少就报多少），对端光标原地抖 —— 和 Mac
+        // 端 v0.6.34 踩的是同一个坑。
+        if wparam == WM_MOUSEMOVE {
+            pin_back_if_drifted(info.pt);
+        }
     });
 
     if swallow {
@@ -522,10 +553,15 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
 }
 
 /// 鼠标位移：低级钩子只给绝对坐标，自己跟上一次比出差值
+///
+/// v0.6.41 补丁点：钩子**吞不掉光标移动**（返回 1 只拦按键和点击，
+/// 指针照走，和 macOS 的 HID tap 是同一个坑）。所以光标一路顶到屏幕边上
+/// 就被系统钳在 w-1，`pt` 再也不会变 —— 算出来的位移全是 0 或 ±1，对端
+/// 收到的就是那串抖动，用户看到的是"推过去光标基本不动"。因此抓取期间
+/// 必须由我们自己把光标按在钉扎点上（见 pin_cursor_if_drifted）。
 fn last_point(pt: POINT) -> Option<Event> {
-    static LAST: AtomicIsize = AtomicIsize::new(isize::MIN);
-    let packed = ((pt.x as isize) << 16) | (pt.y as isize & 0xFFFF);
-    let prev = LAST.swap(packed, Ordering::Relaxed);
+    let packed = pack_point(pt);
+    let prev = LAST_POINT.swap(packed, Ordering::Relaxed);
     if prev == isize::MIN {
         return None;
     }
@@ -537,6 +573,76 @@ fn last_point(pt: POINT) -> Option<Event> {
         None
     } else {
         Some(Event::Motion { dx, dy })
+    }
+}
+
+fn pack_point(pt: POINT) -> isize {
+    ((pt.x as isize) << 16) | (pt.y as isize & 0xFFFF)
+}
+
+/// 把"上一笔位置"改写成指定点。钉扎回中之后必须调它：否则回中本身
+/// 产生的那笔位移（锚点 → 原位置，几百像素）会被当成手的移动转给对端。
+fn set_last_point(x: i32, y: i32) {
+    LAST_POINT.store(pack_point(POINT { x, y }), Ordering::Relaxed);
+}
+
+static LAST_POINT: AtomicIsize = AtomicIsize::new(isize::MIN);
+
+/// 抓取期间的钉扎点（全局坐标，isize::MIN = 未钉扎）
+static PIN: AtomicIsize = AtomicIsize::new(isize::MIN);
+
+/// 光标与钉扎点偏离超过这么多像素就拽回去。必须远小于钉扎点离边的距离，
+/// 否则还没拽回来光标就又贴边被钳住了。
+const PIN_GUARD: i32 = 64;
+
+/// 记钉扎点并把光标摆过去。
+///
+/// 钉扎点 = 抓取瞬间的光标位置**往屏内收 240 像素**。为什么要离边远：
+/// 钩子拦不住指针移动，光标贴在边上就会被系统钳在最后一列，`pt` 定死，
+/// 之后所有位移都被算成 0 —— 对端收到的只有 ±1 抖动（v0.6.41 的根因，
+/// Mac 日志实锤「账本走 262 点、真实光标动 1.0 点」）。
+fn set_pin(ox: i32, oy: i32, w: i32, h: i32) {
+    let mut pt = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut pt) == 0 {
+            pt = POINT { x: ox + w / 2, y: oy + h / 2 };
+        }
+    }
+    // 边距取屏宽的 1/8 左右，小屏上按 1/3 收，保证内侧还有活动余量
+    let m = (w / 8).min(h / 8).clamp(60, 240);
+    let lo_x = m;
+    let hi_x = (w - m).max(lo_x);
+    let lo_y = m;
+    let hi_y = (h - m).max(lo_y);
+    let x = (pt.x - ox).clamp(lo_x, hi_x) + ox;
+    let y = (pt.y - oy).clamp(lo_y, hi_y) + oy;
+    PIN.store(pack_point(POINT { x, y }), Ordering::Relaxed);
+    unsafe { SetCursorPos(x, y) };
+    // 摆位产生的那笔位移不算手的移动
+    set_last_point(x, y);
+}
+
+fn clear_pin() {
+    PIN.store(isize::MIN, Ordering::Relaxed);
+}
+
+fn pin_point() -> Option<(i32, i32)> {
+    let v = PIN.load(Ordering::Relaxed);
+    if v == isize::MIN {
+        return None;
+    }
+    Some(((v >> 16) as i32, (v & 0xFFFF) as i16 as i32))
+}
+
+/// 抓取期间把光标拽回钉扎点。偏移超过 PIN_GUARD 才动手（省调用），
+/// 拽完把"上一笔位置"同步成钉扎点，否则这一拽会被当成手的移动转发出去。
+fn pin_back_if_drifted(cur: POINT) {
+    let Some((ax, ay)) = pin_point() else {
+        return;
+    };
+    if (cur.x - ax).abs() > PIN_GUARD || (cur.y - ay).abs() > PIN_GUARD {
+        unsafe { SetCursorPos(ax, ay) };
+        set_last_point(ax, ay);
     }
 }
 
