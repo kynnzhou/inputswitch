@@ -309,10 +309,16 @@ impl Config {
         self.version = CONFIG_VERSION;
         let _ = self.save();
         if cleared > 0 {
+            // 注意：这个 crate 也会以 `--no-default-features` 编译成纯 CLI
+            // 诊断程序，那时 `tray` 模块整个被 cfg 掉，直接引用会 E0433。
+            // 托盘版写日志文件，CLI 版打到 stderr。
+            #[cfg(feature = "tray")]
             crate::tray::log_line(&format!(
                 "已清理 {cleared} 条来自对端的输入口状态：每台显示器的口编号互不相通，\
                  跨机器抄来的「有主机」是错的"
             ));
+            #[cfg(not(feature = "tray"))]
+            eprintln!("已清理 {cleared} 条来自对端的输入口状态（跨机器抄来的「有主机」是错的）");
         }
     }
 
