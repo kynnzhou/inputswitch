@@ -180,6 +180,7 @@ fn pretty_hotkey(spec: &str) -> String {
 }
 
 /// 一行菜单项：口的名字、菜单显示文本、VCP 取值、状态。
+#[derive(Clone)]
 struct PortRow {
     /// 存进配置与命令里的名字
     name: String,
@@ -188,8 +189,21 @@ struct PortRow {
     value: u16,
     verified: bool,
     current: bool,
-    /// 这个口上有没有主机（本机自己 / 对端报告 / 实测）
+    /// 这个口上有没有主机（只由本机实测得到）
     presence: Presence,
+}
+
+impl PortRow {
+    /// 这个口有没有任何"本机证据"。
+    ///
+    /// 有证据 = 本机真的切过去过（`verified`），或者切/扫出过结论
+    /// （有信号、无信号、该口不存在）。都没有就只是固件报了个编码 ——
+    /// 那种行不该出现在「输入源」里：它看起来像"本机的一个输入源"，
+    /// 实际上可能连物理接口都没有（厂商常把同一块面板所有 SKU 的
+    /// 编码都写进 `vcp(60(...))`）。
+    fn has_evidence(&self) -> bool {
+        self.current || self.verified || self.presence != Presence::Unknown
+    }
 }
 
 /// 菜单里的输入口列表完全来自这台显示器自己的 profile。
@@ -197,7 +211,16 @@ struct PortRow {
 /// profile 的输入源由显示器自报的能力表（VCP 0xDF）生成，见
 /// `Switcher::sync_profile`。所以换成任何显示器都能列出它自己的口，
 /// 不需要改一行代码 —— 这就是"通用"的落点。
-fn port_rows(config: &Config, profile_key: &str, current: Option<u16>) -> Vec<PortRow> {
+///
+/// `include_unverified = false` 时滤掉没有任何本机证据的口（见
+/// [`PortRow::has_evidence`]）。菜单走这条；面板把滤掉的那些单独收进
+/// 「另有 N 个未验证的口」，想看还能展开。
+fn port_rows(
+    config: &Config,
+    profile_key: &str,
+    current: Option<u16>,
+    include_unverified: bool,
+) -> Vec<PortRow> {
     let Some(profile) = config.profile_for(profile_key) else {
         return Vec::new();
     };
@@ -213,6 +236,9 @@ fn port_rows(config: &Config, profile_key: &str, current: Option<u16>) -> Vec<Po
             presence: src.presence,
         })
         .collect();
+    if !include_unverified {
+        rows.retain(PortRow::has_evidence);
+    }
     rows.sort_by_key(|r| r.value);
     rows
 }
@@ -417,7 +443,7 @@ fn menu_signature(
     use std::fmt::Write as _;
     let mut sig = String::with_capacity(384);
     let _ = write!(sig, "{status}\u{1f}{profile_key}\u{1f}{support}\u{1e}");
-    for row in port_rows(config, profile_key, current) {
+    for row in port_rows(config, profile_key, current, false) {
         let _ = write!(
             sig,
             "{}|{}|{}|{}|{}|{:?}\u{1e}",
@@ -551,7 +577,7 @@ fn build_menu(
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     // 切换子菜单：口列表来自显示器自报的能力表，不是硬编码
-    let rows = port_rows(config, profile_key, current);
+    let rows = port_rows(config, profile_key, current, false);
     let switch_menu = Submenu::new("切换输入源", true);
     if rows.is_empty() {
         let _ = switch_menu.append(&MenuItem::new(
@@ -936,23 +962,27 @@ fn update_snapshot(
         })
         .collect();
 
-    snap.inputs = port_rows(config, profile_key, current)
+    let to_view = |row: &PortRow| panel::InputView {
+        name: row.name.clone(),
+        label: row.label.clone(),
+        value: row.value,
+        current: row.current,
+        presence: match row.presence {
+            Presence::Occupied => "occupied",
+            Presence::Idle => "idle",
+            Presence::Invalid => "invalid",
+            Presence::Unknown => "unknown",
+        }
+        .to_string(),
+        verified: row.verified,
+    };
+    // 面板上默认只列有本机证据的口；其余（固件声明过但没验证、也没信号）
+    // 单独塞进 inputs_hidden，由前端折成一行"另有 N 个…"。
+    let (shown, hidden): (Vec<PortRow>, Vec<PortRow>) = port_rows(config, profile_key, current, true)
         .into_iter()
-        .map(|row| panel::InputView {
-            name: row.name,
-            label: row.label,
-            value: row.value,
-            current: row.current,
-            presence: match row.presence {
-                Presence::Occupied => "occupied",
-                Presence::Idle => "idle",
-                Presence::Invalid => "invalid",
-                Presence::Unknown => "unknown",
-            }
-            .to_string(),
-            verified: row.verified,
-        })
-        .collect();
+        .partition(PortRow::has_evidence);
+    snap.inputs = shown.iter().map(to_view).collect();
+    snap.inputs_hidden = hidden.iter().map(to_view).collect();
 }
 
 fn status_text(switcher: &mut Switcher) -> String {
@@ -1830,7 +1860,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.35",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.36",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
