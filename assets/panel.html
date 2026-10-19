@@ -178,7 +178,8 @@
   <div class="card">
     <h2>局域网对端</h2>
     <div id="peers"><div class="empty">还没发现同一局域网里的另一台机器</div></div>
-    <div class="hint">对端开着本程序就会自动出现。它占哪个口由它自己报告，不用你猜。</div>
+    <div class="hint">对端开着本程序就会自动出现。它报的是<b>它自己那块显示器</b>的输入口，
+      编号和你这台显示器的口不通用 —— 上面的「输入源」只反映本机这块屏。</div>
   </div>
 
   <div class="card">
@@ -287,25 +288,31 @@ function render() {
   }
   document.getElementById('unpairBtn').style.display = snap.paired ? '' : 'none';
 
-  // 主按钮：优先推到对端占的口；本机没显示器时改成"请对端把画面切回来"
+  // 主按钮：只有"本机自己也确认过这个口"才谈得上切过去。
+  // 对端报的是它**自己那块屏**的编号，两块屏的 0x0F/0x12 是各算各的，
+  // 拿别人的编号切自己的屏 = 按下去直接黑屏（实测踩过）。
   const main = document.getElementById('mainSwitch');
   const peer = (snap.peers || []).find(p => p.knows_port);
   const blind = snap.has_display === false;
+  const peerPortLocal = peer && peer.value
+    ? (snap.inputs || []).find(i => i.value === peer.value && !i.current && i.presence === 'occupied')
+    : null;
   if (blind && snap.own_value && (snap.peers || []).length) {
     main.textContent = `请 ${peer ? peer.node : '对端'} 把画面切回本机（0x${snap.own_value.toString(16).toUpperCase().padStart(2, '0')}）`;
     main.dataset.value = snap.own_value;
     main.dataset.action = 'peer';
     main.disabled = false;
-  } else if (peer && peer.value && !blind) {
+  } else if (peerPortLocal) {
     const tail = kvmFollowing() ? '（键鼠跟过去）' : '';
-    main.textContent = `切到 ${peer.node} · ${peer.label || peer.input || '0x' + peer.value.toString(16)}${tail}`;
-    main.dataset.value = peer.value;
-    main.dataset.name = peer.input || '';
+    main.textContent = `切到 ${peer.node} · ${peerPortLocal.label}${tail}`;
+    main.dataset.value = peerPortLocal.value;
+    main.dataset.name = peerPortLocal.name;
     main.dataset.action = 'local';
     main.disabled = false;
   } else if (snap.inputs && snap.inputs.length) {
     const others = snap.inputs.filter(i => !i.current && i.presence !== 'invalid');
-    const cur = others[0] || snap.inputs.find(i => !i.current) || snap.inputs[0];
+    const cur = others.find(i => i.presence === 'occupied')
+      || others[0] || snap.inputs.find(i => !i.current) || snap.inputs[0];
     main.textContent = `切到 ${cur.label}${kvmFollowing() ? '（键鼠跟过去）' : ''}`;
     main.dataset.value = cur.value;
     main.dataset.name = cur.name;
@@ -357,7 +364,7 @@ function render() {
   const count = (snap.inputs || []).length;
   document.getElementById('portHint').textContent = snap.port_note
     ? `上次检测：${snap.port_note}`
-    : (count ? `共 ${count} 个输入口。切过去之后本机的 DDC 通道会断，要从对面那台切回来。` : '');
+    : (count ? `共 ${count} 个输入口，都是这台显示器的。切过去之后本机的 DDC 通道会断，要从对面那台切回来。` : '');
 
   // 对端
   const peers = document.getElementById('peers');
@@ -369,7 +376,7 @@ function render() {
       const el = document.createElement('div');
       el.className = 'port';
       const label = p.knows_port
-        ? `接在 ${p.label || p.input}（0x${p.value.toString(16).toUpperCase().padStart(2, '0')}）`
+        ? `它那块屏当前在 ${p.label || p.input}（0x${p.value.toString(16).toUpperCase().padStart(2, '0')}）`
         : '口未知（它的屏幕此刻不在自己那边）';
       // 对面设了码而本机没设：它会把我们发过去的指令全丢掉，
       // 表现为"点了没反应"，不说清楚会一直找不到原因

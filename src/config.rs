@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::{normalize_model, Capability, DisplayProfile, Presence};
 
-pub const CONFIG_VERSION: u32 = 1;
+/// 配置结构版本。
+///
+/// 1 → 2：清掉旧版从对端广播里抄来的「有主机」标记（见 `Config::migrate`）。
+pub const CONFIG_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Network {
@@ -267,13 +270,49 @@ impl Config {
 
     pub fn load() -> Self {
         let path = Self::path();
-        match fs::read_to_string(&path) {
+        let mut cfg = match fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
             Err(_) => {
                 let mut cfg = Config::default();
                 cfg.node = default_node();
                 cfg
             }
+        };
+        cfg.migrate();
+        cfg
+    }
+
+    /// 老配置的一次性清理。只跑一次（靠 `version` 门控），幂等。
+    ///
+    /// v1→v2：旧版会把对端广播的「我挂在 0x12」写进本机显示器的口表，
+    /// 但每台显示器的口编号是各自固件定义的，跨机器搬过来就是错的 ——
+    /// 表现为一个绿点幽灵口，点「切换」直接黑屏。
+    ///
+    /// 识别依据：`presence=Occupied` 且 `verified=false`。真正切过去过的口
+    /// 一定同时被标成已验证（`record_success` 两个字段一起写），所以这条
+    /// 判据只命中"从来没在本机验证过、却声称有主机"的条目。
+    /// 代价：只跑过扫描、从没手动切过去的口也会回到"未检测"，重扫一次即可。
+    fn migrate(&mut self) {
+        if self.version >= CONFIG_VERSION {
+            return;
+        }
+        let mut cleared = 0usize;
+        for profile in self.monitors.values_mut() {
+            for src in profile.inputs.iter_mut() {
+                if src.presence == Presence::Occupied && !src.verified {
+                    src.presence = Presence::Unknown;
+                    src.checked_at = 0;
+                    cleared += 1;
+                }
+            }
+        }
+        self.version = CONFIG_VERSION;
+        let _ = self.save();
+        if cleared > 0 {
+            crate::tray::log_line(&format!(
+                "已清理 {cleared} 条来自对端的输入口状态：每台显示器的口编号互不相通，\
+                 跨机器抄来的「有主机」是错的"
+            ));
         }
     }
 

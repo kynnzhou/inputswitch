@@ -1235,27 +1235,20 @@ fn inspect(switcher: &Switcher) -> (String, String) {
     (line, detail)
 }
 
-/// 把对端广播的"我挂在某个口"直接记成本地结论。
-///
-/// 这条情报完全免费：对面自己读到的值，我们连 DDC 都不用发。
-/// 所以不用等用户点「扫描输入口」，开机几秒后菜单就会显示
-/// 「DP（Windows 那台）· 有主机」。
-fn absorb_peer_ports(switcher: &mut Switcher, mesh: &Mesh) {
-    let Some(display) = switcher.pick_display(None) else {
-        return;
-    };
-    let items: Vec<(u16, Presence)> = mesh
-        .live_peers()
-        .into_iter()
-        .filter(|p| p.knows_port())
-        .map(|p| (p.own_value, Presence::Occupied))
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    let key = switcher.identity(&display);
-    switcher.config.set_presence(&key, &items);
-}
+// 这里曾经有 absorb_peer_ports：把对端广播的"我挂在某个口"直接写进本机
+// 这块显示器的输入口表。
+//
+// v0.6.35 删掉。原因是它把**别台显示器的编号**搬了过来：VCP 0x60 的取值
+// 是每台显示器固件自己定义的一套编号，对端在它那块屏上是 0x12，写进本机
+// 这块屏就成了"0x12 有主机"——可本机这个口根本没接东西。用户看到的就是
+// 一个绿点幽灵口，点「切换」直接黑屏。
+//
+// 「输入源」这个区域只回答一个问题：**这台显示器**的几个口各自接了什么。
+// 答案只能来自本机的 DDC（自己读、自己切、自己扫）。对端那台机器接在
+// 它自己的显示器上，它的口编号对本机没有任何意义，所以一条都不该进来。
+//
+// 对端的口仍然在广播里（KVM 的 sync_own 要用它防误记），只是不再变成
+// 本机的输入源结论。
 
 /// 工作线程：独占一个 Switcher，串行处理 DDC 指令。
 /// 执行一次切屏，并按结果决定键鼠跟不跟过去。
@@ -1408,7 +1401,6 @@ fn engine_loop(
     let mut last_topology: Vec<String> = Vec::new();
     let start_target = switcher.config.hotkey_target.clone();
     let _ = sync_own(&mut switcher, &mesh);
-    absorb_peer_ports(&mut switcher, &mesh);
     let text = status_text(&mut switcher);
     // 只算一次：写探测要 1 秒，不能跟着状态刷新反复跑
     let mut support = inspect(&switcher).0;
@@ -1459,7 +1451,6 @@ fn engine_loop(
                     *note = report.clone();
                 }
                 let _ = sync_own(&mut switcher, &mesh);
-                absorb_peer_ports(&mut switcher, &mesh);
                 let target = switcher.config.hotkey_target.clone();
                 let mut text = status_text(&mut switcher);
                 if text.is_empty() {
@@ -1480,7 +1471,6 @@ fn engine_loop(
                     last_topology = displays_now;
                 }
                 let current = sync_own(&mut switcher, &mesh);
-                absorb_peer_ports(&mut switcher, &mesh);
                 // 自证收回安全网：VCP 当前值已经是本机的口，而键鼠还在往外
                 // 转发 —— 画面已经回本机了（对面代切、用户按了显示器按钮、
                 // 或对端消息在网络里丢了），键鼠必须立刻回来。
@@ -1840,7 +1830,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.34",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.35",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
