@@ -62,6 +62,15 @@ pub enum Event {
         height: u16,
         along: u16,
         flags: u16,
+        /// 发送端**从哪一侧出的门**（`Side::code()`，`Side::CODE_UNKNOWN`
+        /// 表示旧版对端不带这一位）。
+        ///
+        /// 接收端据此把自己的门口方向定成它的**对面**：隔壁那台从右边
+        /// 出去，我这边必然在它左边。以前这一侧完全靠两边各自配置，
+        /// 有一边配反了就会「刚进门就被当成推出门」，1~2 秒弹回去
+        /// （v0.6.42 实测：Mac 推过去 0.5~2 秒必被交还）。拓扑决定了
+        /// 这件事，不该让人去配。
+        side: u8,
     },
     /// 请求结束控制
     Leave,
@@ -133,11 +142,14 @@ impl Event {
                 height,
                 along,
                 flags,
+                side,
             } => {
                 out.extend_from_slice(&width.to_le_bytes());
                 out.extend_from_slice(&height.to_le_bytes());
                 out.extend_from_slice(&along.to_le_bytes());
                 out.extend_from_slice(&flags.to_le_bytes());
+                // 追加在末尾：旧版对端只读前 8 字节，多出来的直接忽略
+                out.push(side);
             }
             Event::Leave | Event::Ping | Event::Takeback => {}
             Event::Pong { state } => out.push(state),
@@ -183,6 +195,8 @@ impl Event {
                 height: u16::from_le_bytes(rest.get(2..4)?.try_into().ok()?),
                 along: u16::from_le_bytes(rest.get(4..6)?.try_into().ok()?),
                 flags: u16::from_le_bytes(rest.get(6..8)?.try_into().ok()?),
+                // 旧版对端没有这一字节：当作"未知"，接收端继续用自己的配置
+                side: rest.get(8).copied().unwrap_or(Side::CODE_UNKNOWN),
             },
             6 => Event::Leave,
             7 => Event::Ping,
@@ -217,6 +231,28 @@ pub enum Side {
 }
 
 impl Side {
+    /// 协议里编码用的标记：旧版对端不带你想要的这一位
+    pub const CODE_UNKNOWN: u8 = 0xFF;
+
+    pub fn code(&self) -> u8 {
+        match self {
+            Side::Right => 0,
+            Side::Left => 1,
+            Side::Top => 2,
+            Side::Bottom => 3,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Side::Right),
+            1 => Some(Side::Left),
+            2 => Some(Side::Top),
+            3 => Some(Side::Bottom),
+            _ => None,
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
             "right" | "右" => Some(Side::Right),
@@ -492,6 +528,7 @@ mod tests {
                 height: 1080,
                 along: 0x8000,
                 flags: 0,
+                side: Side::Right.code(),
             },
             Event::Leave,
             Event::Ping,

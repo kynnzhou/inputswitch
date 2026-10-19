@@ -387,6 +387,18 @@ impl Capture {
         if on {
             if gw > 0 && gh > 0 {
                 set_pin(ox, oy, gw, gh);
+                log_file(&format!(
+                    "抓取钉扎：工作屏 ({},{}) {}x{} → 光标钉在 ({},{})，允许半径 {}",
+                    ox,
+                    oy,
+                    gw,
+                    gh,
+                    ox + gw / 2,
+                    oy + gh / 2,
+                    PIN_GUARD.load(Ordering::Relaxed)
+                ));
+            } else {
+                log_file(&format!("抓取钉扎：工作屏尺寸未知（{gw}x{gh}），本次不钉扎"));
             }
         } else {
             clear_pin();
@@ -494,6 +506,12 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
             return;
         }
         swallow = true;
+        // `SetCursorPos` 自己产生的那一笔：认领掉，只更新「上一笔位置」，
+        // 不转发。见 WARP_TO 注释 —— 漏这一笔就会凭空给对端一笔几百上千
+        // 点的位移，它的光标被推到屏幕另一头，撞门立刻交还。
+        if wparam == WM_MOUSEMOVE && claim_warp(info.pt) {
+            return;
+        }
         let emitted = match wparam {
             WM_MOUSEMOVE => last_point(info.pt),
             WM_LBUTTONDOWN => Some(Event::Button {
@@ -591,39 +609,84 @@ static LAST_POINT: AtomicIsize = AtomicIsize::new(isize::MIN);
 /// 抓取期间的钉扎点（全局坐标，isize::MIN = 未钉扎）
 static PIN: AtomicIsize = AtomicIsize::new(isize::MIN);
 
-/// 光标与钉扎点偏离超过这么多像素就拽回去。必须远小于钉扎点离边的距离，
-/// 否则还没拽回来光标就又贴边被钳住了。
-const PIN_GUARD: i32 = 64;
-
-/// 记钉扎点并把光标摆过去。
+/// 最近一次 `SetCursorPos` 的目标点和时刻（毫秒）。
 ///
-/// 钉扎点 = 抓取瞬间的光标位置**往屏内收 240 像素**。为什么要离边远：
-/// 钩子拦不住指针移动，光标贴在边上就会被系统钳在最后一列，`pt` 定死，
-/// 之后所有位移都被算成 0 —— 对端收到的只有 ±1 抖动（v0.6.41 的根因，
-/// Mac 日志实锤「账本走 262 点、真实光标动 1.0 点」）。
-fn set_pin(ox: i32, oy: i32, w: i32, h: i32) {
-    let mut pt = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut pt) == 0 {
-            pt = POINT { x: ox + w / 2, y: oy + h / 2 };
-        }
-    }
-    // 边距取屏宽的 1/8 左右，小屏上按 1/3 收，保证内侧还有活动余量
-    let m = (w / 8).min(h / 8).clamp(60, 240);
-    let lo_x = m;
-    let hi_x = (w - m).max(lo_x);
-    let lo_y = m;
-    let hi_y = (h - m).max(lo_y);
-    let x = (pt.x - ox).clamp(lo_x, hi_x) + ox;
-    let y = (pt.y - oy).clamp(lo_y, hi_y) + oy;
-    PIN.store(pack_point(POINT { x, y }), Ordering::Relaxed);
+/// **这是 v0.6.42 的核心修复**：`SetCursorPos` 自己也会产生一笔
+/// WM_MOUSEMOVE。那笔事件到达钩子时，`LAST_POINT` 已经被
+/// `set_last_point` 改成钉扎点了，于是它被算成「上一笔位置 → 钉扎点」
+/// 的位移转发给对端 —— Mac 日志里那笔 **+1785** 就是它（1920 - 135）。
+/// 对端光标被这一笔猛地推到屏幕另一头，撞门 → 立刻交还，用户看到
+/// 的就是「推过去 1 秒被弹回来」+「光标原地抖」。所以必须认领并丢弃。
+static WARP_TO: AtomicIsize = AtomicIsize::new(isize::MIN);
+static WARP_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 允许偏离钉扎点的半径（像素），由 `set_pin` 按屏幕尺寸算好存这里。
+static PIN_GUARD: AtomicI32 = AtomicI32::new(240);
+
+/// 钉扎点离屏心的允许半径 = 屏幕短边 × 这个比例。
+///
+/// 取 1/4 而不是固定 64 像素：钉扎点在屏心，手里有半个屏幕的余量，
+/// 正常人推鼠标根本到不了边界，也就不会频繁 warp（每次 warp 都是一次
+/// 风险）。v0.6.41 用 64 像素、钉扎点又在离边 135 像素处，推四笔就
+/// 撞墙拽回，实测对端收到的是一条 -35,-35,-35… 的死循环。
+const PIN_GUARD_RATIO: f64 = 0.25;
+
+/// 把光标摆到指定点，并登记"这一笔是我们自己造成的"。
+fn warp_to(x: i32, y: i32) {
+    WARP_TO.store(pack_point(POINT { x, y }), Ordering::Relaxed);
+    WARP_MS.store(now_unix_ms(), Ordering::Relaxed);
     unsafe { SetCursorPos(x, y) };
     // 摆位产生的那笔位移不算手的移动
     set_last_point(x, y);
 }
 
+/// 认领「warp 自己产生的那一笔」。命中则只更新上一笔位置、不转发。
+///
+/// 超时兜底：`SetCursorPos` 在位置没变时不会产生事件，登记的点会一直
+/// 留着。超过 60ms 没被认领就作废，免得以后某笔真实事件正好落在附近
+/// 被误吞。
+fn claim_warp(pt: POINT) -> bool {
+    let v = WARP_TO.load(Ordering::Relaxed);
+    if v == isize::MIN {
+        return false;
+    }
+    let age = now_unix_ms().saturating_sub(WARP_MS.load(Ordering::Relaxed));
+    let wx = (v >> 16) as i32;
+    let wy = (v & 0xFFFF) as i16 as i32;
+    if age > 60 {
+        WARP_TO.store(isize::MIN, Ordering::Relaxed);
+        return false;
+    }
+    if (pt.x - wx).abs() <= 2 && (pt.y - wy).abs() <= 2 {
+        WARP_TO.store(isize::MIN, Ordering::Relaxed);
+        set_last_point(wx, wy);
+        return true;
+    }
+    false
+}
+
+/// 记钉扎点并把光标摆过去。
+///
+/// 钉扎点 = **工作屏的正中心**。为什么要离边远：钩子拦不住指针移动，
+/// 光标贴在边上就会被系统钳在最后一列，`pt` 定死，之后所有位移都被算成
+/// 0 —— 对端收到的只有 ±1 抖动（v0.6.41 实测「账本走 262 点、真实光标
+/// 动 1.0 点」）。放屏心而不是"抓着的位置往内收"：抓取瞬间人往往正
+/// 贴着门口推，往里收的那点距离根本不够。
+fn set_pin(ox: i32, oy: i32, w: i32, h: i32) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let ax = ox + w / 2;
+    let ay = oy + h / 2;
+    let guard = ((w.min(h) as f64 * PIN_GUARD_RATIO) as i32).max(48);
+    PIN_GUARD.store(guard, Ordering::Relaxed);
+    PIN.store(pack_point(POINT { x: ax, y: ay }), Ordering::Relaxed);
+    warp_to(ax, ay);
+}
+
 fn clear_pin() {
     PIN.store(isize::MIN, Ordering::Relaxed);
+    WARP_TO.store(isize::MIN, Ordering::Relaxed);
 }
 
 fn pin_point() -> Option<(i32, i32)> {
@@ -640,9 +703,9 @@ fn pin_back_if_drifted(cur: POINT) {
     let Some((ax, ay)) = pin_point() else {
         return;
     };
-    if (cur.x - ax).abs() > PIN_GUARD || (cur.y - ay).abs() > PIN_GUARD {
-        unsafe { SetCursorPos(ax, ay) };
-        set_last_point(ax, ay);
+    let guard = PIN_GUARD.load(Ordering::Relaxed);
+    if (cur.x - ax).abs() > guard || (cur.y - ay).abs() > guard {
+        warp_to(ax, ay);
     }
 }
 

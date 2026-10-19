@@ -399,6 +399,8 @@ impl Kvm {
             height: sh.min(65535) as u16,
             along: 0xFFFF,
             flags: 0,
+            // 跟随画面模式没有门，门口方向留给对端自己决定
+            side: Side::CODE_UNKNOWN,
         });
         (self.log)("键鼠已交给对端（画面在那边）".to_string());
         Ok(())
@@ -640,12 +642,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             height: sh.min(65535) as u16,
                             along,
                             flags: 0,
+                            side: opts.side.code(),
                         });
                         out.send(&Event::Enter {
                             width: sw.min(65535) as u16,
                             height: sh.min(65535) as u16,
                             along,
                             flags: 0,
+                            side: opts.side.code(),
                         });
                         if cur == State::Idle as u8 {
                             (log)("鼠标已越界到对端，Ctrl+Alt+Esc 可以交还".to_string());
@@ -752,6 +756,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let peer_state_rx = peer_state.clone();
         let reclaim_rx = last_reclaim_ms.clone();
         thread::spawn(move || {
+            // 门口方向可变：每当对端带着它自己的出门侧过来，就按拓扑改一次。
+            // 两台屏水平相邻时，它从右边出去 ⇒ 我这边必然在它左边 —— 这是
+            // 几何定理，不该让两台各自配、配反了就 1 秒弹回去。
+            let mut side = side;
             let inject = plat::Inject::new();
             if mode == Mode::Edge {
                 // 多屏共享：注入限制在"本机工作屏"内。工作屏不在这里定 ——
@@ -835,10 +843,26 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         width,
                         height,
                         along,
+                        side: peer_side,
                         ..
                     } => {
                         if width > 0 && height > 0 {
                             sender_size = (width as f64, height as f64);
+                        }
+                        // 对端带了自己的出门侧：本机门口 = 它的对面。
+                        // 这一条同时兜住「两台配置里 side 各配一半」的情况
+                        //（v0.6.42 实测：Mac→Windows 每 0.5~2 秒就被交还，
+                        // 就是因为 Windows 那边把门口当成了自己出门的那侧）。
+                        if let Some(ps) = Side::from_code(peer_side) {
+                            let want = ps.opposite();
+                            if want != side {
+                                side = want;
+                                (log)(format!(
+                                    "门口方向按对端校正：对端从 {} 出门 → 本机门口改到 {}",
+                                    ps.as_str(),
+                                    want.as_str()
+                                ));
+                            }
                         }
                         if state.load(Ordering::Relaxed) == State::Sending as u8 {
                             if mode == Mode::Edge {
