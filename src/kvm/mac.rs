@@ -550,15 +550,21 @@ impl Capture {
                         y: h - 16.0,
                     },
                 };
-                // 关键（v0.6.32）：warp 之后系统会在 **0.25 秒内忽略硬件
+                // 关键（v0.6.34）：warp 之后系统会在 **0.25 秒内忽略硬件
                 // 鼠标事件** —— Apple 没写进文档，但 Ventura/Sonoma/
                 // Sequoia 全都在，Hammerspoon 为此专门开过 issue。
                 // 用户感知就是「从 Windows 推回 Mac，光标先冻一下才跟着手
                 // 走」；而反方向（Mac→Windows）本机不做 warp，所以从不卡 ——
                 // 「一边快一边慢」的根源就在这里。
-                // 修法：抑制间隔挂在事件源上，先把 warp 专用源的抑制间隔
-                // 清零，再 warp；最后补一笔 associate(true) 把 warp 隐式
-                // 留下的断开状态收干净。
+                //
+                // **只在这一瞬间放开，摆完位立刻复原 0.25**：那个抑制窗
+                // 平时还在兼职压着另一件东西 —— 转发期间每笔位移都要靠
+                // `CGDisplayMoveCursorToPoint` 把光标拽回钉扎点，拽回会
+                // 产生一笔**反方向**的 mouse-moved；窗口一旦长期敞开，它
+                // 就会被自己的 HID 钩子当成手移转发给对端（日志实锤：
+                // v0.6.31 的位移流 `7,0 3,-1 12,-1 7,0…` 单向平滑，
+                // 敞开之后变成 `3,0 -6,0 1,0 2,0 -1,0…` 正负交替）——
+                // 对端光标被推回去再弹回来，就是「抖、不跟手」。
                 let src = self.warp_source as CGEventSourceRef;
                 if !src.is_null() {
                     CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0);
@@ -569,6 +575,10 @@ impl Capture {
                 CGAssociateMouseAndMouseCursorPosition(false);
                 CGWarpMouseCursorPosition(spot);
                 CGAssociateMouseAndMouseCursorPosition(true);
+                if !src.is_null() {
+                    // 复原：下一次转发期间钉扎回中的反向量继续被压住
+                    CGEventSourceSetLocalEventsSuppressionInterval(src, 0.25);
+                }
             }
         }
     }
