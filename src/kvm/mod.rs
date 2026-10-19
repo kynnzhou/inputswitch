@@ -147,6 +147,15 @@ const ENTRY_MARGIN: f64 = 16.0;
 /// 否则进门落点本身就贴着门边，稍微往外推就交还，刚进来就被弹回去
 /// —— Deskflow 的 avoidJumpZone 处理的就是这个问题。
 const EDGE_REARM_DIST: f64 = 32.0;
+/// 推门交还要累计朝门外推这么远（点，按屏宽缩放）才认账。
+///
+/// 旧实现要求"顶住门边 300ms"，纯时间判据 —— 手都顶到墙上了程序还要
+/// 再等满 300 毫秒，用户感知就是"Windows 回 Mac 要顿一下"，而
+/// Mac→Windows 是撞边即走，两边手感不对称。
+///
+/// 改成累计位移后：一次果断的推门三五十毫秒就够（60~125Hz 的位移流里
+/// 几笔就到阈值），而扫过门口那一两笔杂音攒不满 —— 既快又不会误切。
+const RETURN_PUSH: f64 = 26.0;
 
 /// 抓取侧发来的消息
 #[derive(Clone, Debug)]
@@ -678,9 +687,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             // 进门时刻：交还判定要加冷却 —— 刚进门那一两秒手还在
             // 门口区域惯性摆动，不算"推门回去"
             let mut enter_ms: u64 = 0;
-            // 顶住门边的起始时刻（0=没在顶）：交还需要持续顶住 300ms，
-            // 光标扫过/抖过门边不算
+            // 顶住门边的起始时刻（0=没在顶）：日志用
             let mut edge_hold_ms: u64 = 0;
+            // 朝门外累计推了多少点（见 RETURN_PUSH）：交还的**主判据**。
+            // 离开门边就清零，所以只统计"贴着门还在往外推"的那一段。
+            let mut out_push: i32 = 0;
             // 进门后前 30 笔位移的采样串（诊断「谁把光标按在门口」）
             let mut motion_sample = String::new();
             // 上次交还时刻：交还后 2 秒内不再触发交还 —— 弹跳循环
@@ -1008,7 +1019,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // Follow 模式不判断这个 —— 那边没有"边缘"概念，
                         // 交还是靠画面切回来或热键。
                         if mode == Mode::Edge {
-                            if let Event::Motion { dx, dy } = ev {
+                            // 用**缩放后**的位移（to_inject）：out_push 的阈值
+                            // 是按本机屏幕算的，拿对端的原始 delta 记账会差一
+                            // 整个缩放比（4K 被控端刚好差一倍）。
+                            if let Event::Motion { dx, dy } = to_inject {
                                 if let Some((x, y)) = inject.cursor() {
                                     let (w, h) = inject.screen();
                                     // 武装/交还的距离都按屏幕宽度缩放：4K 物理像素屏
@@ -1031,22 +1045,43 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                             edge_armed = true;
                                         }
                                         edge_hold_ms = 0;
+                                        out_push = 0;
                                     } else if event::hit_edge(side, x, y, w, h) {
-                                        // 交还手感（Barrier 同款）：光标要**顶住**
-                                        // 门边 300ms 才算"推回去"——60Hz 位移流里
-                                        // 光标在门口扫过/抖一抖必然出现朝外的一笔
-                                        //（v0.6.23 的单笔 dx<0 判据就是被这个打穿
-                                        // 的），顶住计时才能挡住误切。
+                                        // 交还判据（v0.6.30 重做）：**累计朝门外
+                                        // 推了多远**，不再"顶住 300ms"。
+                                        //
+                                        // 纯时间判据的死穴是手感：手已经顶到墙
+                                        // 上了，程序还要再等满 300 毫秒才认，
+                                        // 而反方向（Mac→Windows）是撞边即走 ——
+                                        // 用户感知就是"回来的时候卡一下"。
+                                        //
+                                        // 按位移记账后，一次果断推门只需三五十
+                                        // 毫秒；门口扫过的一两笔杂音（每笔 2~8
+                                        // 点）攒不到阈值，误切照样挡住。
+                                        let outward = match side {
+                                            Side::Left => -dx,
+                                            Side::Right => dx,
+                                            Side::Top => -dy,
+                                            Side::Bottom => dy,
+                                        };
+                                        if outward > 0 {
+                                            out_push += outward;
+                                        }
                                         let now = now_ms();
                                         if edge_hold_ms == 0 {
                                             edge_hold_ms = now;
-                                        } else if now.saturating_sub(edge_hold_ms) >= 300
-                                            && now.saturating_sub(enter_ms) >= 1000
+                                        }
+                                        if out_push as f64 >= RETURN_PUSH * scale
+                                            // 进门 0.5 秒内不算：手还在门口惯性里
+                                            && now.saturating_sub(enter_ms) >= 500
                                             // 交还后 2 秒内不重复交还：打断
                                             // 门口弹跳循环（见变量注释）
                                             && now.saturating_sub(last_giveback_ms) >= 2000
                                         {
+                                            let held = now.saturating_sub(edge_hold_ms);
+                                            let pushed = out_push;
                                             edge_hold_ms = 0;
+                                            out_push = 0;
                                             last_giveback_ms = now;
                                             release_local(&inject, &mut pressed);
                                             // 单发 UDP 会丢：丢一包对端就卡在 Sending
@@ -1063,13 +1098,15 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                                 .map(|(lx, ly)| format!("{lx:.0},{ly:.0}"))
                                                 .unwrap_or_else(|| "?".to_string());
                                             (log)(format!(
-                                                "光标顶住门边 0.3 秒（真实 {x:.0},{y:.0} / 账本 {ledger}，进门 {:.1}s），控制权已交还",
+                                                "推门交还（真实 {x:.0},{y:.0} / 账本 {ledger}，推了 {pushed} 点 {held}ms，进门 {:.1}s）",
                                                 now.saturating_sub(enter_ms) as f64 / 1000.0,
                                             ));
                                         }
                                     } else {
-                                        // 离开门边：顶住计时重置
+                                        // 离开门边：累计位移与计时都清零 —— 攒的是
+                                        // "这一顶"的量，不是历史总量
                                         edge_hold_ms = 0;
+                                        out_push = 0;
                                     }
                                 }
                             }

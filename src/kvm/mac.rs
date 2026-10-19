@@ -460,6 +460,11 @@ impl Capture {
             // 无条件重申关联状态：幂等调用，顺带自愈历史遗留的错位
             CGAssociateMouseAndMouseCursorPosition(!on);
         }
+        // 交还时的落点要沿用"出门时的高度"，所以先把钉扎点取下来再清空。
+        // 钉扎点就是抓取那一刻光标的真实位置 —— 用户从哪个高度推出去的，
+        // 回来就落回哪个高度。以前一律落在 h/2（屏幕正中），回来那一下
+        // 光标会从半空跳一下，配合交还延迟就是"顿一下再蹦过来"的观感。
+        let released_spot = self.shared.lock().ok().and_then(|s| s.pin);
         if on {
             // 开钉扎：把当前位置记为钉扎点。已经在钉扎中（心跳看守重申）
             // 就保持原钉扎点不动 —— 换点的话防线失效期间光标会
@@ -501,21 +506,29 @@ impl Capture {
                 let w = self.width.load(Ordering::Relaxed) as f64 / 1000.0;
                 let h = self.height.load(Ordering::Relaxed) as f64 / 1000.0;
                 let side = self.shared.lock().map(|s| s.side).unwrap_or(Side::Right);
+                // 沿门轴坐标沿用出门时的位置（released_spot），越界或缺失才
+                // 退回屏幕中点。夹一下范围，别把光标甩到屏幕外。
+                let along_y = released_spot
+                    .map(|(_, y)| y.clamp(16.0, (h - 16.0).max(16.0)))
+                    .unwrap_or(h / 2.0);
+                let along_x = released_spot
+                    .map(|(x, _)| x.clamp(16.0, (w - 16.0).max(16.0)))
+                    .unwrap_or(w / 2.0);
                 let spot = match side {
                     Side::Right => CGPoint {
                         x: w - 16.0,
-                        y: h / 2.0,
+                        y: along_y,
                     },
                     Side::Left => CGPoint {
                         x: 16.0,
-                        y: h / 2.0,
+                        y: along_y,
                     },
                     Side::Top => CGPoint {
-                        x: w / 2.0,
+                        x: along_x,
                         y: 16.0,
                     },
                     Side::Bottom => CGPoint {
-                        x: w / 2.0,
+                        x: along_x,
                         y: h - 16.0,
                     },
                 };
