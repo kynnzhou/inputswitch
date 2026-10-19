@@ -49,7 +49,8 @@ pub struct Snapshot {
     pub peers: Vec<PeerView>,
     pub inputs: Vec<InputView>,
     /// 固件声明过、但本机从没验证过也没有任何信号的口。
-    /// 默认不展示 —— 它们可能连物理接口都没有，列出来会被当成"本机的输入源"。
+    /// 只给 `/api/state` 排查用，界面上一律不展示 —— 它们可能连物理接口
+    /// 都没有，列出来会被当成"本机的输入源"。
     #[serde(default)]
     pub inputs_hidden: Vec<InputView>,
     /// 正在进行的传输，空串表示空闲

@@ -213,8 +213,10 @@ impl PortRow {
 /// 不需要改一行代码 —— 这就是"通用"的落点。
 ///
 /// `include_unverified = false` 时滤掉没有任何本机证据的口（见
-/// [`PortRow::has_evidence`]）。菜单走这条；面板把滤掉的那些单独收进
-/// 「另有 N 个未验证的口」，想看还能展开。
+/// [`PortRow::has_evidence`]）。菜单和面板都走这条：这种行不是"本机的
+/// 输入源"，只是固件报的编码，露出来就会误导。真要用到它们有两条正路 ——
+/// 某个口接了新设备就扫一次（扫到即出现），整块换了显示器就重新检测
+/// （拓扑变化时也会自动检测一次，见 `Command::Heartbeat`）。
 fn port_rows(
     config: &Config,
     profile_key: &str,
@@ -976,8 +978,9 @@ fn update_snapshot(
         .to_string(),
         verified: row.verified,
     };
-    // 面板上默认只列有本机证据的口；其余（固件声明过但没验证、也没信号）
-    // 单独塞进 inputs_hidden，由前端折成一行"另有 N 个…"。
+    // 面板只列有本机证据的口；其余（固件声明过但没验证、也没信号）留在
+    // inputs_hidden 里仅供 /api/state 排查，界面上一律不出现 —— 包括不再
+    // 提供"仍然显示"的入口。要用它们：接了新设备就扫描，换显示器就重新检测。
     let (shown, hidden): (Vec<PortRow>, Vec<PortRow>) = port_rows(config, profile_key, current, true)
         .into_iter()
         .partition(PortRow::has_evidence);
@@ -1429,6 +1432,8 @@ fn engine_loop(
     let mut last_push = String::new();
     // 上一轮见到的显示器名集合，心跳里用来发现拓扑变化（零 I2C 开销）
     let mut last_topology: Vec<String> = Vec::new();
+    // 拓扑刚变过 → 等 DDC 静默期过去再自动检测（见 Heartbeat）
+    let mut pending_detect: Option<Instant> = None;
     let start_target = switcher.config.hotkey_target.clone();
     let _ = sync_own(&mut switcher, &mesh);
     let text = status_text(&mut switcher);
@@ -1499,6 +1504,32 @@ fn engine_loop(
                 if displays_now != last_topology {
                     switcher.suppress_ddc(Duration::from_secs(4));
                     last_topology = displays_now;
+                    // 拓扑变了有两种可能：画面切走又回来（同一台显示器），
+                    // 或者真的**换了台显示器**（拔插 / 换 KVM 口）。
+                    // 后者必须按新显示器自己的能力表重新建表 —— 这正是用户
+                    // 心智里的"先检测显示器，再列它的输入源"。现在就做不行：
+                    // 链路还在重新协商，读能力表会拿到空值并被缓存住。
+                    pending_detect = Some(Instant::now());
+                }
+                // 静默期一过补一次自动检测：只在这台显示器还没建过档、
+                // 或者建过但一个口都没读到时才真去读。已有的表（哪怕只有
+                // 实测出来的几个口）一律不动，绝不因为一次拔插就重置结论。
+                if let Some(t0) = pending_detect {
+                    if t0.elapsed() >= Duration::from_secs(5) {
+                        pending_detect = None;
+                        let needs = switcher.displays().iter().any(|d| {
+                            let key = switcher.identity(d);
+                            switcher
+                                .config
+                                .profile_for(&key)
+                                .map(|p| p.inputs.is_empty())
+                                .unwrap_or(true)
+                        });
+                        if needs {
+                            let report = switcher.rescan();
+                            log_line(&format!("换了显示器？自动检测：{report}"));
+                        }
+                    }
                 }
                 let current = sync_own(&mut switcher, &mesh);
                 // 自证收回安全网：VCP 当前值已经是本机的口，而键鼠还在往外
@@ -1860,7 +1891,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.36",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.37",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

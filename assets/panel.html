@@ -134,7 +134,6 @@
     <h2>输入源</h2>
     <div id="ports" class="ports"><div class="empty">读取中…</div></div>
     <div class="hint" id="portHint"></div>
-    <div class="hint" id="portsHidden"></div>
   </div>
 
   <div class="card">
@@ -232,9 +231,6 @@
 <script>
 let snap = null;
 let busy = false;
-/// 用户点过"仍然显示未验证的口"后，本页一直保持展开（服务端每次轮询都会重新
-/// 只给可见列表，所以这个选择必须记在前端）
-let hiddenRevealed = false;
 /// 用户动过输入框就别再被后台轮询覆盖，否则清空的码会自己弹回来
 let codeDirty = false;
 
@@ -250,13 +246,6 @@ function post(path) {
   api(path).then(pull);
 }
 
-/// 展开"固件声明但没验证过"的那几个口。只是显示层的事，不改配置。
-function revealHidden() {
-  hiddenRevealed = true;
-  render();
-  return false;
-}
-
 async function pull() {
   try {
     const res = await fetch('/api/state', { cache: 'no-store' });
@@ -269,11 +258,6 @@ async function pull() {
 
 function render() {
   if (!snap) return;
-  // 用户点过"仍然显示"，就把隐藏的口并回列表（服务端每次只给可见的）
-  if (hiddenRevealed && (snap.inputs_hidden || []).length) {
-    snap.inputs = (snap.inputs || []).concat(snap.inputs_hidden);
-    snap.inputs_hidden = [];
-  }
   document.getElementById('node').textContent = snap.node || '';
 
   const banner = document.getElementById('pairBanner');
@@ -378,24 +362,17 @@ function render() {
   renderKvm();
 
   const count = (snap.inputs || []).length;
-  document.getElementById('portHint').textContent = snap.port_note
+  const base = snap.port_note
     ? `上次检测：${snap.port_note}`
-    : (count ? `共 ${count} 个输入口，都是这台显示器的。切过去之后本机的 DDC 通道会断，要从对面那台切回来。` : '');
-
-  // 固件声明过、本机从没验证过也没有信号的口：默认不列。
-  // 厂商常把同一块面板所有 SKU 的编码都写进能力表，机器上未必真有那个接口；
-  // 列出来只会被读成"本机的输入源"，纯噪音。
-  const hiddenPorts = snap.inputs_hidden || [];
-  const more = document.getElementById('portsHidden');
-  if (hiddenPorts.length) {
-    const codes = hiddenPorts
-      .map(i => '0x' + i.value.toString(16).toUpperCase().padStart(2, '0'))
-      .join('、');
-    more.innerHTML = `另有 ${hiddenPorts.length} 个未验证的口（${codes}）：
-      <a href="#" onclick="revealHidden();return false">仍然显示</a>`;
-  } else {
-    more.innerHTML = '';
-  }
+    : (count ? `共 ${count} 个输入口，都是这台显示器上确认过的。切过去之后本机的 DDC 通道会断，要从对面那台切回来。` : '');
+  // 固件声明过、本机从没验证过也没有信号的口不列：厂商常把同一块面板所有
+  // SKU 的编码都写进能力表，机器上未必真有那个接口，列出来只会被读成"本机
+  // 的输入源"。也不留"仍然显示"这种后门 —— 真要用了有两条正路：
+  //   某个口接上了新设备 → 点「扫描哪个口有主机」，扫到就自动出现；
+  //   整块换了显示器     → 点「重新检测显示器」，按新显示器的能力表重新建表。
+  document.getElementById('portHint').textContent = base
+    ? `${base}　某个口没出现：接上设备后点「扫描哪个口有主机」；换了显示器：点「重新检测显示器」。`
+    : '';
 
   // 对端
   const peers = document.getElementById('peers');
