@@ -275,7 +275,7 @@ fn kvm_boot(
     }
     if !dead.is_empty() {
         log_line(&format!(
-            "{} 不在线，那几条边只做提醒：推过去不会有反应（配置保留）",
+            "{} 不在线，那几条边仍占位：推过去只会提示「没有回应，不越界」，不会吞键鼠（配置保留）",
             dead.join("、")
         ));
     }
@@ -2114,7 +2114,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.47",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.48",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

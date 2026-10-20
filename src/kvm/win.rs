@@ -579,12 +579,27 @@ impl Capture {
         // 掩码也一并收成这一条：被控期间"把光标推到门口抢回"走的是同一个
         // 掩码（Shared 里那个 u8 是构造时定死的，这里直接改它 —— 钩子每次
         // 都在同一把锁里读，不存在半更新）。配置里那条边要是反的，交还落点
-        // 对了、抢回方向仍然是反的。P4 起掩码由链路表生成，会话结束时需要
-        // 用链路表重新覆盖它。
+        // 对了、抢回方向仍然是反的。P4 起链路表是唯一真源：这里收窄只是
+        // **临时**状态，会话结束后心跳会用 `set_mask` 把链路表那张铺回来。
         if let Ok(guard) = STATE.lock() {
             if let Some(m) = guard.as_ref() {
                 if let Ok(mut s) = m.lock() {
                     s.sides = side.bit();
+                }
+            }
+        }
+    }
+
+    /// 把掩码整张换掉（会话结束后恢复链路表那张）。
+    ///
+    /// 与 `set_portal` 分工：那边是"这一场该从哪条边抢回"，这里是"平时
+    /// 哪几条边通向邻居"。两者共用同一个 `sides` 字段，顺序即语义 ——
+    /// 所以只有心跳在**非 Receiving** 时调这里，被控期间不敢碰。
+    pub fn set_mask(&self, mask: u8) {
+        if let Ok(guard) = STATE.lock() {
+            if let Some(m) = guard.as_ref() {
+                if let Ok(mut s) = m.lock() {
+                    s.sides = mask;
                 }
             }
         }

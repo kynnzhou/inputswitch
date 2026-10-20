@@ -1781,6 +1781,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let reclaim_gd = last_reclaim_ms.clone();
         let links_gd = links.clone();
         let active_gd = active.clone();
+        // 链路表那张掩码一起带走：被控期间平台层会把它收窄成"抢回那条边"，
+        // 会话结束后得铺回来（见下面的掩码恢复）
+        let mask_gd = sides_mask;
         thread::spawn(move || {
             let mut warned = false;
             // 状态错位自愈的跟踪：进入当前状态的时间、对端最近一次报告
@@ -1876,6 +1879,24 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // CGAssociate(true)，顺手把 pin 清空。每 0.8 秒一次，
                         // 残留错位最多活一个心跳周期。
                         c.set_grabbing(false);
+                    }
+                }
+
+                // ---- 掩码恢复 ----
+                // 收到 Enter 时平台层把掩码收窄成"对端所在的那条边"，为的是
+                // 让被控期间「朝门口推 = 抢回」的方向跟着校正过的门走。
+                // 但那张掩码是共享的：不铺回来，交还之后**其余几条边就永久
+                // 推不出去了** —— 单链路时收的正好是唯一那条边，看不出来；
+                // 一机配多台时表现为"去过一次 A，之后从 B 那条边推没反应"。
+                //
+                // 放在心跳里做而不是每个退出路径各写一遍：退出路径有六条
+                //（Leave / Takeback / 推门交还 / 热键 / 错位自愈 / 静音看守），
+                // 漏一条就是一个只在多机下复现的幽灵 bug。
+                // Receiving 期间不动（那正是抢回要用的收窄掩码）；Sending
+                // 期间铺开无害 —— 抓取着的时候钩子根本不判边缘。
+                if let Some(c) = capture.as_ref() {
+                    if state.load(Ordering::Relaxed) != State::Receiving as u8 {
+                        c.set_mask(mask_gd);
                     }
                 }
 
