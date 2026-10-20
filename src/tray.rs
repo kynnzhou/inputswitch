@@ -1327,6 +1327,11 @@ fn update_snapshot(
                 state: handle.state().label().to_string(),
                 peer_alive: handle.peer_alive(),
                 active: handle.active_node().unwrap_or("").to_string(),
+                // 两个布尔都由后端算：面板不该自己拿 mode/role 去推，
+                // 那套判据（links[0] 的 mode）跟 do_switch 用的
+                // has_follow_link()（任一链路）压根不是一回事
+                follow_link: handle.has_follow_link(),
+                will_follow: handle.has_follow_link() && handle.can_capture(),
                 links: handle
                     .links()
                     .iter()
@@ -1353,6 +1358,16 @@ fn update_snapshot(
             state: "未启动".to_string(),
             peer_alive: false,
             active: String::new(),
+            // 没起来时按**配置**判：摆位图和提示必须跟重启后的行为一致，
+            // 否则用户会照着错的图去拖（地址/模式在 v3 里是链路级字段，
+            // 空 mode 表示沿用 kvm.mode，所以要用 mode_or 折算）
+            follow_link: config
+                .kvm
+                .links
+                .iter()
+                .any(|l| l.mode_or(&config.kvm.mode) == "follow"),
+            // 没开着就没有任何东西会跟
+            will_follow: false,
             // 没启动时也要把配置里的链路画出来，否则用户看不到、也就改不了
             links: config
                 .kvm
@@ -1732,6 +1747,31 @@ fn inspect(switcher: &Switcher) -> (String, String) {
 // 对端的口仍然在广播里（KVM 的 sync_own 要用它防误记），只是不再变成
 // 本机的输入源结论。
 
+/// 这次切屏给键鼠留下了什么结果 —— 成功文案的**唯一**依据。
+///
+/// 原来是 `handed / reclaimed / stranded` 三个互不相干的 bool：任何一个
+/// 分支漏设一个，就会落到"（键鼠已跟过去）"这个默认结论上。实测暴露的
+/// 三处谎报（Receiving 下 `follow()` 空转被当成功、`value == own` 时
+/// `give_back()` 对 Receiving 是 no-op、纯 edge 拓扑根本没交接）全是
+/// 同一个成因。改成枚举后，编译器逼着每个分支表态。
+#[derive(PartialEq)]
+enum Keys {
+    /// 没动过，键鼠本来就在本机
+    Home,
+    /// 共用键鼠没开
+    Off,
+    /// 这次真的开始转发了
+    Sent,
+    /// 键鼠本来就在对端手上，这次没有重复交接
+    AtPeer(String),
+    /// 键鼠在对端，我们刚发了 Takeback —— 只能承诺"请了"，不能断言收回
+    AskBack,
+    /// 真的从转发里收回本机（`give_back` 生效）
+    Back,
+    /// 想交没交成
+    Stranded(String),
+}
+
 /// 工作线程：独占一个 Switcher，串行处理 DDC 指令。
 /// 执行一次切屏，并按结果决定键鼠跟不跟过去。
 ///
@@ -1750,33 +1790,80 @@ fn do_switch(
 
     // ---- 顺序很关键：**先交键鼠，再切画面** ----
     //
-    // 反过来（先切画面、再交键鼠）会有一个死局：画面已经切走之后，本机的
-    // DDC 通道就断了，如果这时候发现键鼠没交出去，恢复起来要绕远路。
+    // 反过来（先切画面、再交键鼠）是条死路：画面切走之后本机既读不到也
+    // 写不了 DDC（实测 9/9 失败），而面板也跟着看不见了 —— 用户没有
+    // 任何地方可以点"把键鼠交过去"。所以这一屏的键鼠必须在这里、在
+    // 画面离开之前就交出去。
     //
-    // 但键鼠交不出去时**不再拒绝切换**：键鼠物理上接在本机，
-    // 就算画面切走了，本机热键照样能切回来，不存在真正的死局。
-    // 硬拒切的代价是"开了共用键鼠就连画面都切不了"（实测反馈），
-    // 所以现在降级放行：画面照切，状态里说明键鼠留在本机。
-    let mut handed = false;
-    let mut stranded: Option<String> = None;
-    let mut reclaimed = false;
+    // 但键鼠交不出去时**不拒绝切换**：硬拒切的代价是"开了共用键鼠就连
+    // 画面都切不了"（实测反馈）。降级放行，只是把真实结果说清楚。
+    let mut keys = Keys::Home;
     if follow {
         match kvm_now() {
-            // 多屏共享链路两边对等，切屏跟键鼠没有关系，别乱动；
-            // 但只要配了任意一条"跟随画面"链路，切走时就该跟过去
-            Some(handle) if value != own && handle.has_follow_link() => {
-                match handle.follow() {
-                    Ok(()) => handed = true,
-                    Err(err) => stranded = Some(err),
-                }
-            }
+            // 共用键鼠没开：键鼠物理上在本机，但用户以为它会跟 —— 说清楚
+            None => keys = Keys::Off,
+
             // 切回自己占的口（对端请我们切回去，或热键目标就是本机）：
             // 键鼠必须回本机，这跟「交给对端」是相反方向的同一个动作
-            Some(handle) if value == own => {
-                handle.give_back();
-                reclaimed = true;
+            Some(handle) if value == own => match handle.state() {
+                // 只有真的握着键鼠时 give_back 才动（release 只处理 Sending）
+                kvm::State::Sending => {
+                    keys = if handle.give_back() {
+                        Keys::Back
+                    } else {
+                        Keys::Home
+                    };
+                }
+                // 被控时 give_back() 是**空操作**，原来却照样说「已收回本机」。
+                // 能要回来的只有 Takeback，而它是异步的：对端收到才松手，
+                // 本机不能替它宣布已经收回。
+                kvm::State::Receiving => {
+                    keys = if handle.take_back_from_peer("画面切回本机") {
+                        Keys::AskBack
+                    } else {
+                        Keys::Home
+                    };
+                }
+                kvm::State::Idle => keys = Keys::Home,
+            },
+
+            // 切到对端，且配了"跟随画面"链路（共用一块屏的那台）
+            Some(handle) if handle.has_follow_link() => match handle.state() {
+                kvm::State::Idle => match handle.follow() {
+                    Ok(true) => keys = Keys::Sent,
+                    // 刚好被别的线程抢先建了会话：照实说键鼠在哪台
+                    Ok(false) => {
+                        keys = Keys::AtPeer(
+                            handle.active_node().unwrap_or("对端").to_string(),
+                        );
+                    }
+                    Err(err) => keys = Keys::Stranded(err),
+                },
+                // 已经在往外送：follow() 这时是空转，不能当"刚交过去"
+                kvm::State::Sending => {
+                    keys = Keys::AtPeer(handle.active_node().unwrap_or("对端").to_string());
+                }
+                // 键鼠在对端手上（它在控制本机）。画面要切到对面去，得先
+                // 请它松手，否则它的按键还会继续打进本机。
+                kvm::State::Receiving => {
+                    keys = if handle.take_back_from_peer("切到对端前先收回键鼠") {
+                        Keys::AskBack
+                    } else {
+                        Keys::AtPeer("对端".to_string())
+                    };
+                }
+            },
+
+            // 没有"跟随画面"链路（多屏共享）：切画面跟键鼠无关，一律不动。
+            // 但**不能**因此说"键鼠已跟过去" —— 原来是这里默认成的。
+            Some(handle) => {
+                keys = match handle.state() {
+                    kvm::State::Idle => Keys::Home,
+                    kvm::State::Sending | kvm::State::Receiving => {
+                        Keys::AtPeer(handle.active_node().unwrap_or("对端").to_string())
+                    }
+                };
             }
-            _ => {}
         }
     }
 
@@ -1796,10 +1883,13 @@ fn do_switch(
     // 就不能用」）。所以模糊失败时键鼠留在对端不动；真没切过去的话，
     // 用户按热键（Ctrl+Alt+Esc）收回兜底，转发中热键实测可用。
     let mut handed_ambiguous = false;
-    if handed && !outcome.ok {
+    if keys == Keys::Sent && !outcome.ok {
         if outcome.definite {
+            // 确凿失败：画面明明在本机，键鼠必须立刻回本机
             if let Some(handle) = kvm_now() {
-                handle.give_back();
+                if handle.give_back() {
+                    keys = Keys::Back;
+                }
             }
         } else {
             switcher.suppress_ddc(Duration::from_secs(4));
@@ -1807,31 +1897,40 @@ fn do_switch(
         }
     }
 
+    let hotkey = pretty_hotkey(&switcher.config.hotkey);
     if outcome.ok || handed_ambiguous {
         if handed_ambiguous {
-            format!(
+            return format!(
                 "键鼠已交给对端；显示器切换没能确认（{}）。\
-                 若画面还在本机，按热键 {} 可收回键鼠",
-                outcome.message,
-                pretty_hotkey(&switcher.config.hotkey)
-            )
-        } else if reclaimed {
-            format!(
-                "画面已切回 {name}（键鼠已收回本机）"
-            )
-        } else {
-            match stranded {
-                Some(err) => format!(
-                    "已切到 {name}，但键鼠留在本机（{err}）。\
-                     按热键 {} 可把画面切回来",
-                    pretty_hotkey(&switcher.config.hotkey)
-                ),
-                None => format!("已切到 {name}（键鼠已跟过去）"),
-            }
+                 若画面还在本机，按热键 {hotkey} 可收回键鼠",
+                outcome.message
+            );
         }
-    } else if reclaimed && !outcome.ok {
+        match keys {
+            Keys::Sent => format!("已切到 {name}（键鼠已跟过去）"),
+            Keys::AtPeer(node) => {
+                format!("已切到 {name}；键鼠已经在 {node}，这次没有重复交接")
+            }
+            Keys::AskBack => {
+                format!("已切到 {name}；键鼠在对端，已请它交还 —— 对面收到后就能用")
+            }
+            // 只有画面回到本机口，才谈得上"切回"
+            Keys::Back if value == own => format!("画面已切回 {name}（键鼠已收回本机）"),
+            Keys::Back => format!("已切到 {name}（键鼠已收回本机）"),
+            Keys::Stranded(err) => format!(
+                "已切到 {name}，但键鼠留在本机（{err}）。按热键 {hotkey} 可把画面切回来"
+            ),
+            Keys::Off => format!("已切到 {name}（共用键鼠没开，键鼠留在本机）"),
+            Keys::Home if value == own => format!("画面已切回 {name}（键鼠就在本机）"),
+            Keys::Home if follow => format!("已切到 {name}（键鼠留在本机）"),
+            Keys::Home => format!("已切到 {name}（只切画面，键鼠留在本机）"),
+        }
+    } else if keys == Keys::Back {
         // 切回本机时键鼠已经收回来了，画面切没切成是另一回事，别吓唬人
         format!("键鼠已收回本机；{}", outcome.message)
+    } else if keys == Keys::AskBack {
+        // Takeback 已发，但对端还没确认 —— 不能替它宣布"已收回"
+        format!("已请对端交还键鼠；{}", outcome.message)
     } else {
         outcome.message
     }
@@ -2432,7 +2531,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.57",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.58",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2722,6 +2821,15 @@ pub fn run() -> ! {
                     log_line(&status);
                 }
                 Action::KvmMode(mode) => {
+                    // ⚠️ 面板上**已经没有这个入口**（v0.6.58 删掉了「跟随画面 /
+                    // 多屏共享」两个全局按钮）。留着只为 CLI / 老调用方兼容。
+                    //
+                    // 为什么删：`set_mode_all` 会把同一个 mode 写给**每一条**
+                    // 链路，而一台机器完全可能"这台共用一块屏、那台并排共享"。
+                    // 全局按钮一点，那种混拓扑就被压平成清一色 follow，
+                    // 并排那台也跟着落进「没有门」—— 用户实测就是这么撞上的。
+                    // 模式现在只由摆位决定：摆在格子里 = edge，放进「没有门」= follow。
+                    //
                     // 两种模式的物理前提不同，切换必须重启实例：
                     // 边缘跨界要在「没抓取时」盯屏幕边缘，跟随画面则完全不动。
                     let next = if mode == "edge" { "edge" } else { "follow" };
@@ -2791,12 +2899,26 @@ pub fn run() -> ! {
                             Some(handle) => {
                                 // 点名交给哪台；不带 node 就是老行为（挑一条 Follow 链路）
                                 let outcome = match node.as_deref() {
-                                    Some(node) => handle.hand_over_to(node),
+                                    Some(node) => handle.hand_over_to(node).map(|()| true),
                                     None => handle.follow(),
                                 };
                                 match outcome {
-                                    Ok(()) => {
-                                        "键鼠已交给对端（画面这边黑着是正常的）".to_string()
+                                    // 这个按钮**不碰画面**（只抓键鼠 + 发 Enter）。
+                                    // 所以不能说"画面这边黑着是正常的" —— 画面
+                                    // 既不会黑也不会切，一直显示本机。
+                                    Ok(true) => "键鼠已交给对端；画面还在这边。\
+                                                 想连画面一起过去，请点上面的「切换」"
+                                        .to_string(),
+                                    Ok(false) => {
+                                        let holder = kvm_now()
+                                            .and_then(|h| h.active_node().map(|s| s.to_string()));
+                                        match holder {
+                                            Some(node) => format!(
+                                                "键鼠已经在 {node} 手上，这次没有重复交接"
+                                            ),
+                                            None => "已经有会话在进行，先收回键鼠再交"
+                                                .to_string(),
+                                        }
                                     }
                                     Err(err) => format!("交不出去：{err}"),
                                 }

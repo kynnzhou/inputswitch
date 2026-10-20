@@ -93,6 +93,20 @@ pub struct KvmView {
     /// 链路表：一台对端一条。面板按它画"这台在哪边 / 什么模式 / 活着没 / 谁在用"
     #[serde(default)]
     pub links: Vec<LinkView>,
+    /// 链路表里有没有"共用一块屏"（Follow）链路。
+    ///
+    /// 这是**拓扑事实**，跟共用键鼠开没开无关 —— 面板靠它决定藏不藏
+    /// 「现在就把键鼠交给对端」那个按钮（画面一走就看不见面板，
+    /// 在共用屏拓扑里它没有可点的时机）。
+    #[serde(default)]
+    pub follow_link: bool,
+    /// 点「切换」是否真的会连键鼠一起走 = `follow_link && 本机能抓取`。
+    ///
+    /// 所有"（键鼠跟过去）"的文案都问它。以前前端自己拿 `mode` + `role`
+    /// 推：`mode` 只取第一条链路，跟后端 `has_follow_link()` 不是一个
+    /// 判据，两边必然打架。
+    #[serde(default)]
+    pub will_follow: bool,
 }
 
 /// 一条对端链路在面板上的样子

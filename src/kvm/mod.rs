@@ -717,14 +717,19 @@ impl Kvm {
     ///
     /// 开转之前先确认对端活着：否则画面已经切过去、键鼠也被吞掉，
     /// 用户面前是一块亮着 B 的屏，却谁也控制不了 —— 比不做还糟。
-    pub fn follow(&self) -> Result<(), String> {
+    ///
+    /// 返回 `Ok(true)` = 真的开始转发了；`Ok(false)` = 已经有会话在进行，
+    /// 这次什么都没做。以前空转也返回 `Ok(())`，调用方（`do_switch`、
+    /// 面板「交给对端」）一律当成交接成功 —— 那是"键鼠已跟过去"这句
+    /// 谎报的源头。调用方拿到的 `false` 必须原样说给用户听。
+    pub fn follow(&self) -> Result<bool, String> {
         // P5：不再按 role 挡。键鼠插在哪台是**物理事实**，不是配置项 ——
         // 用户可以随时把键盘从这台拔到那台，程序不该要求他先回来改配置。
         // 能不能往外发只取决于"抓没抓到键鼠"（下面的 capture），而那件事
         // 在 start() 时已经按权限判过了。真要没抓取，那句"抓取模块没有
         // 启动"比"你的键鼠不在本机"准确得多。
         if self.state() != State::Idle {
-            return Ok(());
+            return Ok(false);
         }
         let Some(target) = self.follow_target() else {
             return Err("没有配置任何对端链路".to_string());
@@ -762,7 +767,7 @@ impl Kvm {
             "键鼠已交给 {}（画面在那边）",
             self.links[target].node
         ));
-        Ok(())
+        Ok(true)
     }
 
     /// **手动把键鼠交给指定的那台。**
@@ -827,8 +832,17 @@ impl Kvm {
     /// `take_back_from_peer()` —— 两条路都是"把控制权拿回本机"，但
     /// 前者是本地停手、后者是求人交还，混在一起会让三条"画面切回来了"
     /// 的自动路径在 Receiving 时误发 Takeback。
-    pub fn give_back(&self) {
-        self.release(None);
+    ///
+    /// 返回 false = 本来就没什么可收的（不是 Sending）。调用方要据此决定
+    /// 能不能说"键鼠已收回本机" —— 以前它是静默空转，界面照样报收回成功。
+    pub fn give_back(&self) -> bool {
+        self.release(None)
+    }
+
+    /// 本机有没有抓取能力。没有就只能被控（`follow()` 会直接报
+    /// 「抓取模块没有启动」），面板据此不要说"键鼠跟过去"。
+    pub fn can_capture(&self) -> bool {
+        self.capture.is_some()
     }
 
     /// 被控时（对端正控制本机）把控制权要回来。
@@ -860,10 +874,10 @@ impl Kvm {
         true
     }
 
-    fn release(&self, reason: Option<&str>) {
+    fn release(&self, reason: Option<&str>) -> bool {
         let now = self.state.load(Ordering::Relaxed);
         if now != State::Sending as u8 {
-            return;
+            return false;
         }
         // CAS 抢一下，避免两个线程同时交还、重复补 key-up
         if self
@@ -871,7 +885,7 @@ impl Kvm {
             .compare_exchange(now, State::Idle as u8, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return;
+            return false;
         }
         // **先快照再发**：清空 active 之后补的 up 与 Leave 就找不到收件人
         // 了，对端会一直以为 Cmd/Ctrl 还压着（I4）。
@@ -909,10 +923,11 @@ impl Kvm {
             Some(why) => (self.log)(format!("键鼠已收回：{why}")),
             None => (self.log)("键鼠已收回本机".to_string()),
         }
+        true
     }
 
     pub fn stop(&self) {
-        self.release(None);
+        let _ = self.release(None);
         self.stop.store(true, Ordering::SeqCst);
         if let Some(capture) = self.capture.as_ref() {
             capture.stop();
@@ -940,6 +955,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // 在画面没切走的情况下被吞掉键鼠。
     let sides_mask = link_mask(&links);
     let any_edge = links.iter().any(|l| l.mode == Mode::Edge);
+    // 链路级判据，不是全局 opts.mode：v0.6.58 起模式下沉到每台对端，
+    // 「全局 edge + 单条 follow 链路」是合法配置，这时本机照样要抓键鼠
+    // 才能在切屏时把它送过去。用全局值会让那种配置下 follow() 直接报
+    // 「抓取模块没有启动」。
+    let any_follow = links.iter().any(|l| l.mode == Mode::Follow);
     if sides_mask == 0 && any_edge {
         return Err(
             "边缘跨界链路没有填方向：每条 edge 链路都要说清从本机哪一侧出去".to_string(),
@@ -984,7 +1004,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // Follow 模式两端都要能抓：键鼠插在哪台是不确定的（用户随时可能把
     // 键盘挪到另一台），所以不能用 role 决定谁装钩子。
     let needs_capture =
-        capture_ok && (any_edge || opts.mode == Mode::Follow || opts.role == Role::Console);
+        capture_ok && (any_edge || any_follow || opts.role == Role::Console);
 
     let state = Arc::new(AtomicU8::new(State::Idle as u8));
     let stop = Arc::new(AtomicBool::new(false));
@@ -2257,23 +2277,22 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             _ => format!("随画面→{}", l.node),
         })
         .collect();
-    (opts.log)(match opts.mode {
-        Mode::Follow => match opts.role {
-            Role::Console => format!(
-                "共用键鼠已就绪（{secret}）· 跟随画面模式，本机是键鼠端 —— \
-                 画面切到对端时自动跟过去（{}）",
-                routes.join("，")
-            ),
-            Role::Remote => format!(
-                "共用键鼠已就绪（{secret}）· 跟随画面模式，本机不抓键鼠，等对端接管（{}）",
-                routes.join("，")
-            ),
+    // 文案按**链路表**说，不按全局 opts.mode：v0.6.58 起一台机器可以
+    // 同时挂"共用一块屏"和"旁边并排"两种链路，全局值只能说出其中一半，
+    // 用户照着日志排查时会被引到错的方向。
+    let headline = match (any_follow, any_edge) {
+        (true, true) => "混合模式：共用屏那台跟画面走，并排那台推到边才过去",
+        (true, false) => match opts.role {
+            Role::Console => "跟随画面模式，本机是键鼠端 —— 画面切到对端时自动跟过去",
+            Role::Remote => "跟随画面模式，本机不抓键鼠，等对端接管",
         },
-        Mode::Edge => format!(
-            "共用键鼠已就绪（{secret}）· 多屏共享模式：{}",
-            routes.join("，")
-        ),
-    });
+        (false, true) => "多屏共享模式：光标推到边缘越界",
+        (false, false) => "还没有配置任何对端链路",
+    };
+    (opts.log)(format!(
+        "共用键鼠已就绪（{secret}）· {headline}（{}）",
+        routes.join("，")
+    ));
 
     Ok(Kvm {
         state,

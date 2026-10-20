@@ -218,17 +218,11 @@
 
   <div class="card">
     <h2>共用键鼠</h2>
-    <div class="hint">先选你属于哪种情况，选错了会表现成"什么都不发生"。</div>
-
-    <div class="split" style="margin-top:10px">
-      <button id="kvmFollow" class="ghost" onclick="setKvmMode('follow')">
-        跟随画面 · 一套键鼠
-      </button>
-      <button id="kvmEdge" class="ghost" onclick="setKvmMode('edge')">
-        多屏共享 · 两台各一套
-      </button>
+    <div class="hint">
+      每台对端的模式由<b>摆位</b>决定，没有全局开关：<br>
+      拖进格子 = 那台有它自己的一块屏，光标推过这条边就过去（多屏共享）；<br>
+      拖进「没有门」= 两台共用一块屏，切信号源时键鼠跟着画面走。
     </div>
-    <div class="hint" id="kvmModeHint"></div>
 
     <div class="split" style="margin-top:10px" id="kvmRoleRow">
       <button id="kvmConsole" class="ghost" onclick="setKvmRole('console')">
@@ -261,7 +255,7 @@
     <!-- 没有门的对端、以及"已发现但还没配链路"的对端都停在这里，
          拖进格子就等于给它指定方向（后端会顺手新建这条链路）。 -->
     <div id="kvmLoose" class="loosetray" data-drop="loose">
-      <div class="loosehead">没有门（共用一块屏）· 拖到这里就是"不占边"</div>
+      <div class="loosehead">没有门 · 共用一块屏 —— 拖到这里：切信号源时键鼠跟着画面走</div>
       <div id="kvmLooseBox" class="loosebox"></div>
     </div>
     <div class="gridhint" id="kvmGridHint"></div>
@@ -273,13 +267,13 @@
     <div class="hint" id="kvmLinkHint"></div>
 
     <div class="split" style="margin-top:10px">
-      <button class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
+      <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，
+           而画面一走你面前就是另一台机器的桌面，这块面板根本看不见 ——
+           没有可点的时机。按后端算好的 follow_link 藏掉（见 renderKvm）。 -->
+      <button id="kvmHandBtn" class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
       <button class="ghost" onclick="post('/api/kvm-takeback')">收回键鼠</button>
     </div>
-    <div class="hint">
-      跟随画面模式下，切屏成功时键鼠会自动跟过去，不用点上面这两个按钮；
-      它们只在"想先试试通不通"时用。紧急收回是 Ctrl+Alt+Esc，会连画面一起切回本机。
-    </div>
+    <div class="hint" id="kvmHandHint"></div>
   </div>
 
   <div class="card">
@@ -529,21 +523,30 @@ function render() {
 
 function renderKvm() {
   const k = snap.kvm || {};
-  const follow = k.mode !== 'edge';
+  // 模式是**每台对端**的属性，不再是全局开关：这两个布尔由后端按链路表
+  // 算好塞进来。原来前端拿 `k.mode !== 'edge'` 自己推 —— k.mode 只是
+  // 第一条链路的模式，跟后端 do_switch 用的 has_follow_link()（任一链路）
+  // 不是同一个判据，两边必然打架。
+  const onFollowLink = !!k.follow_link;
   const el = (id) => document.getElementById(id);
 
-  // 用 className 整体替换：green 和 ghost 同时在的话，样式取决于 CSS 顺序，
-  // 结果是"选中"看不出来
-  el('kvmFollow').className = follow ? 'green' : 'ghost';
-  el('kvmEdge').className = follow ? 'ghost' : 'green';
-  el('kvmModeHint').textContent = follow
-    ? '一套键鼠只插在一台机器上，显示器在两台之间切。画面切到哪台，键鼠跟到哪台 —— 另一台不需要接键鼠。'
-    : '两台机器各有自己的屏幕和键鼠，并排摆。光标推到屏幕边缘就越界到隔壁那台。';
+  // 键鼠交接栏：「现在就把键鼠交给对端」不碰画面。共用一块屏时画面一离开
+  // 就看不见这块面板，它没有可点的时机 —— 藏掉，改用上面的「切换」一步到位。
+  el('kvmHandBtn').style.display = onFollowLink ? 'none' : '';
+  el('kvmHandHint').textContent = onFollowLink
+    ? (k.on
+      ? '共用一块屏：用上面的「切换」一步完成 —— 画面过去，键鼠跟着过去；'
+        + '切回本机时键鼠自动回来，不用在这里点任何东西。'
+        + '「收回键鼠」只在被对端控制、又够不到鼠标时用。紧急收回 Ctrl+Alt+Esc。'
+      : '这条链路是按「共用一块屏」配的，但共用键鼠还没开。'
+        + '开启之后点上面的「切换」，键鼠才会跟着画面一起过去。')
+    : '多屏共享：光标推到屏幕边缘就过去，不用点按钮。'
+      + '这两个按钮只在"想先试试通不通"时用。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
 
-  // 角色只在「跟随画面」模式下有意义：多屏共享两边是对等的
-  el('kvmRoleRow').style.display = follow ? '' : 'none';
-  el('kvmRoleHint').style.display = follow ? '' : 'none';
-  if (follow) {
+  // 角色只在「共用一块屏」时有意义：多屏共享两边是对等的
+  el('kvmRoleRow').style.display = onFollowLink ? '' : 'none';
+  el('kvmRoleHint').style.display = onFollowLink ? '' : 'none';
+  if (onFollowLink) {
     const localConsole = (k.role || 'console') !== 'remote';
     el('kvmConsole').className = localConsole ? 'green' : 'ghost';
     el('kvmRemote').className = localConsole ? 'ghost' : 'green';
@@ -862,10 +865,12 @@ function switchTo(value) {
 }
 function setTarget(value) { api('/api/target?value=' + value).then(pull); }
 // 这次切屏会不会顺手把键鼠带走 —— 文案要跟实际行为一致，
-// 否则用户按了按钮发现鼠标没了会以为出 bug
+// 否则用户按了按钮发现鼠标没了会以为出 bug。
+// **问后端**（will_follow = 有共用屏链路 && 本机能抓取）。原来自己推
+// `k.mode !== 'edge' && role === 'console'`：k.mode 只取第一条链路，
+// 而且 role 在 v0.6.49 之后已经降级成提示，判据跟 do_switch 不一致。
 function kvmFollowing() {
-  const k = (snap && snap.kvm) || {};
-  return !!k.on && k.mode !== 'edge' && (k.role || 'console') === 'console';
+  return !!(snap && snap.kvm && snap.kvm.will_follow);
 }
 
 function quickSwitch() {
@@ -906,7 +911,7 @@ function toggleKvm() {
   const on = snap && snap.kvm && snap.kvm.on;
   api('/api/kvm?on=' + (on ? 'false' : 'true')).then(pull);
 }
-function setKvmMode(mode) { api('/api/kvm-mode?mode=' + mode).then(pull); }
+// 模式已下沉到每台对端（由摆位决定），面板上不再有全局模式开关。
 function setKvmRole(role) { api('/api/kvm-role?role=' + role).then(pull); }
 
 function toggleAutostart() { api('/api/autostart', { on: !snap.autostart }).then(pull); }
