@@ -765,6 +765,60 @@ impl Kvm {
         Ok(())
     }
 
+    /// **手动把键鼠交给指定的那台。**
+    ///
+    /// 和 `follow()` 的差别只在"目标是哪台"：`follow` 是切屏成功之后跟画面走
+    /// （靠 `follow_target()` 猜一条 Follow 链路），这个是人手指名道姓。
+    /// 一机多台时不能再猜 —— 猜错的表现是"点了 A 结果键鼠跑到 B 去了"。
+    pub fn hand_over_to(&self, node: &str) -> Result<(), String> {
+        if self.state() != State::Idle {
+            return Err("现在有会话在进行，先收回键鼠再交给别的机器".to_string());
+        }
+        let Some(target) = self.links.iter().position(|l| l.node == node) else {
+            return Err(format!("没有叫 {node} 的链路"));
+        };
+        if !self.link_alive(target) {
+            return Err(format!(
+                "{node} 没有回应（对面没开程序、不在同一网段，或防火墙拦了）。\
+                 键鼠没有交出去，你还能操作本机"
+            ));
+        }
+        let Some(capture) = self.capture.as_ref() else {
+            return Err("抓取模块没有启动".to_string());
+        };
+        // I2：先写会话目标再改状态，否则转发流有一瞬间找不到收件人
+        self.active.set(Some(target));
+        capture.set_grabbing(true);
+        self.state.store(State::Sending as u8, Ordering::SeqCst);
+        let (sw, sh) = capture.screen();
+        let link = &self.links[target];
+        // 有门的链路把门的方向告诉对端（拓扑决定了它一定在相反那侧）；
+        // Follow 链路没有门，交给对端沿用自己配置的方向。
+        let side = link.side.map(|s| s.code()).unwrap_or(Side::CODE_UNKNOWN);
+        self.out.to_link(
+            target,
+            &Event::Enter {
+                width: sw.min(65535) as u16,
+                height: sh.min(65535) as u16,
+                along: 0xFFFF,
+                flags: 0,
+                side,
+            },
+        );
+        (self.log)(format!("键鼠已交给 {}", link.node));
+        Ok(())
+    }
+
+    /// 第 `index` 条链路对端活不活。面板每行都要显示，所以公开出去。
+    pub fn alive_at(&self, index: usize) -> bool {
+        self.link_alive(index)
+    }
+
+    /// 现在握着键鼠的是第几条链路。没有会话就是 None。
+    pub fn active_index(&self) -> Option<usize> {
+        self.active.get()
+    }
+
     /// **画面切回本机了 / 要拿回键鼠 → 停止转发。**
     ///
     /// 幂等：本来就在本机时什么都不做。

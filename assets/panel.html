@@ -108,6 +108,20 @@
   .progress > i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .3s; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+  /* 多机链路行：一台对端一行，方向 / 模式 / 存活 / 键鼠在谁手上 */
+  .linkrow {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 0; border-top: 1px solid var(--line);
+  }
+  .linkrow:first-child { border-top: 0; }
+  .linkrow .node { min-width: 150px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .linkrow .dot { font-size: 10px; color: var(--muted); }
+  .linkrow .dot.on { color: var(--green); }
+  .linkrow select {
+    font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--chip); color: var(--text);
+  }
+  .linkrow .held { color: var(--green); font-weight: 600; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -164,6 +178,9 @@
       <span>运行状态：<b id="kvmState">未启动</b></span>
       <button id="kvmPower" class="green" onclick="toggleKvm()">开启</button>
     </div>
+
+    <div id="kvmLinks"></div>
+    <div class="hint" id="kvmLinkHint"></div>
 
     <div class="split" style="margin-top:10px">
       <button class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
@@ -452,6 +469,53 @@ function renderKvm() {
   el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
   el('kvmPower').textContent = k.on ? '关闭' : '开启';
   el('kvmPower').className = k.on ? 'ghost' : 'green';
+
+  renderKvmLinks(k);
+}
+
+// 一台对端一行：方向 / 模式 / 存活 / 键鼠在谁手上。
+// 方向是「对端在本机哪一侧」，不是对端的方位 —— 配反了表现为"往那侧推没反应"，
+// 所以下拉里直接写「右侧/左侧/上方/下方」而不是英文 left/right。
+const SIDE_LABELS = [['right', '右侧'], ['left', '左侧'], ['top', '上方'], ['bottom', '下方']];
+const MODE_LABELS = [['edge', '多屏共享'], ['follow', '跟随画面']];
+
+function renderKvmLinks(k) {
+  const box = document.getElementById('kvmLinks');
+  const hint = document.getElementById('kvmLinkHint');
+  if (!box) return;
+  const links = k.links || [];
+  if (!links.length) {
+    box.innerHTML = '';
+    hint.textContent = '';
+    return;
+  }
+  box.innerHTML = links.map(l => {
+    const sideOpts = [['', '（无门）'], ...SIDE_LABELS]
+      .map(([v, label]) => `<option value="${v}"${l.side === v ? ' selected' : ''}>${label}</option>`)
+      .join('');
+    const modeOpts = MODE_LABELS
+      .map(([v, label]) => `<option value="${v}"${l.mode === v ? ' selected' : ''}>${label}</option>`)
+      .join('');
+    const held = l.active ? '<span class="held">键鼠在这台</span>'
+      : `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">交给它</button>`;
+    return `<div class="linkrow">
+      <span class="node"><i class="dot${l.alive ? ' on' : ''}">●</i>${esc(l.node)}</span>
+      <select title="对端在本机的哪一侧" onchange="setLinkSide('${esc(l.node)}', this.value)">${sideOpts}</select>
+      <select title="这条链路的模式" onchange="setLinkMode('${esc(l.node)}', this.value)">${modeOpts}</select>
+      ${held}
+    </div>`;
+  }).join('');
+  hint.textContent = '方向 = 那台机器摆在本机的哪一侧。改成「无门」表示它和本机共用一块屏（跟随画面）。';
+}
+
+function setLinkSide(node, side) {
+  api('/api/link?node=' + encodeURIComponent(node) + '&side=' + encodeURIComponent(side)).then(pull);
+}
+function setLinkMode(node, mode) {
+  api('/api/link?node=' + encodeURIComponent(node) + '&mode=' + encodeURIComponent(mode)).then(pull);
+}
+function handOverTo(node) {
+  api('/api/kvm-handover?node=' + encodeURIComponent(node)).then(pull);
 }
 
 function esc(text) {

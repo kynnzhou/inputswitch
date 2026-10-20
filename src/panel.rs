@@ -71,6 +71,27 @@ pub struct KvmView {
     pub state: String,
     /// 对端最近有没有回包
     pub peer_alive: bool,
+    /// 现在握着键鼠的是哪台（空串 = 没有会话）
+    #[serde(default)]
+    pub active: String,
+    /// 链路表：一台对端一条。面板按它画"这台在哪边 / 什么模式 / 活着没 / 谁在用"
+    #[serde(default)]
+    pub links: Vec<LinkView>,
+}
+
+/// 一条对端链路在面板上的样子
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LinkView {
+    pub node: String,
+    pub addr: String,
+    /// 对端在本机的哪一侧（右侧 / 下方 …）。空 = 无门（跟随画面链路）
+    pub side: String,
+    /// `follow` 或 `edge`
+    pub mode: String,
+    /// 对端最近有没有回包
+    pub alive: bool,
+    /// 键鼠现在是不是在这台手上
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -131,10 +152,17 @@ pub enum Action {
     KvmMode(String),
     /// 换角色：`console` 或 `remote`（只在 follow 模式有用）
     KvmRole(String),
-    /// 手动把键鼠交给对端（不用切屏，先试试通不通）
-    KvmHandOver,
+    /// 手动把键鼠交给对端（不用切屏，先试试通不通）。
+    /// 多机时带上是哪一台；None 表示"随便挑一条 Follow 链路"（老接口的行为）。
+    KvmHandOver(Option<String>),
     /// 手动收回键鼠
     KvmTakeBack,
+    /// 改某一条链路的方向 / 模式。`None` 表示这项不动。
+    KvmLink {
+        node: String,
+        side: Option<String>,
+        mode: Option<String>,
+    },
 }
 
 pub type State = Arc<Mutex<Snapshot>>;
@@ -361,9 +389,54 @@ fn handle(
             None => respond_json(&mut stream, r#"{"ok":false,"error":"缺 role"}"#),
         },
         ("POST", "/api/kvm-handover") => {
-            dispatch(Action::KvmHandOver);
+            // 多机时点名交给某一台；不带 node 就是老行为（挑一条 Follow 链路）
+            dispatch(Action::KvmHandOver(param_str(&query, "node")));
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
+        ("POST", "/api/link") => match param_str(&query, "node") {
+            Some(node) => {
+                let side = param_str(&query, "side");
+                let mode = param_str(&query, "mode");
+                // 在入口就把明显错的挡掉：dispatch 是异步的，等不到结果，
+                // 这里回 ok:true 而实际没改，前端只会看见"改了没生效"。
+                let bad_side = side.as_deref().is_some_and(|s| {
+                    let s = s.trim();
+                    !s.is_empty()
+                        && s != "left"
+                        && s != "right"
+                        && s != "top"
+                        && s != "bottom"
+                });
+                let bad_mode = mode
+                    .as_deref()
+                    .is_some_and(|m| m != "edge" && m != "follow");
+                if bad_side || bad_mode {
+                    respond_json(
+                        &mut stream,
+                        r#"{"ok":false,"error":"side 只能是 left/right/top/bottom 或空，mode 只能是 edge/follow"}"#,
+                    )
+                } else if side.is_none() && mode.is_none() {
+                    respond_json(&mut stream, r#"{"ok":false,"error":"side 和 mode 都没给"}"#)
+                } else {
+                    // 链路表里没有这台就直接拒：不然只能等托盘侧写进状态条，
+                    // 网页这边拿到 ok:true 会以为改成功了。
+                    let known = state
+                        .lock()
+                        .map(|snap| snap.kvm.links.iter().any(|link| link.node == node))
+                        .unwrap_or(false);
+                    if !known {
+                        respond_json(
+                            &mut stream,
+                            r#"{"ok":false,"error":"链路表里没有这个节点"}"#,
+                        )
+                    } else {
+                        dispatch(Action::KvmLink { node, side, mode });
+                        respond_json(&mut stream, r#"{"ok":true}"#)
+                    }
+                }
+            }
+            None => respond_json(&mut stream, r#"{"ok":false,"error":"缺 node"}"#),
+        },
         ("POST", "/api/kvm-takeback") => {
             dispatch(Action::KvmTakeBack);
             respond_json(&mut stream, r#"{"ok":true}"#)

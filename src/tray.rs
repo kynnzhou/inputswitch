@@ -1059,21 +1059,57 @@ fn update_snapshot(
     snap.peer_verified = peers.iter().filter(|p| p.paired).count();
     snap.has_display = HAS_DISPLAY.load(AtomicOrdering::SeqCst);
     snap.own_value = config.own_value;
-    // 共用键鼠：开没开、跑哪种模式、现在键鼠在哪边
+    // 共用键鼠：开没开、跑哪种模式、现在键鼠在哪边、每条链路什么状态
     snap.kvm = match kvm_now() {
-        Some(handle) => panel::KvmView {
-            on: true,
-            mode: handle.mode().as_str().to_string(),
-            role: handle.role().as_str().to_string(),
-            state: handle.state().label().to_string(),
-            peer_alive: handle.peer_alive(),
-        },
+        Some(handle) => {
+            let active_idx = handle.active_index();
+            panel::KvmView {
+                on: true,
+                mode: handle.mode().as_str().to_string(),
+                role: handle.role().as_str().to_string(),
+                state: handle.state().label().to_string(),
+                peer_alive: handle.peer_alive(),
+                active: handle.active_node().unwrap_or("").to_string(),
+                links: handle
+                    .links()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, link)| panel::LinkView {
+                        node: link.node.clone(),
+                        addr: link.ip.to_string(),
+                        // 空 = 无门（Follow 链路），界面上不画方向
+                        side: link
+                            .side
+                            .map(|s| s.as_str().to_string())
+                            .unwrap_or_default(),
+                        mode: link.mode.as_str().to_string(),
+                        alive: handle.alive_at(i),
+                        active: active_idx == Some(i),
+                    })
+                    .collect(),
+            }
+        }
         None => panel::KvmView {
             on: false,
             mode: config.kvm.mode.clone(),
             role: config.kvm.role.clone(),
             state: "未启动".to_string(),
             peer_alive: false,
+            active: String::new(),
+            // 没启动时也要把配置里的链路画出来，否则用户看不到、也就改不了
+            links: config
+                .kvm
+                .links
+                .iter()
+                .map(|link| panel::LinkView {
+                    node: link.node.clone(),
+                    addr: link.addr.clone(),
+                    side: link.side.clone(),
+                    mode: link.mode_or(&config.kvm.mode),
+                    alive: false,
+                    active: false,
+                })
+                .collect(),
         },
     };
     snap.port_note = PORT_NOTE
@@ -2114,7 +2150,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.50",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.51",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2435,14 +2471,89 @@ pub fn run() -> ! {
                     }
                     log_line(&status);
                 }
-                Action::KvmHandOver => {
+                Action::KvmHandOver(node) => {
                     status = match kvm_now() {
-                        Some(handle) => match handle.follow() {
-                            Ok(()) => "键鼠已交给对端（画面这边黑着是正常的）".to_string(),
-                            Err(err) => format!("交不出去：{err}"),
-                        },
+                        Some(handle) => {
+                            // 多机时点名交给哪台；不带 node 就是老行为（挑一条 Follow 链路）
+                            let outcome = match node.as_deref() {
+                                Some(node) => handle.hand_over_to(node),
+                                None => handle.follow(),
+                            };
+                            match outcome {
+                                Ok(()) => "键鼠已交给对端（画面这边黑着是正常的）".to_string(),
+                                Err(err) => format!("交不出去：{err}"),
+                            }
+                        }
                         None => "共用键鼠没开，先在面板上打开它".to_string(),
                     };
+                    log_line(&status);
+                }
+                Action::KvmLink { node, side, mode } => {
+                    let mut changed = false;
+                    let mut problem: Option<String> = None;
+                    if let Some(link) = config.kvm.links.iter_mut().find(|l| l.node == node) {
+                        if let Some(side) = side {
+                            let side = side.trim().to_string();
+                            // 空串 = 去掉门（变成跟随画面链路），这是合法值
+                            if side != "left"
+                                && side != "right"
+                                && side != "top"
+                                && side != "bottom"
+                                && !side.is_empty()
+                            {
+                                problem = Some(format!("方向只能是 left/right/top/bottom：{side}"));
+                            } else {
+                                if link.side != side {
+                                    link.side = side;
+                                    changed = true;
+                                }
+                                if link.side.is_empty()
+                                    && link.mode_or(&config.kvm.mode) == "edge"
+                                {
+                                    // 无门的 Edge 链路是自相矛盾的组合：整屏都会被吞
+                                    link.mode = "follow".to_string();
+                                }
+                            }
+                        }
+                        if problem.is_none() {
+                            if let Some(mode) = mode {
+                                let mode = if mode == "follow" { "follow" } else { "edge" };
+                                if mode == "edge" && link.side.trim().is_empty() {
+                                    problem = Some(
+                                        "这条链路没有方向，不能设成多屏共享（先给它选个方向）"
+                                            .to_string(),
+                                    );
+                                } else if link.mode != mode {
+                                    link.mode = mode.to_string();
+                                    changed = true;
+                                }
+                            }
+                        }
+                    } else {
+                        problem = Some(format!("没有叫 {node} 的链路"));
+                    }
+
+                    if let Some(problem) = problem {
+                        status = problem;
+                    } else if changed {
+                        // v3 起运行时只认链路表，改完要回写镜像让老版本也能读到
+                        config.kvm.mirror_from_primary();
+                        let _ = config.save();
+                        // 掩码是按链路表算出来的，改了必须重启实例才生效
+                        if let Some(handle) = kvm_handle.take() {
+                            handle.stop();
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = None;
+                            }
+                            config.kvm.enabled = false;
+                            let _ = config.save();
+                            status = "链路已改，共用键鼠需要重新打开".to_string();
+                        } else {
+                            status = "链路已改，下次打开生效".to_string();
+                        }
+                    } else {
+                        status = "链路没变".to_string();
+                    }
                     log_line(&status);
                 }
                 Action::KvmTakeBack => {
