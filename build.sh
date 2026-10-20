@@ -66,33 +66,34 @@ echo "==> 版本 ${VERSION}"
   -c "Set :CFBundleVersion ${VERSION}" \
   "${BUNDLE}/Contents/Info.plist"
 
-# 签名：优先用固定的本地自签名证书，没有才退回 ad-hoc。
+# 签名：默认 ad-hoc。
 #
-# 为什么要固定证书：ad-hoc 签名的 designated requirement 是「cdhash = xxx」，
-# 每次重编译 cdhash 必变 → TCC 里那条辅助功能授权立刻作废，用户每装一版都要
-# 回设置页取消再勾一次（2026-10-20 反复踩）。
-# 换成自签名证书后，DR 变成「identifier + 证书根哈希」，两张都不随编译变化，
-# 勾一次以后就永久有效。
+# 试过用固定本地自签名证书（2026-10-20）：DR 确实变成
+# `identifier + 证书根哈希`、不再随编译变化，但**授权勾不上去** ——
+# 在「设备控制和数据访问」里勾了之后，系统 TCC 库里根本不写这一行
+# （/Library/Application Support/com.apple.TCC/TCC.db 里查不到
+# cn.zhouke.inputswitch），于是点「开启」永远弹回设置页。
+# find-identity 显示有效、codesign --verify 也过，但 tccd 就是不认。
+# 结论：macOS 27 的辅助功能授权只接受 ad-hoc 或 Apple 签发的身份。
 #
-# 证书准备（只需一次，见 ~/.workbuddy/inputswitch-signing/）：
-#   openssl req -x509 ... -addext extendedKeyUsage=codeSigning
-#   security import identity.p12 -k login.keychain-db -P … -T /usr/bin/codesign
-#   security add-trusted-cert -r trustRoot -p codeSign -k login.keychain-db cert.pem
-SIGN_ID="InputSwitch Local Signing"
+# 想再试别的证书时用环境变量：ISW_SIGN_ID="证书名" ./build.sh
+SIGN_ID="${ISW_SIGN_ID:-}"
 
 echo "==> 签名"
-if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+if [ -n "$SIGN_ID" ] && security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
   # 嵌套二进制要逐个签，最后签外层。用 --deep 一次性签会留下
   # .cstemp 残影，`codesign --verify` 报 "a sealed resource is missing or invalid"。
   codesign --force --sign "$SIGN_ID" "${BUNDLE}/Contents/MacOS/inputswitch-cli"
   codesign --force --sign "$SIGN_ID" "${BUNDLE}/Contents/MacOS/${APP_NAME}"
   codesign --force --sign "$SIGN_ID" "$BUNDLE"
   codesign --verify --deep --strict "$BUNDLE" || { echo "签名校验失败" >&2; exit 1; }
-  echo "   ${SIGN_ID}（固定证书，重编译不用重勾权限）"
+  echo "   ${SIGN_ID}"
 else
-  codesign --force --deep --sign - "$BUNDLE" 2>/dev/null \
+  codesign --force --sign - "${BUNDLE}/Contents/MacOS/inputswitch-cli" 2>/dev/null \
+    && codesign --force --sign - "${BUNDLE}/Contents/MacOS/${APP_NAME}" 2>/dev/null \
+    && codesign --force --sign - "$BUNDLE" 2>/dev/null \
     || echo "   跳过签名（未安装 Xcode 命令行工具时正常）"
-  echo "   ad-hoc（没找到固定证书，这次装完要重新勾权限）"
+  echo "   ad-hoc"
 fi
 
 # 装进 /Applications，并保证系统里只注册这一份。
@@ -119,6 +120,6 @@ echo "已在 /Applications，双击或：open -a ${APP_NAME}"
 echo "命令行诊断： ${INSTALL_DIR}/${APP_NAME}.app/Contents/MacOS/inputswitch-cli probe"
 echo
 echo "权限提醒："
-echo "  固定证书（${SIGN_ID}）签名 → 重编译不会作废授权，不用再手动勾。"
-echo "  只有第一次换证书时要在「设置 → 隐私与安全性 → 设备控制和数据访问」勾一次；"
-echo "  添加列表里现在只有 /Applications 这一份。"
+echo "  ad-hoc 签名每次重编译 cdhash 都变，装完要去「设置 → 隐私与安全性 →"
+echo "  设备控制和数据访问」把 ${APP_NAME} 取消勾选再重新勾上。"
+echo "  添加列表里只有 /Applications 这一份。"
