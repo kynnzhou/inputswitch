@@ -376,6 +376,25 @@ pub fn hit_edge_in(mask: u8, x: f64, y: f64, w: f64, h: f64) -> Option<Side> {
     }
 }
 
+/// 门重新武装所需的"离开边缘"距离（点）。
+///
+/// 必须**明显大于**交还落点到边缘的距离（16 点），否则落点本身就算
+/// "已经离开门口"，撤防立刻失效 —— 那正是 v0.6.49 实测的来回弹：
+/// 被对端物理抢回后，本机光标被摆在边缘内侧 16 点，钩子一看到"还在
+/// 边上一圈"就再次越界，用户体感是"按了键没用，鼠标又跑回去了"。
+pub const REARM_DIST: f64 = 48.0;
+
+/// 光标是否离**某条通向邻居的边**不超过 `dist` 点。
+///
+/// 和 `hit_edge_in` 的区别：这个只回答"在不在门口这一圈里"，不判角落、
+/// 不挑边。用来做门的撤防/武装：交还之后光标就落在门口那一圈里，此时
+/// 门必须保持撤防，直到用户把光标真正带回屏幕内部（≥ `REARM_DIST`）。
+pub fn within_edge(mask: u8, x: f64, y: f64, w: f64, h: f64, dist: f64) -> bool {
+    Side::all()
+        .into_iter()
+        .any(|s| mask & s.bit() != 0 && dist_to(s, x, y, w, h) <= dist)
+}
+
 // ---------------------------------------------------------------------------
 // 加密：AEAD(ChaCha20-Poly1305)
 // ---------------------------------------------------------------------------
@@ -590,6 +609,32 @@ mod tests {
         assert!(hit_edge(Side::Bottom, 300.0, 1116.5, 1728.0, 1117.0));
         assert_eq!(Side::Right.opposite(), Side::Left);
         assert_eq!(Side::parse("下"), Some(Side::Bottom));
+    }
+
+    #[test]
+    fn edge_rearm_zone_covers_landing_spot() {
+        // 交还落点 = 离边 16 点。它必须落在"还没武装"的范围内，
+        // 否则放开抓取的那一刻门就是开的，手一抖就又被推出去
+        //（v0.6.49 实测：抢回后光标被弹回去，看起来像抢回没生效）
+        let (w, h) = (1728.0, 1117.0);
+        let right = Side::Right.bit();
+        assert!(within_edge(right, w - 16.0, 500.0, w, h, REARM_DIST));
+        // 出门必须比落点走得远得多才重新武装
+        assert!(!within_edge(right, w - 60.0, 500.0, w, h, REARM_DIST));
+        // 只看掩码里的边：掩码只有右边时，光标贴在左边不算"在门口"
+        assert!(!within_edge(right, 16.0, 500.0, w, h, REARM_DIST));
+        // 空掩码（跟随画面模式）任何位置都不算
+        assert!(!within_edge(0, w - 1.0, 500.0, w, h, REARM_DIST));
+        // 四向齐全时，每条边的落点都在圈里
+        let all = Side::all().iter().fold(0u8, |m, s| m | s.bit());
+        for (x, y) in [
+            (w - 16.0, 500.0),
+            (16.0, 500.0),
+            (500.0, 16.0),
+            (500.0, h - 16.0),
+        ] {
+            assert!(within_edge(all, x, y, w, h, REARM_DIST), "({x},{y}) 没被算在门口");
+        }
     }
 
     #[test]

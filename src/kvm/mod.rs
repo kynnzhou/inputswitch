@@ -1884,6 +1884,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             let mut prev_act: Option<usize> = None;
             // 对端旧版本（状态未知）只提示一次，别刷屏
             let mut degraded_logged = false;
+            // "会话目标丢了"的连续拍数（见下方的两拍确认）
+            let mut unlinked_ticks: u32 = 0;
             while !stop.load(Ordering::Relaxed) {
                 thread::sleep(PING_INTERVAL);
                 if stop.load(Ordering::Relaxed) {
@@ -1907,15 +1909,25 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 }
                 // 会话目标被清掉却还停在 Sending/Receiving = 不变式破了。
                 // 不纠正的话转发流找不到收件人（位移静默丢弃、键鼠全吞）。
+                //
+                // **必须连续两拍都成立才动手**：抢回与本机重新越界可能在同一
+                // 毫秒里交错（Takeback 线程清 active，Begin 线程刚把它写回去），
+                // 单拍看到的就是假阳性 —— 实测日志里"把控制权还回来了"和
+                // "会话目标丢了"出现在同一秒，跟着把刚建立的会话一起拆掉。
                 if me != State::Idle as u8 && act.is_none() && me == prev_me {
-                    state.store(State::Idle as u8, Ordering::SeqCst);
-                    if let Some(c) = capture.as_ref() {
-                        c.set_grabbing(false);
+                    unlinked_ticks += 1;
+                    if unlinked_ticks >= 2 {
+                        unlinked_ticks = 0;
+                        state.store(State::Idle as u8, Ordering::SeqCst);
+                        if let Some(c) = capture.as_ref() {
+                            c.set_grabbing(false);
+                        }
+                        reclaim_gd.store(now_ms(), Ordering::SeqCst);
+                        (log)("会话目标丢了（状态机错位），已回到空闲".to_string());
                     }
-                    reclaim_gd.store(now_ms(), Ordering::SeqCst);
-                    (log)("会话目标丢了（状态机错位），已回到空闲".to_string());
                     continue;
                 }
+                unlinked_ticks = 0;
 
                 // ---- 抓取状态一致性守卫 ----
                 // 不变式：state==Sending ⇔ 抓取开着，其余 ⇔ 抓取关着。

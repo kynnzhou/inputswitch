@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use super::event::{hit_edge_in, Event, Side};
+use super::event::{hit_edge_in, within_edge, Event, Side, REARM_DIST};
 
 type CFTypeRef = *mut c_void;
 type CGEventRef = *mut c_void;
@@ -222,6 +222,13 @@ struct Shared {
     /// 的按键一定是人手按的。用普通 bool（而不是原子量）：回调本来就持
     /// 这把锁，多一层原子量只是多一次跨线程可见性开销。
     claim: bool,
+    /// 门是否已武装：只有武装时撞边才算"要出去"。
+    ///
+    /// 每次放开抓取都撤防（交还、被对端抢回、紧急收回），之后必须看到
+    /// 光标离开边缘 REARM_DIST 点才重新武装。不加这道闸就是实测过的那
+    /// 个来回弹：交还时光标按设计落在边缘内侧 16 点，那仍然在"门口"
+    /// 这一圈里，手一抖就又越界出去 —— 用户看到的是"交还/抢回没生效"。
+    armed: bool,
 }
 
 pub struct Capture {
@@ -288,6 +295,8 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         paste_ready: paste_ready.clone(),
         swallowed_key: None,
         claim: false,
+        // 启动时门是武装的：正常状态，光标在屏幕中间，撞边就该出去
+        armed: true,
     }));
 
     // 光标钉扎线程（v0.6.21 调整为兜底层）：转发期间光标必须停在钉扎点。
@@ -346,6 +355,17 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
                     }
                 }
                 if drift > 2.0 {
+                    // 释放与这一拍并发时**绝不能**补这一针：`set_grabbing(false)`
+                    // 刚把光标摆到门口内侧 16 点，这里再把它拽回钉扎点（=
+                    // 出门那一刻的边缘），等于把光标又放回门口 —— 下一笔
+                    // 轻微的手抖就是"再次越界"，用户看到的是交还/抢回没生效。
+                    // 上面那次同锁读之后到这一句之间还隔着两次系统调用，
+                    // 必须重新确认一遍。
+                    if let Ok(s) = shared_for_pin.lock() {
+                        if !s.grabbing.load(Ordering::Relaxed) || s.pin != Some(target) {
+                            continue;
+                        }
+                    }
                     // 带标签的绝对定位事件，从会话层入流（理由见线程头注释）
                     let warp = CGEventCreateMouseEvent(
                         std::ptr::null_mut(),
@@ -567,6 +587,10 @@ impl Capture {
             // 停钉扎：交还/被控时本机光标要能正常动，交还给 place_cursor 去摆位
             if let Ok(mut s) = self.shared.lock() {
                 s.pin = None;
+                // 撤防：接下来光标会被摆到边缘内侧 16 点（仍在门口那一圈里），
+                // 不撤防的话下一笔轻微的移动就又把它推出去。重新武装要等
+                // 光标真正离开边缘 REARM_DIST 点（见 `Shared::armed`）。
+                s.armed = false;
             }
         }
         if was == on {
@@ -774,12 +798,24 @@ extern "C" fn callback(
                 let pos = CGEventGetLocation(event);
                 let w = shared.width.load(Ordering::Relaxed) as f64 / 1000.0;
                 let h = shared.height.load(Ordering::Relaxed) as f64 / 1000.0;
-                if let Some(side) = hit_edge_in(shared.sides, pos.x, pos.y, w, h) {
-                    // 记下"这一趟走的是哪道门"：交还时按它摆落点
-                    shared.last_out = side;
-                    // 沿门轴的位置比例：对端从对应高度进门
-                    let along = side.along(pos.x, pos.y, w, h);
-                    let _ = shared.tx.send(Captured::Begin { along, side });
+                // 门的武装/撤防：光标回到屏幕内部才武装。交还/被抢回之后
+                // 光标就停在门口那一圈（离边 16 点），此时**不该**再触发 ——
+                // 否则"交还"和"再出去"在同一毫秒里发生，用户看到的是
+                // 鼠标被弹回去、抢回像没生效（v0.6.49 实测的来回弹）。
+                if !within_edge(shared.sides, pos.x, pos.y, w, h, REARM_DIST) {
+                    shared.armed = true;
+                } else if shared.armed {
+                    if let Some(side) = hit_edge_in(shared.sides, pos.x, pos.y, w, h) {
+                        // 记下"这一趟走的是哪道门"：交还时按它摆落点
+                        shared.last_out = side;
+                        // 沿门轴的位置比例：对端从对应高度进门
+                        let along = side.along(pos.x, pos.y, w, h);
+                        // 一次撞边只出一个 Begin：对端没回应时别跟着
+                        // 每笔位移刷一条（那会让"没回应"的日志每 3 秒
+                        // 只能打一条，却被无谓地重复尝试）
+                        shared.armed = false;
+                        let _ = shared.tx.send(Captured::Begin { along, side });
+                    }
                 }
             }
             return event;

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use super::event::{hit_edge_in, Event, Side};
+use super::event::{hit_edge_in, within_edge, Event, Side, REARM_DIST};
 
 type Hhook = isize;
 type Hinstance = isize;
@@ -345,6 +345,12 @@ struct Shared {
     /// 在 `mouse_proc`/`key_proc` 第一行就放行了，所以走到判定点的按键
     /// 一定是人手按的。
     claim: Arc<AtomicBool>,
+    /// 门是否已武装：只有武装时撞边才算"要出去"。
+    ///
+    /// 每次放开抓取都撤防，之后必须看到光标离开边缘 `REARM_DIST` 点才
+    /// 重新武装。交还时光标按设计摆在边缘内侧 16 点，那仍在"门口"这一圈
+    /// 里，手一抖就又越界出去 —— 不撤防就是"交还/抢回立刻被弹回去"。
+    armed: AtomicBool,
     tx: Sender<Captured>,
 }
 
@@ -393,6 +399,8 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         ox: AtomicI32::new(origin.0),
         oy: AtomicI32::new(origin.1),
         claim: claim.clone(),
+        // 启动时门是武装的：光标在屏幕中间，撞边就该出去
+        armed: AtomicBool::new(true),
         tx,
     }));
     *STATE.lock().map_err(|_| "状态锁坏了".to_string())? = Some(shared);
@@ -545,6 +553,11 @@ impl Capture {
             .ok()
             .and_then(|s| s.as_ref().map(|m| m.lock().map(|x| x.edge_trigger).unwrap_or(false)))
             .unwrap_or(false);
+        // 撤防（不论模式）：接下来光标会被摆到门口那一圈里，不撤防的话
+        // 下一笔轻微移动就又出去。重新武装要等光标离开边缘 REARM_DIST 点。
+        if !on {
+            with_shared(|s| s.armed.store(false, Ordering::Relaxed));
+        }
         if !on && edge_mode {
             let (w, h) = self.screen();
             let (ox, oy, side) = STATE
@@ -772,12 +785,23 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
                 // 别的屏上，不换算的话边缘判定全错）
                 let rx = (info.pt.x - ox) as f64;
                 let ry = (info.pt.y - oy) as f64;
-                if let Some(side) = hit_edge_in(shared.sides, rx, ry, w, h) {
-                    // 记下"这一趟走的是哪道门"：交还时按它摆落点
-                    shared.last_out.store(side.code(), Ordering::Relaxed);
-                    // 沿门轴的位置比例：对端从对应高度进门
-                    let along = side.along(rx, ry, w, h);
-                    let _ = shared.tx.send(Captured::Begin { along, side });
+                // 门的武装/撤防：光标回到屏幕内部才武装。交还/被抢回之后
+                // 光标就停在门口那一圈（离边 16 点），此时**不该**再触发 ——
+                // 否则"交还"和"再出去"几乎同时发生，用户看到的是鼠标被
+                // 弹回去、抢回像没生效（v0.6.49 实测的来回弹）。
+                if !within_edge(shared.sides, rx, ry, w, h, REARM_DIST) {
+                    shared.armed.store(true, Ordering::Relaxed);
+                } else if shared.armed.load(Ordering::Relaxed) {
+                    if let Some(side) = hit_edge_in(shared.sides, rx, ry, w, h) {
+                        // 记下"这一趟走的是哪道门"：交还时按它摆落点
+                        shared.last_out.store(side.code(), Ordering::Relaxed);
+                        // 沿门轴的位置比例：对端从对应高度进门
+                        let along = side.along(rx, ry, w, h);
+                        // 一次撞边只出一个 Begin：对端没回应时不该跟着每笔
+                        // 位移重复尝试（日志每 3 秒才打一条，看不出被刷了）
+                        shared.armed.store(false, Ordering::Relaxed);
+                        let _ = shared.tx.send(Captured::Begin { along, side });
+                    }
                 }
             }
             return;
