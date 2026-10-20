@@ -72,6 +72,14 @@ const IDLE_TIMEOUT_MS: u64 = 2500;
 /// 比断线超时宽一点，容忍一次丢包。
 const PEER_ALIVE_MS: u64 = 6000;
 
+/// 被控期间"物理抢回"的保护窗（毫秒）。
+///
+/// 进入被控后这个窗口内不认抢回信号：KVM 切输入源、显示器重新握手的那
+/// 一两秒里，键盘会送来一串来源不明的按键（切源瞬间的 ghost key 很常见），
+/// 认了就是"刚过去立刻被弹回来"。认过一次后同样静默这么久，免得连按两下
+/// 连发两次 Takeback。
+const CLAIM_ARM_MS: u64 = 1500;
+
 /// 跑哪种模式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -173,6 +181,12 @@ pub enum Captured {
     Note(String),
     /// 按到了紧急收回（Ctrl+Alt+Esc）
     End,
+    /// 被控期间本机用户真的动了物理键鼠（按下一个键 / 点了一下鼠标键）。
+    ///
+    /// 与"推门抢回"互补：推门要求光标跑到门口，键盘用户根本做不到。
+    /// 判据全在平台层（注入事件带标记，钩子入口就把它们放行掉），
+    /// 主循环只做时间窗与去抖 —— 那一层拿不到 Enter 的到达时刻。
+    Claim,
     /// 转发期间按下了 Ctrl+V，而本机手上有"本次复制的文件清单"。
     /// 这个键已经被 tap 吞掉，交给上层去传文件、传完再补按。
     PasteIntent,
@@ -704,10 +718,11 @@ impl Kvm {
     /// 开转之前先确认对端活着：否则画面已经切过去、键鼠也被吞掉，
     /// 用户面前是一块亮着 B 的屏，却谁也控制不了 —— 比不做还糟。
     pub fn follow(&self) -> Result<(), String> {
-        // Edge 模式下两边对等，谁都可以越界；Follow 模式只有键鼠端能往外发
-        if self.mode == Mode::Follow && self.role != Role::Console {
-            return Err("这台机器的键鼠不在本机，不能往外转发".to_string());
-        }
+        // P5：不再按 role 挡。键鼠插在哪台是**物理事实**，不是配置项 ——
+        // 用户可以随时把键盘从这台拔到那台，程序不该要求他先回来改配置。
+        // 能不能往外发只取决于"抓没抓到键鼠"（下面的 capture），而那件事
+        // 在 start() 时已经按权限判过了。真要没抓取，那句"抓取模块没有
+        // 启动"比"你的键鼠不在本机"准确得多。
         if self.state() != State::Idle {
             return Ok(());
         }
@@ -853,31 +868,32 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // 两个角色要的权限不一样，别把 Console 的检查套到 Remote 头上：
     // Remote 只需要"能注入"，它根本没有键鼠可抓。
     // Edge 模式下两边都是对等的，两边都要能抓能注入。
-    let needs_capture = any_edge || opts.role == Role::Console;
-    match opts.role {
-        Role::Console => {
-            if !plat::trusted() {
-                return Err(
-                    "缺少权限，抓不到键鼠（macOS：系统设置 → 隐私与安全性 → 辅助功能）".into(),
-                );
-            }
-        }
-        Role::Remote if needs_capture => {
-            if !plat::trusted() {
-                return Err(
-                    "缺少权限，抓不到键鼠（macOS：系统设置 → 隐私与安全性 → 辅助功能）".into(),
-                );
-            }
-        }
-        Role::Remote => {
-            if !plat::can_post() {
-                return Err(
-                    "缺少权限，没法把对端的键鼠注入本机（macOS：系统设置 → 隐私与安全性 → 辅助功能）"
-                        .into(),
-                );
-            }
-        }
+    // 权限按**能力**分两块，不再按 role 一刀切（P5 控制台迁移的前提）：
+    //
+    //   can_post（注入）= 硬需求：没有它连"被控制"都做不到，直接报错
+    //   trusted（抓取）= 软需求：没有它本机不能主动把键鼠推出去，但仍然
+    //                    可以被对面控制 —— 降级，不罢工
+    //
+    // 这两项在 macOS 上确实是两个独立授权（AXIsProcessTrusted vs
+    // CGPreflightPostEventAccess），所以"一个有一个没有"是真实状态。
+    if !plat::can_post() {
+        return Err(
+            "缺少权限，没法把对端的键鼠注入本机（macOS：系统设置 → 隐私与安全性 → 辅助功能）"
+                .into(),
+        );
     }
+    let capture_ok = plat::trusted();
+    if !capture_ok {
+        (opts.log)(
+            "⚠️ 缺少抓取权限：本机只能被对端控制，键鼠推不出去\
+             （macOS：系统设置 → 隐私与安全性 → 辅助功能）"
+                .to_string(),
+        );
+    }
+    // Follow 模式两端都要能抓：键鼠插在哪台是不确定的（用户随时可能把
+    // 键盘挪到另一台），所以不能用 role 决定谁装钩子。
+    let needs_capture =
+        capture_ok && (any_edge || opts.mode == Mode::Follow || opts.role == Role::Console);
 
     let state = Arc::new(AtomicU8::new(State::Idle as u8));
     let stop = Arc::new(AtomicBool::new(false));
@@ -888,6 +904,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // 本机最近一次"收回键鼠"的时间戳：收回后短暂冷却 Begin，防止用户的
     // 手还压在门口就立刻再次越界（日志实测 0.1s 内反复乒乓）
     let last_reclaim_ms = Arc::new(AtomicU64::new(0));
+    // 最近一次进入**被控**（Receiving）的时刻：物理抢回要对它算保护窗。
+    //
+    // 为什么不放 `Session` 里：抢回信号是抓取线程收的，而 `Session` 归
+    // 接收线程独占；两边共用一个原子量比把 Session 上锁便宜得多。
+    let last_recv_ms = Arc::new(AtomicU64::new(0));
 
     let sealer = opts
         .key
@@ -928,6 +949,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let on_paste = opts.on_paste.clone();
         let links_cap = links.clone();
         let active_cap = active.clone();
+        let recv_cap = last_recv_ms.clone();
         thread::spawn(move || {
             let mut pressed: Vec<Event> = Vec::new();
             // 转发统计：排障「键鼠到了对面却不动」时，需要知道 Mac 这边
@@ -949,6 +971,29 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             let mut max_dx: i32 = 0;
             // 越界被拒（对端没回应）的告警限流
             let mut last_begin_warn_ms: u64 = 0;
+            // 上一次认"物理抢回"的时刻（去抖：连按两下只发一次 Takeback）
+            let mut last_claim_ms: u64 = 0;
+
+            // 被控期间把控制权要回来。三条入口动作完全一样：热键、
+            // 真动物理键鼠、以及主循环那条"推门"（走 Begin/Receiving 分支，
+            // 不经过这里，因为那边还要处理 Enter 与落点）。
+            //
+            // 必须**先快照目标再动状态**：active 一清，后面的 Takeback
+            // 就不知道该发给谁了 —— 对端会一直以为它还控制着本机。
+            let take_back_here = |why: &str| {
+                let Some(t) = active_cap.get() else {
+                    return;
+                };
+                state.store(State::Idle as u8, Ordering::SeqCst);
+                capture_ref.set_claim_armed(false);
+                // 单发 UDP 会丢：丢一包对端就卡在 Sending 连键鼠一起吞掉。
+                // 接收端有状态闸门，重复的 Takeback 是幂等的。
+                out.to_link(t, &Event::Takeback);
+                out.to_link(t, &Event::Takeback);
+                active_cap.set(None);
+                reclaim_cap.store(now_ms(), Ordering::SeqCst);
+                (log)(format!("{why}，已请对端交还键鼠"));
+            };
             while !stop.load(Ordering::Relaxed) {
                 // 状态翻转检查放在收包之前，超时唤醒的空转也能看到翻转
                 let sending = state.load(Ordering::Relaxed) == State::Sending as u8;
@@ -1154,9 +1199,39 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             cb();
                         }
                     }
+                    Captured::Claim => {
+                        // 被控期间本机用户真的动了物理键鼠。
+                        //
+                        // 为什么这个信号必须由平台层给：注入来的事件在钩子
+                        // 入口就带标记被放行了（Win 的 `INJECT_TAG` / Mac 的
+                        // `FIELD_SOURCE_USER_DATA`），所以能走到这里的按下
+                        // 一定是人按的。**不能**拿 Raw Input 的位移当判据 ——
+                        // 那是设备增量流、不过钩子，对端注入的位移会被当成
+                        // 本机用户在动，立刻 Takeback → 对端再注入 → 自激。
+                        if state.load(Ordering::Relaxed) != State::Receiving as u8 {
+                            continue;
+                        }
+                        let now = now_ms();
+                        // 保护窗两头都要：进入被控后的 1.5 秒（KVM 切输入源
+                        // 时显示器重新握手，键盘常吐一串 ghost key），以及
+                        // 认过之后的 1.5 秒（连按两下不连发两次 Takeback）。
+                        if now.saturating_sub(recv_cap.load(Ordering::Relaxed)) < CLAIM_ARM_MS
+                            || now.saturating_sub(last_claim_ms) < CLAIM_ARM_MS
+                        {
+                            continue;
+                        }
+                        last_claim_ms = now;
+                        take_back_here("本机被物理键鼠操作");
+                    }
                     Captured::End => {
                         // 紧急收回：先把按着的键补 up，再告诉对端松手
-                        if state.load(Ordering::Relaxed) == State::Sending as u8 {
+                        let cur_end = state.load(Ordering::Relaxed);
+                        if cur_end == State::Receiving as u8 {
+                            // 被控时按热键也要能收回。原来这里只处理 Sending，
+                            // 被控方按 Ctrl+Alt+Esc 悄无声息 —— 用户唯一的
+                            // 出路是等对端松手，或者拔网线。
+                            take_back_here("键鼠已收回（Ctrl+Alt+Esc）");
+                        } else if cur_end == State::Sending as u8 {
                             // **先快照会话目标**：清空之后补的 up 全丢，
                             // 对端会一直以为某个键还按着。
                             let target = active_cap.get();
@@ -1194,6 +1269,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let log = opts.log.clone();
         let key = opts.key;
         let capture_rx = capture.clone();
+        let recv_rx = last_recv_ms.clone();
         let links_rx = links.clone();
         let active_rx = active.clone();
 
@@ -1304,8 +1380,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 放开"，判成错位并反手再抓一次 —— 用户感知是
                             // 交还之后光标还卡半秒（v0.6.31 实测）。
                             state.store(State::Receiving as u8, Ordering::SeqCst);
+                            // 被控开始：武装"物理抢回"并记时刻（保护窗起点）
+                            recv_rx.store(now_ms(), Ordering::Relaxed);
                             if let Some(cap) = capture_rx.as_ref() {
                                 cap.set_grabbing(false);
+                                cap.set_claim_armed(true);
                             }
                             release_local(&inject, &mut sess.pressed);
                             out.to_link(from_link, &Event::Leave);
@@ -1334,6 +1413,15 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 建场顺序（I2）：先写会话目标，再改状态
                         active_rx.set(Some(from_link));
                         state.store(State::Receiving as u8, Ordering::SeqCst);
+                        // 被控开始（或换了对端）：武装"物理抢回"并记时刻。
+                        // 只在真正进入时才刷新 —— 重复 Enter 不该把保护窗
+                        // 一直往后推，否则用户按 Shift 永远抢不回来。
+                        if entering {
+                            recv_rx.store(now_ms(), Ordering::Relaxed);
+                            if let Some(cap) = capture_rx.as_ref() {
+                                cap.set_claim_armed(true);
+                            }
+                        }
                         // 换对端 = 整体重建，把上一场的时钟、尺寸、按键栈丢掉
                         if sess.peer != links_rx[from_link].ip {
                             sess = Session::new(
@@ -1895,7 +1983,12 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 // Receiving 期间不动（那正是抢回要用的收窄掩码）；Sending
                 // 期间铺开无害 —— 抓取着的时候钩子根本不判边缘。
                 if let Some(c) = capture.as_ref() {
-                    if state.load(Ordering::Relaxed) != State::Receiving as u8 {
+                    let recv = state.load(Ordering::Relaxed) == State::Receiving as u8;
+                    // 抢回的"武装"跟掩码同步：只有被控期间才该把本机的物理
+                    // 按键当成"我要收回"。进入时接收线程已经置过一次，这里是
+                    // 兜底（状态从任何路径滑出 Receiving 都一定被关掉）。
+                    c.set_claim_armed(recv);
+                    if !recv {
                         c.set_mask(mask_gd);
                     }
                 }

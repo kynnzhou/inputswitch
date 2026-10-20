@@ -215,6 +215,13 @@ struct Shared {
     /// 刚被吞掉的那个键码：它的 key-up 也要一起吞，否则对端会收到一个
     /// 没有对应 down 的孤立 up（部分程序按这个判"按键卡住"）。
     swallowed_key: Option<u16>,
+    /// 被控期间是否认"本机物理按键 = 我要收回"。
+    ///
+    /// 只在 Receiving 时开。理由见 `Captured::Claim`：注入事件带
+    /// `FIELD_SOURCE_USER_DATA` 标记，在回调第一行就放行了，所以这里收到
+    /// 的按键一定是人手按的。用普通 bool（而不是原子量）：回调本来就持
+    /// 这把锁，多一层原子量只是多一次跨线程可见性开销。
+    claim: bool,
 }
 
 pub struct Capture {
@@ -280,6 +287,7 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         pin: None,
         paste_ready: paste_ready.clone(),
         swallowed_key: None,
+        claim: false,
     }));
 
     // 光标钉扎线程（v0.6.21 调整为兜底层）：转发期间光标必须停在钉扎点。
@@ -666,6 +674,17 @@ impl Capture {
         }
     }
 
+    /// 被控期间是否认"本机物理按键 = 我要收回"。
+    ///
+    /// 只有 Receiving 时该开。开了之后钩子在"没抓取"分支里只认**按下**，
+    /// 位移一概不看 —— 光标此时的移动可能来自显示器切换时的坐标重置，
+    /// 拿它当"用户在动鼠标"会立刻把控制权抢回来（然后又被按回去，来回弹）。
+    pub fn set_claim_armed(&self, on: bool) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.claim = on;
+        }
+    }
+
     /// 抓取时记下的主屏尺寸（点）。
     ///
     /// 返回整数是为了和 Windows 那个 `Capture::screen()` 对齐 ——
@@ -736,6 +755,19 @@ extern "C" fn callback(
         let grabbing = shared.grabbing.load(Ordering::Relaxed);
 
         if !grabbing {
+            // 被控期间：本机用户真按下键/鼠标键 = 想把控制权要回来。
+            //
+            // 只认"按下"：位移在这个阶段完全不可信（切输入源时显示器
+            // 会把坐标重置，光标瞬间"跳"几百点）。而按键不行伪 —— 尤其是
+            // 注入事件都带着 `FIELD_SOURCE_USER_DATA` 在上面就放行了。
+            if shared.claim
+                && matches!(
+                    type_,
+                    EV_KEY_DOWN | EV_LEFT_DOWN | EV_RIGHT_DOWN | EV_OTHER_DOWN
+                )
+            {
+                let _ = shared.tx.send(Captured::Claim);
+            }
             // 只有多屏共享模式才盯边缘。跟随画面模式下装了钩子但完全不动，
             // 因为那台机器的画面已经切走了：光标停在哪都不代表用户想过去。
             if shared.edge_trigger && type_ == EV_MOUSE_MOVED {

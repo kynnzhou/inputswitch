@@ -337,6 +337,14 @@ struct Shared {
     /// 减掉它再参与边缘判定；跟随画面模式恒 (0,0)。
     ox: AtomicI32,
     oy: AtomicI32,
+    /// 被控期间是否认"本机物理按键 = 我要收回"。只在 Receiving 时开。
+    ///
+    /// 判据只能看钩子里的按键：**绝不能**用 `read_raw_motion` 的增量 ——
+    /// 那是设备上报流、不经过钩子，对端注入的位移会被当成"本机用户在动"，
+    /// 立刻 Takeback → 对端继续注入 → 自激死循环。注入事件带 `INJECT_TAG`，
+    /// 在 `mouse_proc`/`key_proc` 第一行就放行了，所以走到判定点的按键
+    /// 一定是人手按的。
+    claim: Arc<AtomicBool>,
     tx: Sender<Captured>,
 }
 
@@ -345,6 +353,7 @@ static STATE: Mutex<Option<Arc<Mutex<Shared>>>> = Mutex::new(None);
 
 pub struct Capture {
     grabbing: Arc<AtomicBool>,
+    claim: Arc<AtomicBool>,
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
     thread_id: Arc<AtomicU32>,
@@ -369,6 +378,7 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         }
     }
     let grabbing = Arc::new(AtomicBool::new(false));
+    let claim = Arc::new(AtomicBool::new(false));
     let width_atom = Arc::new(AtomicU32::new(width));
     let height_atom = Arc::new(AtomicU32::new(height));
     let thread_id = Arc::new(AtomicU32::new(0));
@@ -382,6 +392,7 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         height: height_atom.clone(),
         ox: AtomicI32::new(origin.0),
         oy: AtomicI32::new(origin.1),
+        claim: claim.clone(),
         tx,
     }));
     *STATE.lock().map_err(|_| "状态锁坏了".to_string())? = Some(shared);
@@ -473,6 +484,7 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
     match ready_rx.recv_timeout(Duration::from_secs(3)) {
         Ok(Ok(())) => Ok(Capture {
             grabbing,
+            claim,
             width: width_atom,
             height: height_atom,
             thread_id,
@@ -605,6 +617,15 @@ impl Capture {
         }
     }
 
+    /// 被控期间是否认"本机物理按键 = 我要收回"。只有 Receiving 时该开。
+    ///
+    /// 开了之后钩子在"没抓取"分支里只认**按下**。位移一概不看 —— 光标此时
+    /// 的移动可能来自显示器切换时的坐标重置，拿它当"用户在动鼠标"会立刻
+    /// 把控制权抢回来，然后又被按回去，来回弹。
+    pub fn set_claim_armed(&self, on: bool) {
+        self.claim.store(on, Ordering::Relaxed);
+    }
+
     pub fn screen(&self) -> (u32, u32) {
         (
             self.width.load(Ordering::Relaxed),
@@ -711,6 +732,17 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
     with_shared(|shared| {
         let grabbing = shared.grabbing.load(Ordering::Relaxed);
         if !grabbing {
+            // 被控期间：本机用户真按下鼠标键 = 想把控制权拿回来。
+            // 只认"按下"：切输入源时显示器会把光标坐标重置，位移在那一秒
+            // 完全不可信（拿它当判据就是"抢回来又被按回去"的来回弹）。
+            if shared.claim.load(Ordering::Relaxed)
+                && matches!(
+                    wparam,
+                    WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+                )
+            {
+                let _ = shared.tx.send(Captured::Claim);
+            }
             // 只有多屏共享模式才盯边缘。跟随画面模式下那台机器的画面已经切走，
             // 光标停在哪都不代表用户想过去。
             if shared.edge_trigger && wparam == WM_MOUSEMOVE {
@@ -827,6 +859,14 @@ extern "system" fn key_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize 
     let mut swallow = false;
     with_shared(|shared| {
         if !shared.grabbing.load(Ordering::Relaxed) {
+            // 被控期间：本机用户真按下键 = 想把控制权拿回来。
+            // `info.extra == INJECT_TAG` 在上面就 return 了，所以能到这里的
+            // 按键一定是人按的（对端注入的键不会被当成本机用户）。
+            if shared.claim.load(Ordering::Relaxed)
+                && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)
+            {
+                let _ = shared.tx.send(Captured::Claim);
+            }
             return;
         }
         swallow = true;
