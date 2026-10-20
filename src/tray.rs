@@ -2084,18 +2084,29 @@ fn engine_loop(
                 // 它的 DDC 是通的 —— 让它替我们把画面切到这个口。
                 let peers = mesh.live_peers();
                 let mut sent = 0usize;
+                // 发不出去的原因要说出来。以前 send_command 只回 bool，"对端要码
+                // 而本机没设"这种一定被丢的情况也算发出去了，界面就会谎报"几秒后
+                // 屏幕会回来"——用户只能对着黑屏猜。
+                let mut why: Vec<String> = Vec::new();
                 for peer in &peers {
-                    if mesh.send_command(
+                    match mesh.send_command(
                         &peer.node,
                         "switch",
                         serde_json::json!({ "input": "", "value": value }),
                     ) {
-                        sent += 1;
-                        log_line(&format!("已请 {} 把画面切到 0x{value:02X}", peer.node));
+                        Ok(()) => {
+                            sent += 1;
+                            log_line(&format!("已请 {} 把画面切到 0x{value:02X}", peer.node));
+                        }
+                        Err(err) => why.push(err),
                     }
                 }
                 let text = if sent == 0 {
-                    "没有在线对端可以代切".to_string()
+                    if why.is_empty() {
+                        "没有在线对端可以代切".to_string()
+                    } else {
+                        format!("切不了：{}", why.join("；"))
+                    }
                 } else {
                     format!("已请对端把画面切到 0x{value:02X}，几秒后屏幕会回来")
                 };
@@ -2190,11 +2201,14 @@ fn engine_loop(
                             .collect();
                         let mut sent = false;
                         for node in nodes {
-                            if relay_mesh.send_command(
-                                &node,
-                                "switch",
-                                serde_json::json!({ "input": "", "value": home }),
-                            ) {
+                            if relay_mesh
+                                .send_command(
+                                    &node,
+                                    "switch",
+                                    serde_json::json!({ "input": "", "value": home }),
+                                )
+                                .is_ok()
+                            {
                                 sent = true;
                             }
                         }
@@ -2390,13 +2404,18 @@ pub fn run() -> ! {
     // 文件接收服务
     let inbox_shared: Arc<Mutex<PathBuf>> =
         Arc::new(Mutex::new(config_snapshot.transfer.inbox_dir()));
+    // 钥匙放在 `if` 外面声明：面板改配对码时要就地换掉它（见 `Action::Pair`）。
+    // 文件服务没法像 KVM 那样"重启一下"——旧 TcpListener 还占着端口，
+    // 重新 bind 必然 EADDRINUSE，所以只能让 key 变成共享可变。
+    let transfer_key: Arc<Mutex<Option<[u8; 32]>>> =
+        Arc::new(Mutex::new(crate::pair::link_key(&config_snapshot.pair.code)));
     if config_snapshot.transfer.enabled {
         let proxy_saved = proxy.clone();
         let inbox_for_log = config_snapshot.transfer.inbox_dir();
         match transfer::serve(
             inbox_shared.clone(),
             config_snapshot.transfer.port,
-            crate::pair::link_key(&config_snapshot.pair.code),
+            transfer_key.clone(),
             |message| log_line(&format!("[传输] {message}")),
             move |saved, clip| {
                 let _ = proxy_saved.send_event(UserEvent::Saved(saved, clip));
@@ -2413,7 +2432,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.56",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.57",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2561,10 +2580,17 @@ pub fn run() -> ! {
             Event::UserEvent(UserEvent::Panel(action)) => match action {
                 Action::Pair(code) => {
                     let code = code.trim().to_string();
+                    // 码没变就别重开共用键鼠：面板上点一次"保存"就把正在转发的那场
+                    // 断掉，属于无缘无故的伤害。变了才需要换钥匙。
+                    let changed = config.pair.code.trim() != code;
                     config.pair.code = code.clone();
                     let _ = config.save();
                     mesh.set_key(crate::pair::link_key(&code));
-                    status = if code.is_empty() {
+                    // 文件接收服务的 key 是共享可变的，就地换掉即可（不用重启监听器）
+                    if let Ok(mut k) = transfer_key.lock() {
+                        *k = crate::pair::link_key(&code);
+                    }
+                    let text = if code.is_empty() {
                         // 空码 = 取消配对：mesh 会真的把 key 置空（link_key 对空串返回 None），
                         // 之后本机不再签名也不再验签。这句必须把后果说全，不然用户不知道
                         // 自己刚把门打开了。
@@ -2574,15 +2600,27 @@ pub fn run() -> ! {
                     } else {
                         format!("已保存配对码 {}，对面填同一个码就能连上", mask_code(&code))
                     };
-                    log_line(&status);
+                    if changed {
+                        // 共用键鼠的 `Sealer` 是**启动时快照**、且按设计绝不重建（nonce
+                        // counter 不能从头算），所以换码只能换实例。不重开的话事件流还在
+                        // 用旧钥匙 —— 界面说"双向消息已签名"，实际两边码不同却谁也发现不了；
+                        // 取消配对更糟：KVM 仍在加密，对端没码就当垃圾丢掉，表现成"都开着就是不通"。
+                        restart_kvm(&mut config, &mut kvm_handle, &mesh, &tx, &mut status, text);
+                    } else {
+                        status = text;
+                        log_line(&status);
+                    }
                 }
                 Action::GenerateCode => {
                     let code = crate::pair::random_code();
                     config.pair.code = code.clone();
                     let _ = config.save();
                     mesh.set_key(crate::pair::link_key(&code));
-                    status = format!("新配对码 {}，请在对面填同一个", code);
-                    log_line(&status);
+                    if let Ok(mut k) = transfer_key.lock() {
+                        *k = crate::pair::link_key(&code);
+                    }
+                    let text = format!("新配对码 {code}，请在对面填同一个");
+                    restart_kvm(&mut config, &mut kvm_handle, &mesh, &tx, &mut status, text);
                 }
                 Action::ToggleAutostart(on) => {
                     let result = if on {
@@ -3022,11 +3060,16 @@ pub fn run() -> ! {
                                 }
                                 let mut sent = 0;
                                 for peer in targets {
-                                    if mesh.send_command(
-                                        &peer.node,
-                                        "clipboard",
-                                        serde_json::json!({ "text": text }),
-                                    ) {
+                                    // 这里只关心"有没有发出去"：一次复制可能广播给
+                                    // 好几台，逐条报错会刷屏（真正该解释的是代切那条路）
+                                    if mesh
+                                        .send_command(
+                                            &peer.node,
+                                            "clipboard",
+                                            serde_json::json!({ "text": text }),
+                                        )
+                                        .is_ok()
+                                    {
                                         sent += 1;
                                     }
                                 }

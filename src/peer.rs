@@ -356,13 +356,38 @@ impl Mesh {
         self.live_peers().into_iter().find(|p| p.ddc_ok)
     }
 
-    pub fn send_command(&self, node: &str, action: &str, args: serde_json::Value) -> bool {
+    /// 给某台对端发一条指令。
+    ///
+    /// 返回 `Err` 意味着对面**一定**收不到，调用方不要再报成功。
+    ///
+    /// 以前这里返回 `bool`，判据是"`send_to()` 没报错"—— 而 UDP 的 `send_to`
+    /// 只要内核收下了就返回 Ok，对面收不收、丢不丢它根本不知道。最典型的
+    /// 假成功是"对端设了配对码、本机没设"：包发得出去，对面在收包处验签
+    /// 失败直接 `continue`，界面却报"已请对端把画面切到 0x..，几秒后屏幕会回来"。
+    /// `Peer.wants_pair` 早就知道这件事，之前只拿去喂面板提示，现在拿来拦。
+    pub fn send_command(
+        &self,
+        node: &str,
+        action: &str,
+        args: serde_json::Value,
+    ) -> Result<(), String> {
         let Some(peer) = self.peers.lock().unwrap().get(node).cloned() else {
-            return false;
+            return Err(format!("{node} 不在对端表里（它没在广播，或者还没被发现）"));
         };
+        // 表里的条目要留到 10 倍超时才清（见 `live_peers`），所以"查得到" ≠ "还活着"
+        if !peer.alive() {
+            return Err(format!("{node} 已经掉线，这条指令发过去没人收"));
+        }
+        // ⚠️ 这道守卫必须放在取 socket 之前：它跟网络状态无关，放到后面就会被
+        // "监听没起来"掩盖掉，也没法在单测里覆盖（单测不起真 socket）。
+        if self.key.lock().unwrap().is_none() && peer.wants_pair {
+            return Err(format!(
+                "{node} 设了配对码而本机没设 —— 它会把这条指令当未签名包丢掉，请两边填同一个码"
+            ));
+        }
         let socket = self.socket.lock().unwrap().clone();
         let Some(socket) = socket else {
-            return false;
+            return Err("局域网监听没起来".to_string());
         };
         let (own_input, own_value) = self.own();
         let mut msg = Message {
@@ -383,11 +408,12 @@ impl Mesh {
         if let Some(k) = *self.key.lock().unwrap() {
             msg.mac = pair::sign(&k, &msg.canonical());
         }
-        let Ok(payload) = serde_json::to_vec(&msg) else {
-            return false;
-        };
+        let payload = serde_json::to_vec(&msg).map_err(|e| format!("消息打包失败：{e}"))?;
         let target = SocketAddr::new(peer.addr.ip(), self.port);
-        socket.send_to(&payload, target).is_ok()
+        socket
+            .send_to(&payload, target)
+            .map(|_| ())
+            .map_err(|e| format!("发不出去：{e}"))
     }
 }
 
@@ -419,5 +445,72 @@ fn subnet_broadcast() -> Option<String> {
         Some(format!("{}.{}.{}.255", octets[0], octets[1], octets[2]))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 往私有对端表里塞一台，不走网络。`Mesh::new` 不 bind 端口，所以这些
+    /// 单测不需要真 socket —— 这也正是把"配对守卫"排在取 socket 之前的原因。
+    fn with_peer(mesh: &Mesh, wants_pair: bool, seen_ago: Duration) {
+        let peer = Peer {
+            node: "peer-a".into(),
+            addr: "192.0.2.7:0".parse().unwrap(),
+            last_seen: Instant::now() - seen_ago,
+            ddc_ok: true,
+            own_input: String::new(),
+            own_value: 0,
+            paired: false,
+            wants_pair,
+            clip_v: CLIP_VERSION,
+            kvm_v: KVM_VERSION,
+        };
+        mesh.peers.lock().unwrap().insert(peer.node.clone(), peer);
+    }
+
+    /// 本机没码、对端要码：包发得出去但对面一定丢，必须报错而不是报成功。
+    #[test]
+    fn refuses_command_when_peer_wants_pair() {
+        let mesh = Mesh::new("me", 47831, false);
+        with_peer(&mesh, true, Duration::from_secs(1));
+        let err = mesh
+            .send_command("peer-a", "switch", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("配对码"), "{err}");
+    }
+
+    /// 表里的条目要留到 10 倍超时才清，"查得到"不等于"还活着"。
+    #[test]
+    fn refuses_command_to_dead_peer() {
+        let mesh = Mesh::new("me", 47831, false);
+        with_peer(&mesh, false, Duration::from_secs(30));
+        let err = mesh
+            .send_command("peer-a", "switch", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("掉线"), "{err}");
+    }
+
+    /// 本机也设了码：配对这一步没理由拦，应该走到"监听没起来"。
+    #[test]
+    fn passes_pair_guard_when_key_set() {
+        let mesh = Mesh::new("me", 47831, false);
+        mesh.set_key(pair::link_key("123456"));
+        with_peer(&mesh, true, Duration::from_secs(1));
+        let err = mesh
+            .send_command("peer-a", "switch", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("监听"), "{err}");
+        assert!(!err.contains("配对码"), "守卫拦错了：{err}");
+    }
+
+    #[test]
+    fn refuses_command_to_unknown_peer() {
+        let mesh = Mesh::new("me", 47831, false);
+        let err = mesh
+            .send_command("没这台", "switch", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("不在对端表里"), "{err}");
     }
 }

@@ -202,10 +202,14 @@ pub fn send(
 }
 
 /// 后台接收服务。每来一个连接就处理完再接下一条。
+///
+/// `key` 是**共享可变**的：改了配对码要立刻生效，不能把值拷进来。
+/// 也不能靠"重启监听器"来换 key —— 旧 `TcpListener` 还占着端口，
+/// 重新 bind 必然 EADDRINUSE。改成每个连接开头读一次当前 key，最省事。
 pub fn serve<L, S>(
     inbox: Arc<Mutex<PathBuf>>,
     port: u16,
-    key: Option<[u8; 32]>,
+    key: Arc<Mutex<Option<[u8; 32]>>>,
     on_log: L,
     on_saved: S,
 ) -> std::io::Result<()>
@@ -222,11 +226,14 @@ where
             let inbox = inbox.clone();
             let log = on_log.clone();
             let saved_cb = on_saved.clone();
+            let key = key.clone();
             std::thread::spawn(move || {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
                 // 目录可以在运行时改，每次取最新的
                 let dir = inbox.lock().unwrap().clone();
-                match receive_one(&mut stream, &dir, key, log.as_ref()) {
+                // 钥匙同理：这次连接用握手那一刻的码，传到一半改码不打断这一批
+                let key_now = *key.lock().unwrap();
+                match receive_one(&mut stream, &dir, key_now, log.as_ref()) {
                     Ok((saved, clip)) => {
                         let text = format!("接收了 {} 个文件", saved.len());
                         log(text);
@@ -415,7 +422,7 @@ mod tests {
         serve(
             Arc::new(Mutex::new(inbox.clone())),
             port,
-            None,
+            Arc::new(Mutex::new(None)),
             |_| {},
             |_, _| {},
         )

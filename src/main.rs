@@ -319,6 +319,9 @@ fn cmd_switch(input: &str, model: Option<&str>, verify: bool, relay: bool) -> i3
             .map(|d| sw2.capability(&d) != inputswitch::Capability::Unsupported)
             .unwrap_or(false);
         let mesh = Mesh::new(sw.config.node.clone(), sw.config.network.port, ddc_ok);
+        // 对端设了配对码时，不签名的指令会被它当陌生人丢掉。以前这里从不装钥匙，
+        // 于是 `--relay` 在配对过的机器上 100% 无效，而界面还报"已请对端执行切换"。
+        mesh.set_key(inputswitch::pair::link_key(&sw.config.pair.code));
         if mesh.start(Box::new(|_, _, _| {})).is_err() {
             println!("无法启动局域网监听");
             return 2;
@@ -327,10 +330,9 @@ fn cmd_switch(input: &str, model: Option<&str>, verify: bool, relay: bool) -> i3
         match mesh.find_ddc_capable() {
             Some(peer) => {
                 let args = serde_json::json!({ "input": input, "model": model });
-                if mesh.send_command(&peer.node, "switch", args) {
-                    println!("已请 {} 执行切换", peer.node);
-                } else {
-                    println!("无法联系 {}", peer.node);
+                match mesh.send_command(&peer.node, "switch", args) {
+                    Ok(()) => println!("已请 {} 执行切换", peer.node),
+                    Err(err) => println!("发不出去：{err}"),
                 }
             }
             None => println!("没有找到具备 DDC 能力的对端（确认两边都开着 daemon）"),
@@ -802,6 +804,7 @@ fn cmd_scan(all: bool, yes: bool, idle_window: u64, only: Option<&str>) -> i32 {
 
     // 先听一下局域网：对面如果在自己报口，这些口就不用切屏试探
     let mesh = Mesh::new(sw.config.node.clone(), sw.config.network.port, true);
+    mesh.set_key(inputswitch::pair::link_key(&sw.config.pair.code));
     let started = mesh.start(Box::new(|_, _, _| {})).is_ok();
     let mut peer_ports: Vec<(String, u16)> = Vec::new();
     if started {
@@ -857,11 +860,14 @@ fn cmd_scan(all: bool, yes: bool, idle_window: u64, only: Option<&str>) -> i32 {
             // 请对面代切回原位：对面收到后会用同一套逻辑写 0x60
             let mut sent = false;
             for peer in mesh.live_peers() {
-                if mesh.send_command(
-                    &peer.node,
-                    "switch",
-                    serde_json::json!({ "input": "", "value": home }),
-                ) {
+                if mesh
+                    .send_command(
+                        &peer.node,
+                        "switch",
+                        serde_json::json!({ "input": "", "value": home }),
+                    )
+                    .is_ok()
+                {
                     sent = true;
                 }
             }
