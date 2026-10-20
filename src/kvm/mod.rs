@@ -267,8 +267,15 @@ struct Out {
 }
 
 impl Out {
-    /// 发一个事件。加密和明文走同一条路，调用方不用关心。
+    /// 发一个事件给**当前会话目标**（`self.peer`）。会话流（位移/按键/
+    /// Enter/Leave）走这条。
     fn send(&self, ev: &Event) {
+        self.to(self.peer, ev);
+    }
+
+    /// 显式寻址发送。**回包与救援必须用它**：多对端下 `self.peer` 只是
+    /// "当前会话那台"，把给 A 的 Pong 发给它，实际收件人可能是 B。
+    fn to(&self, addr: SocketAddr, ev: &Event) {
         let mut seq = self.seq.lock().unwrap();
         *seq = seq.wrapping_add(1);
         let n = *seq;
@@ -278,8 +285,22 @@ impl Out {
         };
         // 加密失败会返回空，这种情况下丢掉这个包 —— 绝不退回明文，那等于静默降级
         if !bytes.is_empty() {
-            let _ = self.socket.send_to(&bytes, self.peer);
+            let _ = self.socket.send_to(&bytes, addr);
         }
+    }
+}
+
+/// 本机状态在**某个具体对端**眼里的样子。
+///
+/// 我在跟 B 开会时，对 A 而言就该是 Idle。若照实把 `Sending` 报给 A，
+/// A 那边期待的是 `Receiving`，2.5 秒后判"状态对不上（交还消息丢了）"
+/// 并自愈 —— 它会把正在跟我开会的那条会话一起踢掉。多对端下必现，
+/// 单对端下这个函数恒等于原值，行为不变。
+fn state_for(state: &AtomicU8, active: IpAddr, from: IpAddr) -> u8 {
+    if from == active {
+        state.load(Ordering::Relaxed)
+    } else {
+        State::Idle as u8
     }
 }
 
@@ -983,11 +1004,13 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         }
                     }
                     // 心跳：last_rx 上面已经刷新了，Pong 里带上自己的状态 ——
-                    // 对端拿它做"状态错位自愈"的依据（见心跳线程）
+                    // 对端拿它做"状态错位自愈"的依据（见心跳线程）。
+                    // **必须回给来源**，不能走"当前会话目标"：多对端下 4 台
+                    // 都会发 Ping，回错人等于让对端 2.5 秒后判它不理我。
+                    // 状态也要按对端投影，理由见 state_for。
                     Event::Ping => {
-                        out.send(&Event::Pong {
-                            state: state.load(Ordering::Relaxed),
-                        });
+                        let st = state_for(&state, out.peer.ip(), from.ip());
+                        out.to(from, &Event::Pong { state: st });
                     }
                     Event::Pong { state: peer } => {
                         peer_state_rx.store(peer, Ordering::Relaxed);
@@ -1003,8 +1026,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 位移事件刷爆。
                             if now_ms().saturating_sub(last_takeback_ms) > 1000 {
                                 last_takeback_ms = now_ms();
-                                out.send(&Event::Takeback);
-                                out.send(&Event::Takeback);
+                                // 救援也要回给来源：把 Takeback 发给会话目标，
+                                // 真正该收回的那台就永远收不到
+                                out.to(from, &Event::Takeback);
+                                out.to(from, &Event::Takeback);
                                 (log)("没在被控状态却收到输入事件，已通知对端收回".to_string());
                             }
                             continue;

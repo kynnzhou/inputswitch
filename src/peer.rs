@@ -27,6 +27,16 @@ use crate::pair::{self, NonceCache};
 pub const PROTOCOL_VERSION: u32 = 1;
 /// 剪贴板文件按需传输的能力版本。1 = 认识 `clip_pull`、能按清单反向拉取。
 pub const CLIP_VERSION: u8 = 1;
+/// 多对端（一对多）路由的能力版本。0 / 缺省 = 单对端（v0.6.43 及更早）。
+///
+/// 为什么要单独一位：老版本的接收循环里有一句
+/// `if from.ip() != 当前会话对端.ip() { continue }`，多出来的机器发什么
+/// 都会被静默丢掉 —— 表现是"半通"，最难查。只有 `kvm_v` 够高的机器
+/// 才允许被配成第二、第三条链路。
+///
+/// 1 = 网络语义已适配多对端（回包按来源、Pong 按对端投影、指令带来源）；
+/// 2 = 真的能路由（P4 落地后升到 2）。面板按 `>= 2` 判定可否加入路由。
+pub const KVM_VERSION: u8 = 1;
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(2);
 const PEER_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -60,6 +70,10 @@ struct Message {
     /// **不进 canonical**：老端不认识这个字段也能验签通过。
     #[serde(default)]
     clip_v: u8,
+    /// 多对端路由能力位：0/缺省 = 老版本，见 `KVM_VERSION`。
+    /// **同样不进 canonical**，理由同上。
+    #[serde(default)]
+    kvm_v: u8,
 }
 
 impl Message {
@@ -99,6 +113,8 @@ pub struct Peer {
     pub wants_pair: bool,
     /// 对端的剪贴板文件传输能力（1 = 支持 clip_pull / 按需传文件）
     pub clip_v: u8,
+    /// 对端的多对端路由能力（见 `KVM_VERSION`；< 2 = 不能加入多链路路由）
+    pub kvm_v: u8,
 }
 
 impl Peer {
@@ -112,7 +128,12 @@ impl Peer {
     }
 }
 
-pub type CommandHandler = Box<dyn Fn(String, serde_json::Value) + Send + Sync>;
+/// 收到对端指令时的回调：`(来源 node, action, args)`。
+///
+/// **为什么必须带来源**：配对密钥是全体共用一把，签过名的包任何一台都
+/// 能发。只传 action 的话，接收方分不清"隔壁那台让我切屏"和"另一台
+/// 让我切屏"—— 三台以上互连时日志里根本没法复盘是谁动的手。
+pub type CommandHandler = Box<dyn Fn(String, String, serde_json::Value) + Send + Sync>;
 
 /// 本机自己占用的口：(口名, VCP 取值)。0 表示还没确定。
 type OwnPort = Arc<Mutex<(String, u16)>>;
@@ -261,10 +282,11 @@ impl Mesh {
                                     paired,
                                     wants_pair,
                                     clip_v: msg.clip_v,
+                                    kvm_v: msg.kvm_v,
                                 },
                             );
                         }
-                        "command" => on_command(msg.action, msg.args),
+                        "command" => on_command(msg.node.clone(), msg.action.clone(), msg.args.clone()),
                         _ => {}
                     }
                 }
@@ -296,6 +318,7 @@ impl Mesh {
                         own_value,
                         mac: String::new(),
                         clip_v: CLIP_VERSION,
+                        kvm_v: KVM_VERSION,
                     };
                     if let Some(k) = *key.lock().unwrap() {
                         msg.mac = pair::sign(&k, &msg.canonical());
@@ -319,14 +342,12 @@ impl Mesh {
     }
 
     pub fn live_peers(&self) -> Vec<Peer> {
-        let mut list: Vec<Peer> = self
-            .peers
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|p| p.alive())
-            .cloned()
-            .collect();
+        let mut table = self.peers.lock().unwrap();
+        // 只增不删的表在 5 台互连时会一直残留早已关机的机器：8 秒超时
+        // 只是让它们"不可见"，条目本身还在，`send_command` 照样能往里
+        // 写字。留 10 倍超时再清，避免 DHCP 换 IP / 短暂掉线反复进表。
+        table.retain(|_, p| p.last_seen.elapsed() < PEER_TIMEOUT * 10);
+        let mut list: Vec<Peer> = table.values().filter(|p| p.alive()).cloned().collect();
         list.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
         list
     }
@@ -357,6 +378,7 @@ impl Mesh {
             own_value,
             mac: String::new(),
             clip_v: CLIP_VERSION,
+            kvm_v: KVM_VERSION,
         };
         if let Some(k) = *self.key.lock().unwrap() {
             msg.mac = pair::sign(&k, &msg.canonical());

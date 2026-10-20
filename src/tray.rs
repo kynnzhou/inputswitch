@@ -1885,7 +1885,7 @@ pub fn run() -> ! {
 
     if config_snapshot.network.enabled {
         let tx_relay = tx.clone();
-        let started = mesh.start(Box::new(move |action, args| match action.as_str() {
+        let started = mesh.start(Box::new(move |from, action, args| match action.as_str() {
             "switch" => {
                 if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
                     let value = args.get("value").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
@@ -1893,6 +1893,7 @@ pub fn run() -> ! {
                         name: input.to_string(),
                         value,
                     });
+                    log_line(&format!("收到 {from} 的切屏指令：{input}={value}"));
                 }
             }
             "clipboard" => {
@@ -1982,7 +1983,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.43",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.44",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

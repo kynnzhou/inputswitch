@@ -319,7 +319,7 @@ fn cmd_switch(input: &str, model: Option<&str>, verify: bool, relay: bool) -> i3
             .map(|d| sw2.capability(&d) != inputswitch::Capability::Unsupported)
             .unwrap_or(false);
         let mesh = Mesh::new(sw.config.node.clone(), sw.config.network.port, ddc_ok);
-        if mesh.start(Box::new(|_, _| {})).is_err() {
+        if mesh.start(Box::new(|_, _, _| {})).is_err() {
             println!("无法启动局域网监听");
             return 2;
         }
@@ -453,7 +453,7 @@ fn cmd_status() -> i32 {
 
     if sw.config.network.enabled {
         let mesh = Mesh::new(sw.config.node.clone(), sw.config.network.port, false);
-        if mesh.start(Box::new(|_, _| {})).is_ok() {
+        if mesh.start(Box::new(|_, _, _| {})).is_ok() {
             sleep(Duration::from_millis(2500));
             let peers = mesh.live_peers();
             println!("\n局域网对端: {} 台", peers.len());
@@ -802,7 +802,7 @@ fn cmd_scan(all: bool, yes: bool, idle_window: u64, only: Option<&str>) -> i32 {
 
     // 先听一下局域网：对面如果在自己报口，这些口就不用切屏试探
     let mesh = Mesh::new(sw.config.node.clone(), sw.config.network.port, true);
-    let started = mesh.start(Box::new(|_, _| {})).is_ok();
+    let started = mesh.start(Box::new(|_, _, _| {})).is_ok();
     let mut peer_ports: Vec<(String, u16)> = Vec::new();
     if started {
         print!("正在寻找局域网里的另一台");
@@ -989,12 +989,12 @@ fn cmd_daemon_headless() -> i32 {
     let node = sw.config.node.clone();
 
     let mesh = Mesh::new(node.clone(), port, ddc_ok);
-    let started = mesh.start(Box::new(move |action, args| {
+    let started = mesh.start(Box::new(move |from, action, args| {
         if action == "switch" {
             if let Some(target) = args.get("input").and_then(|v| v.as_str()) {
                 let mut inner = Switcher::new();
                 let outcome = inner.switch(target, None, true, Duration::from_secs(3));
-                eprintln!("[relay] {}", outcome.message);
+                eprintln!("[relay] {from} → {}", outcome.message);
             }
         }
     }));
@@ -1095,7 +1095,7 @@ fn cmd_send(paths: &[String], wait_secs: u64) -> i32 {
     let config = Config::load();
     let mesh = Mesh::new(config.node.clone(), config.network.port, false);
     mesh.set_key(inputswitch::pair::link_key(&config.pair.code));
-    if let Err(err) = mesh.start(Box::new(|_, _| {})) {
+    if let Err(err) = mesh.start(Box::new(|_, _, _| {})) {
         eprintln!("局域网监听失败：{err}");
         return 1;
     }
