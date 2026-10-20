@@ -66,8 +66,34 @@ echo "==> 版本 ${VERSION}"
   -c "Set :CFBundleVersion ${VERSION}" \
   "${BUNDLE}/Contents/Info.plist"
 
-echo "==> 临时签名（ad-hoc）"
-codesign --force --deep --sign - "$BUNDLE" 2>/dev/null || echo "   跳过签名（未安装 Xcode 命令行工具时正常）"
+# 签名：优先用固定的本地自签名证书，没有才退回 ad-hoc。
+#
+# 为什么要固定证书：ad-hoc 签名的 designated requirement 是「cdhash = xxx」，
+# 每次重编译 cdhash 必变 → TCC 里那条辅助功能授权立刻作废，用户每装一版都要
+# 回设置页取消再勾一次（2026-10-20 反复踩）。
+# 换成自签名证书后，DR 变成「identifier + 证书根哈希」，两张都不随编译变化，
+# 勾一次以后就永久有效。
+#
+# 证书准备（只需一次，见 ~/.workbuddy/inputswitch-signing/）：
+#   openssl req -x509 ... -addext extendedKeyUsage=codeSigning
+#   security import identity.p12 -k login.keychain-db -P … -T /usr/bin/codesign
+#   security add-trusted-cert -r trustRoot -p codeSign -k login.keychain-db cert.pem
+SIGN_ID="InputSwitch Local Signing"
+
+echo "==> 签名"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  # 嵌套二进制要逐个签，最后签外层。用 --deep 一次性签会留下
+  # .cstemp 残影，`codesign --verify` 报 "a sealed resource is missing or invalid"。
+  codesign --force --sign "$SIGN_ID" "${BUNDLE}/Contents/MacOS/inputswitch-cli"
+  codesign --force --sign "$SIGN_ID" "${BUNDLE}/Contents/MacOS/${APP_NAME}"
+  codesign --force --sign "$SIGN_ID" "$BUNDLE"
+  codesign --verify --deep --strict "$BUNDLE" || { echo "签名校验失败" >&2; exit 1; }
+  echo "   ${SIGN_ID}（固定证书，重编译不用重勾权限）"
+else
+  codesign --force --deep --sign - "$BUNDLE" 2>/dev/null \
+    || echo "   跳过签名（未安装 Xcode 命令行工具时正常）"
+  echo "   ad-hoc（没找到固定证书，这次装完要重新勾权限）"
+fi
 
 # 装进 /Applications，并保证系统里只注册这一份。
 # 不这么做的话 dist/ 里那份、以前留在废纸篓里的那份都会以同名同包名出现在
@@ -92,6 +118,7 @@ echo "完成: ${INSTALL_DIR}/${APP_NAME}.app  (v${VERSION})"
 echo "已在 /Applications，双击或：open -a ${APP_NAME}"
 echo "命令行诊断： ${INSTALL_DIR}/${APP_NAME}.app/Contents/MacOS/inputswitch-cli probe"
 echo
-echo "权限提醒：ad-hoc 签名每次重编译都会变，覆盖安装后要去"
-echo "  系统设置 → 隐私与安全性 → 设备控制和数据访问（辅助功能）"
-echo "  把 ${APP_NAME} 那条先取消勾选、再重新勾上；添加列表里现在只有 /Applications 这一份。"
+echo "权限提醒："
+echo "  固定证书（${SIGN_ID}）签名 → 重编译不会作废授权，不用再手动勾。"
+echo "  只有第一次换证书时要在「设置 → 隐私与安全性 → 设备控制和数据访问」勾一次；"
+echo "  添加列表里现在只有 /Applications 这一份。"
