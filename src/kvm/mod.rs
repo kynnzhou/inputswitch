@@ -164,7 +164,9 @@ pub enum Captured {
     /// 鼠标撞到边缘，请求越界到对端（只在 Edge 模式发生）。
     /// `along` = 出门瞬间光标沿门轴的位置比例（0..65535）：
     /// 左右门是纵坐标、上下门是横坐标，让对端从对应高度进门。
-    Begin { along: u16 },
+    /// `side` = 撞的是哪条边 —— 一机配多台时平台层手上有四向掩码，
+    /// 具体撞了哪一条要由它带回来，主循环据此选目标、并把它写进 Enter。
+    Begin { along: u16, side: Side },
     /// 要转发给对端的事件
     Input(Event),
     /// 钩子线程发现异常，直接落日志（比如被系统超时禁用）
@@ -182,6 +184,19 @@ use mac as plat;
 use win as plat;
 
 pub use plat::Inject;
+
+/// 平台层抓取参数。
+///
+/// 用命名结构体而不是几个位置参数：Mac 与 Windows 两份实现要逐个对位，
+/// `sides`（u8）和 `edge_trigger`（bool）一旦传反，只有交叉编译那次才会
+/// 暴露出来，而且症状是"某条边莫名不响应"，排查成本极高。
+pub struct CaptureOpts {
+    /// 四向掩码：哪几条边通向邻居。0 = 没有门（跟随画面模式）。
+    /// P3 阶段由单一 `side` 折算，P4 之后由链路表生成。
+    pub sides: u8,
+    /// 没抓取时要不要盯着屏幕边缘（只有多屏共享模式需要）
+    pub edge_trigger: bool,
+}
 
 /// 本机有没有抓取键鼠的权限
 pub fn trusted() -> bool {
@@ -711,8 +726,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     if needs_capture {
         let (tx, rx) = mpsc::channel::<Captured>();
         let cap = Arc::new(plat::start_capture(
-            opts.side,
-            opts.mode == Mode::Edge,
+            CaptureOpts {
+                // P3 只有单条链路：一条边有邻居。P4 起由链路表生成掩码。
+                sides: opts.side.bit(),
+                edge_trigger: opts.mode == Mode::Edge,
+            },
             tx,
         )?);
         let state = state.clone();
@@ -770,7 +788,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     continue;
                 };
                 match msg {
-                    Captured::Begin { along } => {
+                    Captured::Begin { along, side } => {
                         // 边缘越界：只在 Edge 模式发生。撞到了就按 follow 的流程
                         // 走一遍（同样要先确认对端活着，否则不敢吞键鼠）。
                         // Idle = 正常越界；Receiving = 对端正控制着本机，
@@ -806,19 +824,22 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         let (sw, sh) = capture_ref.screen();
                         // Enter 双发：丢一包对端就收不到开工信号（好在
                         // Pong 状态自愈 2.5s 兜底，双发把卡顿窗口压到最小）
+                        // 出门侧用**平台层报回来的那条边**，不是配置里那个：
+                        // 掩码有多位时撞的到底是哪条边只有它能回答，而对端
+                        // 靠这个字节把门口定到对面（v0.6.42 的拓扑定理）。
                         out.send(&Event::Enter {
                             width: sw.min(65535) as u16,
                             height: sh.min(65535) as u16,
                             along,
                             flags: 0,
-                            side: opts.side.code(),
+                            side: side.code(),
                         });
                         out.send(&Event::Enter {
                             width: sw.min(65535) as u16,
                             height: sh.min(65535) as u16,
                             along,
                             flags: 0,
-                            side: opts.side.code(),
+                            side: side.code(),
                         });
                         if cur == State::Idle as u8 {
                             (log)("鼠标已越界到对端，Ctrl+Alt+Esc 可以交还".to_string());
@@ -987,6 +1008,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     want.as_str()
                                 ));
                             }
+                        }
+                        // 把"实际走的这道门"写给平台层：交还时要按它把光标摆回
+                        // 门内侧。以前平台层读的是配置里那个 side，而门口方向
+                        // 只在这里的局部变量里被 opposite() 校正过 —— 校正过的
+                        // 门和配置的门相反时，交还就把光标摆到了对面那条边
+                        //（被控方视角：键鼠回来了，光标却在屏幕另一头）。
+                        if let Some(cap) = capture_rx.as_ref() {
+                            cap.set_portal(sess.portal);
                         }
                         if state.load(Ordering::Relaxed) == State::Sending as u8 {
                             if mode == Mode::Edge {

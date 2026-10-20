@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use super::event::{hit_edge, Event, Side};
+use super::event::{hit_edge_in, Event, Side};
 
 type CFTypeRef = *mut c_void;
 type CGEventRef = *mut c_void;
@@ -189,7 +189,14 @@ pub use super::Captured;
 
 /// 抓取回调与主逻辑之间共享的状态
 struct Shared {
-    side: Side,
+    /// 四向掩码：哪几条边通向邻居。0 = 没有门（跟随画面模式）。
+    /// 用掩码而不是单个 `Side`：一机配多台时"右边有邻居"和"下边有邻居"
+    /// 可以同时成立，判定时取最近的那条（见 `hit_edge_in`）。
+    sides: u8,
+    /// 最近一次**实际走过**的那条门：越界时由钩子写入，被控进门时由
+    /// `set_portal` 写入。交还 warp 的落点按它算 —— 掩码是"我以为的门"，
+    /// 这个才是"这一趟走的那道门"。
+    last_out: Side,
     /// 没抓取时要不要盯着屏幕边缘（只有多屏共享模式需要）
     edge_trigger: bool,
     grabbing: Arc<AtomicBool>,
@@ -231,11 +238,7 @@ pub struct Capture {
 }
 
 /// 起一个后台线程跑 CGEventTap。返回的对象活着时抓取就有效。
-pub fn start_capture(
-    side: Side,
-    edge_trigger: bool,
-    tx: Sender<Captured>,
-) -> Result<Capture, String> {
+pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<Capture, String> {
     if !trusted() {
         return Err(
             "没有辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能，把 InputSwitch 勾上".into(),
@@ -266,8 +269,9 @@ pub fn start_capture(
     let paste_ready = Arc::new(AtomicBool::new(false));
 
     let shared = Arc::new(Mutex::new(Shared {
-        side,
-        edge_trigger,
+        sides: opts.sides,
+        last_out: Side::from_bit(opts.sides).unwrap_or_default(),
+        edge_trigger: opts.edge_trigger,
         grabbing: grabbing.clone(),
         width: width_atom.clone(),
         height: height_atom.clone(),
@@ -573,7 +577,7 @@ impl Capture {
             if !on && edge_mode {
                 let w = self.width.load(Ordering::Relaxed) as f64 / 1000.0;
                 let h = self.height.load(Ordering::Relaxed) as f64 / 1000.0;
-                let side = self.shared.lock().map(|s| s.side).unwrap_or(Side::Right);
+                let side = self.shared.lock().map(|s| s.last_out).unwrap_or(Side::Right);
                 // 沿门轴坐标沿用出门时的位置（released_spot），越界或缺失才
                 // 退回屏幕中点。夹一下范围，别把光标甩到屏幕外。
                 let along_y = released_spot
@@ -630,6 +634,23 @@ impl Capture {
                     CGEventSourceSetLocalEventsSuppressionInterval(src, 0.25);
                 }
             }
+        }
+    }
+
+    /// 记下"这次是被对端从哪道门进来的"。
+    ///
+    /// 被控期间交还（`set_grabbing(false)`）要把光标摆到门内侧，摆哪条边不能
+    /// 看配置 —— 主循环已经按对端出门侧把门口校正成对面了（拓扑定理），
+    /// 平台层却还拿着配置里那个方向，两边口径不一致，落点就会跑到对侧去。
+    /// 所以由主循环在进门时把校正后的门写进来。
+    pub fn set_portal(&self, side: Side) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.last_out = side;
+            // 掩码也一并收成这一条：被控期间"把光标推到门口抢回"走的是
+            // 同一个掩码，配置里那条边要是反的，交还落点对了、抢回方向
+            // 仍然是反的（用户推门没反应，只有往反方向推才算数）。
+            // P4 起掩码由链路表生成，会话结束时需要用链路表重新覆盖它。
+            s.sides = side.bit();
         }
     }
 
@@ -709,15 +730,12 @@ extern "C" fn callback(
                 let pos = CGEventGetLocation(event);
                 let w = shared.width.load(Ordering::Relaxed) as f64 / 1000.0;
                 let h = shared.height.load(Ordering::Relaxed) as f64 / 1000.0;
-                if hit_edge(shared.side, pos.x, pos.y, w, h) {
-                    // 记下出门瞬间沿门轴的位置比例：对端从对应高度进门
-                    let along = match shared.side {
-                        Side::Right | Side::Left => (pos.y / h * 65535.0).clamp(0.0, 65535.0) as u16,
-                        Side::Top | Side::Bottom => {
-                            (pos.x / w * 65535.0).clamp(0.0, 65535.0) as u16
-                        }
-                    };
-                    let _ = shared.tx.send(Captured::Begin { along });
+                if let Some(side) = hit_edge_in(shared.sides, pos.x, pos.y, w, h) {
+                    // 记下"这一趟走的是哪道门"：交还时按它摆落点
+                    shared.last_out = side;
+                    // 沿门轴的位置比例：对端从对应高度进门
+                    let along = side.along(pos.x, pos.y, w, h);
+                    let _ = shared.tx.send(Captured::Begin { along, side });
                 }
             }
             return event;

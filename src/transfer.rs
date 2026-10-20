@@ -417,7 +417,7 @@ mod tests {
             port,
             None,
             |_| {},
-            |_| {},
+            |_, _| {},
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(150));
@@ -429,6 +429,7 @@ mod tests {
             node,
             &[src.clone()],
             None,
+            false,
             |_, _| {},
         );
         assert!(result.is_ok(), "{:?}", result);

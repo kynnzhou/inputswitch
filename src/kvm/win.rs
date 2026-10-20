@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use super::event::{hit_edge, Event, Side};
+use super::event::{hit_edge_in, Event, Side};
 
 type Hhook = isize;
 type Hinstance = isize;
@@ -319,7 +319,15 @@ extern "system" {
 pub use super::Captured;
 
 struct Shared {
-    side: Side,
+    /// 四向掩码：哪几条边通向邻居。0 = 没有门（跟随画面模式）。
+    /// 用掩码而不是单个 `Side`：一机配多台时"右边有邻居"和"下边有邻居"
+    /// 可以同时成立，判定时取最近的那条（见 `hit_edge_in`）。
+    sides: u8,
+    /// 最近一次**实际走过**的那条门（存 `Side::code()`）。越界时由钩子写，
+    /// 被控进门时由 `set_portal` 写；交还把光标摆回门内侧时按它算。
+    /// 用原子量而不是普通字段：钩子走的是 `with_shared` 只读借用，
+    /// 为了一个 u8 把全链路改成可变借用不值当（而且钩子里拿锁的时间要短）。
+    last_out: AtomicU8,
     /// 没抓取时要不要盯着屏幕边缘（只有多屏共享模式需要）
     edge_trigger: bool,
     grabbing: Arc<AtomicBool>,
@@ -342,17 +350,16 @@ pub struct Capture {
     thread_id: Arc<AtomicU32>,
 }
 
-pub fn start_capture(
-    side: Side,
-    edge_trigger: bool,
-    tx: Sender<Captured>,
-) -> Result<Capture, String> {
+pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<Capture, String> {
     let (mut width, mut height) = screen_size();
+    // 几何兜底（`own_rect`）只能一条边一条边地试，所以从掩码里挑一个代表。
+    // 掩码为空（跟随画面模式）时恒等于老行为。
+    let primary = Side::first_in(opts.sides).unwrap_or_default();
     // 多屏共享：锁定"本机工作屏"（物理用户实际看着的那块），别把主屏
     // （可能是挂着的对端 4K 黑屏）当成自己的屏幕
     let mut origin = (0i32, 0i32);
-    if edge_trigger {
-        if let Some((ox, oy, ow, oh)) = work_screen(side) {
+    if opts.edge_trigger {
+        if let Some((ox, oy, ow, oh)) = work_screen(primary) {
             origin = (ox, oy);
             width = ow as u32;
             height = oh as u32;
@@ -367,8 +374,9 @@ pub fn start_capture(
     let thread_id = Arc::new(AtomicU32::new(0));
 
     let shared = Arc::new(Mutex::new(Shared {
-        side,
-        edge_trigger,
+        sides: opts.sides,
+        last_out: AtomicU8::new(primary.code()),
+        edge_trigger: opts.edge_trigger,
         grabbing: grabbing.clone(),
         width: width_atom.clone(),
         height: height_atom.clone(),
@@ -530,7 +538,23 @@ impl Capture {
             let (ox, oy, side) = STATE
                 .lock()
                 .ok()
-                .and_then(|s| s.as_ref().map(|m| m.lock().map(|x| (x.ox.load(Ordering::Relaxed), x.oy.load(Ordering::Relaxed), x.side)).unwrap_or((0, 0, Side::Right))))
+                .and_then(|s| {
+                    s.as_ref().map(|m| {
+                        m.lock()
+                            .map(|x| {
+                                (
+                                    x.ox.load(Ordering::Relaxed),
+                                    x.oy.load(Ordering::Relaxed),
+                                    // 落点按"这一趟实际走的那道门"，不是配置里的
+                                    // 那个：被控时门口方向已按对端出门侧校正成
+                                    // 对面，两边口径不一致就会把光标摆到对侧
+                                    Side::from_code(x.last_out.load(Ordering::Relaxed))
+                                        .unwrap_or_default(),
+                                )
+                            })
+                            .unwrap_or((0, 0, Side::Right))
+                    })
+                })
                 .unwrap_or((0, 0, Side::Right));
             let (x, y) = match side {
                 Side::Right => (w as i32 - 16, h as i32 / 2),
@@ -540,6 +564,29 @@ impl Capture {
             };
             // 相对坐标 → 全局坐标（多屏时工作屏原点可能不是 0）
             unsafe { SetCursorPos(ox + x, oy + y) };
+        }
+    }
+
+    /// 记下"这次是被对端从哪道门进来的"。
+    ///
+    /// 被控期间交还（`set_grabbing(false)`）要把光标摆到门内侧，摆哪条边不能
+    /// 看配置 —— 主循环已经按对端出门侧把门口校正成对面了，平台层却还拿着
+    /// 配置里那个方向，两边口径不一致，落点就会跑到对侧去。
+    pub fn set_portal(&self, side: Side) {
+        with_shared(|shared| {
+            shared.last_out.store(side.code(), Ordering::Relaxed);
+        });
+        // 掩码也一并收成这一条：被控期间"把光标推到门口抢回"走的是同一个
+        // 掩码（Shared 里那个 u8 是构造时定死的，这里直接改它 —— 钩子每次
+        // 都在同一把锁里读，不存在半更新）。配置里那条边要是反的，交还落点
+        // 对了、抢回方向仍然是反的。P4 起掩码由链路表生成，会话结束时需要
+        // 用链路表重新覆盖它。
+        if let Ok(guard) = STATE.lock() {
+            if let Some(m) = guard.as_ref() {
+                if let Ok(mut s) = m.lock() {
+                    s.sides = side.bit();
+                }
+            }
         }
     }
 
@@ -678,17 +725,12 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
                 // 别的屏上，不换算的话边缘判定全错）
                 let rx = (info.pt.x - ox) as f64;
                 let ry = (info.pt.y - oy) as f64;
-                if hit_edge(shared.side, rx, ry, w, h) {
-                    // 记下出门瞬间沿门轴的位置比例：对端从对应高度进门
-                    let along = match shared.side {
-                        Side::Right | Side::Left => {
-                            (ry / h * 65535.0).clamp(0.0, 65535.0) as u16
-                        }
-                        Side::Top | Side::Bottom => {
-                            (rx / w * 65535.0).clamp(0.0, 65535.0) as u16
-                        }
-                    };
-                    let _ = shared.tx.send(Captured::Begin { along });
+                if let Some(side) = hit_edge_in(shared.sides, rx, ry, w, h) {
+                    // 记下"这一趟走的是哪道门"：交还时按它摆落点
+                    shared.last_out.store(side.code(), Ordering::Relaxed);
+                    // 沿门轴的位置比例：对端从对应高度进门
+                    let along = side.along(rx, ry, w, h);
+                    let _ = shared.tx.send(Captured::Begin { along, side });
                 }
             }
             return;
