@@ -56,6 +56,22 @@ pub struct Snapshot {
     /// 正在进行的传输，空串表示空闲
     pub transfer: String,
     pub kvm: KvmView,
+    /// 共用键鼠要的两个系统权限，**由 GUI 进程自己判断**
+    ///
+    /// 存在的理由：`inputswitch-cli kvm-probe` 是包里的第二个二进制，
+    /// 它有自己的 cdhash，TCC 记录只认主程序 —— 它永远报「没权限」，
+    /// 而 GUI 实际是通的（2026-10-20 据此误判过好几次）。
+    /// 排查权限一律看这里。
+    pub perms: PermsView,
+}
+
+/// 两个权限的实际状态。抓取=辅助功能，注入=辅助功能/PostEvent。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PermsView {
+    /// 能抓取本机键鼠（软需求：缺了就降级成"能收不能发"）
+    pub capture: bool,
+    /// 能往本机注入事件（硬需求：缺了共用键鼠起不来）
+    pub inject: bool,
 }
 
 /// 共用键鼠在面板上的样子

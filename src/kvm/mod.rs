@@ -822,8 +822,42 @@ impl Kvm {
     /// **画面切回本机了 / 要拿回键鼠 → 停止转发。**
     ///
     /// 幂等：本来就在本机时什么都不做。
+    ///
+    /// 注意：**只处理"键鼠在我们手里"这一种**。被控时的收回走
+    /// `take_back_from_peer()` —— 两条路都是"把控制权拿回本机"，但
+    /// 前者是本地停手、后者是求人交还，混在一起会让三条"画面切回来了"
+    /// 的自动路径在 Receiving 时误发 Takeback。
     pub fn give_back(&self) {
         self.release(None);
+    }
+
+    /// 被控时（对端正控制本机）把控制权要回来。
+    ///
+    /// 返回 false = 现在不是被控状态（或没有会话），什么都没做。
+    ///
+    /// 这条路的用户是**键盘用户**：面板上点「收回键鼠」是他们够不到
+    /// 鼠标、也没记住热键时唯一的出路。原来 `give_back()` 在 Receiving
+    /// 直接 return，点了没反应。
+    pub fn take_back_from_peer(&self, why: &str) -> bool {
+        if self.state() != State::Receiving {
+            return false;
+        }
+        // **先快照目标再动状态** —— active 一清，Takeback 就不知道发给
+        // 谁了，对端会一直以为它还控制着本机。
+        let Some(target) = self.active.get() else {
+            return false;
+        };
+        self.state.store(State::Idle as u8, Ordering::SeqCst);
+        if let Some(capture) = self.capture.as_ref() {
+            capture.set_claim_armed(false);
+        }
+        // 单发 UDP 会丢：丢一包对端就卡在 Sending，键鼠全被它吞掉。
+        // 接收端有状态闸门，重复的 Takeback 是幂等的。
+        self.out.to_link(target, &Event::Takeback);
+        self.out.to_link(target, &Event::Takeback);
+        self.active.set(None);
+        (self.log)(format!("{why}，已请对端交还键鼠"));
+        true
     }
 
     fn release(&self, reason: Option<&str>) {

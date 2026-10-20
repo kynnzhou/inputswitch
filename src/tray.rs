@@ -987,11 +987,42 @@ fn start_send(
     mesh: &Mesh,
     proxy: &EventLoopProxy<UserEvent>,
     status: &mut String,
+    target: Option<&str>,
 ) {
     let peers = mesh.live_peers();
-    let Some(peer) = peers.first().cloned() else {
+    if peers.is_empty() {
         *status = "局域网里没找到对端，先让对面那台也开着本程序".to_string();
         return;
+    }
+    // **发给谁**：点名的 > 现在握着键鼠的那台 > 只有一台在线时就是它。
+    //
+    // 原来是死写 `peers.first()`：一机四台时文件必然发给排序第一的那台，
+    // 而且界面上没有任何地方能看出"到底发给谁了"。
+    let wanted = target
+        .map(str::to_string)
+        .or_else(|| kvm_now().and_then(|h| h.active_node().map(str::to_string)));
+    let peer = match wanted.as_deref() {
+        Some(node) => match peers.iter().find(|p| p.node == node).cloned() {
+            Some(peer) => peer,
+            None => {
+                *status = format!("{node} 没有回应（不在线或不在同一网段），文件没有发出去");
+                return;
+            }
+        },
+        None if peers.len() == 1 => peers[0].clone(),
+        None => {
+            let names = peers
+                .iter()
+                .map(|p| p.node.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            *status = format!(
+                "有 {} 台对端在线（{names}）：先把键鼠交给要发的那台再发。\
+                 以前固定发第一台，多机时必然发错人",
+                peers.len()
+            );
+            return;
+        }
     };
     let key = crate::pair::link_key(&config.pair.code);
     let node = config.node.clone();
@@ -1120,6 +1151,12 @@ fn update_snapshot(
     snap.clipboard = config.clipboard.enabled;
     snap.inbox = config.transfer.inbox_dir().display().to_string();
     snap.port = PANEL_PORT.load(AtomicOrdering::SeqCst);
+    // 权限由本进程（主程序）自判：CLI 探针是另一个二进制、另一个 cdhash，
+    // TCC 只认主程序，它永远报 ✗，不能当判据
+    snap.perms = panel::PermsView {
+        capture: kvm::trusted(),
+        inject: kvm::can_post(),
+    };
     snap.transfer = transfer_note.to_string();
     snap.identity = profile_key.to_string();
     snap.display = config
@@ -2150,7 +2187,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.51",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.52",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2365,7 +2402,7 @@ pub fn run() -> ! {
                     let _ = std::fs::create_dir_all(&dir);
                     open_path(&dir);
                 }
-                Action::SendFiles => start_send(&config, &mesh, &proxy, &mut status),
+                Action::SendFiles => start_send(&config, &mesh, &proxy, &mut status, None),
                 Action::KvmPower(on) => {
                     if !on {
                         if let Some(handle) = kvm_handle.take() {
@@ -2557,12 +2594,22 @@ pub fn run() -> ! {
                     log_line(&status);
                 }
                 Action::KvmTakeBack => {
-                    if let Some(handle) = kvm_now() {
-                        handle.give_back();
-                        status = "键鼠已收回本机".to_string();
-                    } else {
-                        status = "共用键鼠没开".to_string();
-                    }
+                    status = match kvm_now() {
+                        Some(handle) => {
+                            // 被控时本地没有任何东西可以停 —— 只能请对端交还。
+                            // 键盘用户在面板上点这个按钮，是他不推鼠标时的唯一出路。
+                            let before = handle.state();
+                            if handle.take_back_from_peer("面板上点了收回键鼠") {
+                                "已请对端交还键鼠".to_string()
+                            } else if before == kvm::State::Sending {
+                                handle.give_back();
+                                "键鼠已收回本机".to_string()
+                            } else {
+                                "键鼠本来就在本机".to_string()
+                            }
+                        }
+                        None => "共用键鼠没开".to_string(),
+                    };
                     log_line(&status);
                 }
                 Action::RecordHotkey => {
@@ -2680,8 +2727,23 @@ pub fn run() -> ! {
                                 if let Some(h) = kvm_now() {
                                     h.set_paste_ready(false);
                                 }
+                                // **发给谁**：有会话就只发"现在握着键鼠"的那台，
+                                // 没有会话才广播。P7 之前是无条件广播 —— 一机四台时
+                                // 复制一句话会同时改掉四台机器的剪贴板，既无意义也
+                                // 会踩掉人家正在用的内容。
+                                let active_node: Option<String> =
+                                    kvm_now().and_then(|h| h.active_node().map(str::to_string));
+                                let mut targets: Vec<&Peer> = match active_node.as_deref() {
+                                    Some(node) => peers.iter().filter(|p| p.node == node).collect(),
+                                    None => peers.iter().collect(),
+                                };
+                                // 会话那台刚好掉线（active 还指着它，但它已不在
+                                // live_peers 里）：退回广播，别因为一台掉线整条同步哑掉
+                                if targets.is_empty() {
+                                    targets = peers.iter().collect();
+                                }
                                 let mut sent = 0;
-                                for peer in &peers {
+                                for peer in targets {
                                     if mesh.send_command(
                                         &peer.node,
                                         "clipboard",
@@ -2913,17 +2975,31 @@ pub fn run() -> ! {
                         // 直接切到对端广播的那个口，不需要用户知道它叫 dp1 还是 usbc
                         if let Some((node, value)) = rest.rsplit_once(':') {
                             if let Ok(value) = value.parse::<u16>() {
-                                let name = mesh
-                                    .live_peers()
-                                    .into_iter()
-                                    .find(|p| p.node == node)
-                                    .map(|p| p.own_input)
-                                    .unwrap_or_default();
-                                status = format!("正在切到 {}…", node);
-                                let _ = tx.send(Command::SwitchRaw {
-                                    name,
-                                    value,
-                                });
+                                // **本机口径校验**：对端报的是它**自己那块屏**的端口
+                                // 编号，两块屏的 0x0F/0x12 各算各的 —— 拿别人的编号
+                                // 切自己的屏，按下去就是黑屏（v0.6.35 幽灵口同源）。
+                                // 面板早就这么校验了，托盘这条一直没校验：两台同款
+                                // 显示器时看不出来，5 台配不同显示器必踩。
+                                let known = config
+                                    .profile_for(&profile_key)
+                                    .map(|p| p.inputs.iter().any(|s| s.value == value))
+                                    .unwrap_or(false);
+                                if !known {
+                                    status = format!(
+                                        "本机的口里没有 0x{value:02X}（{node} 报的是它自己\
+                                         那块屏的编号）。这条只在两台接同一块屏时成立，\
+                                         已拒绝切换"
+                                    );
+                                } else {
+                                    let name = mesh
+                                        .live_peers()
+                                        .into_iter()
+                                        .find(|p| p.node == node)
+                                        .map(|p| p.own_input)
+                                        .unwrap_or_default();
+                                    status = format!("正在切到 {}…", node);
+                                    let _ = tx.send(Command::SwitchRaw { name, value });
+                                }
                             }
                         }
                     }
