@@ -179,6 +179,18 @@
       <button id="kvmPower" class="green" onclick="toggleKvm()">开启</button>
     </div>
 
+    <!-- 授权没生效：唯一能把人卡在这里的一条路。
+         macOS 把 TCC 结论缓存在进程里，刚在设置里勾上时，这个进程照样
+         报"没权限"，点「开启」只会再弹一次设置页 —— 看起来像勾选无效
+         或者装错了版本。唯一解法是重启进程，所以给一个按钮。 -->
+    <div class="banner warn" id="kvmPermWarn" style="display:none;margin-top:10px">
+      <b>系统授权没生效</b>
+      <div class="sub" id="kvmPermText" style="margin-top:4px"></div>
+      <div style="margin-top:8px">
+        <button class="green" onclick="post('/api/restart')">重启应用</button>
+      </div>
+    </div>
+
     <div id="kvmLinks"></div>
     <div class="hint" id="kvmLinkHint"></div>
 
@@ -469,6 +481,18 @@ function renderKvm() {
   el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
   el('kvmPower').textContent = k.on ? '关闭' : '开启';
   el('kvmPower').className = k.on ? 'ghost' : 'green';
+
+  // 缺权限时给一条明路。注意这两个值由 GUI 进程自己上报，不看 CLI 探针
+  // （探针是包里的第二个二进制，另一个 cdhash，TCC 只认主程序，它永远报 ✗）
+  const perms = snap.perms || { capture: true, inject: true };
+  const missing = [];
+  if (!perms.inject) missing.push('注入（接收对端的键鼠）');
+  if (!perms.capture) missing.push('抓取（把本机键鼠推出去）');
+  el('kvmPermWarn').style.display = missing.length ? '' : 'none';
+  if (missing.length) {
+    el('kvmPermText').textContent = '缺：' + missing.join('、') +
+      '。在设置里勾上之后必须重启本程序才会生效 —— macOS 把授权结论缓存在进程里。';
+  }
 
   renderKvmLinks(k);
 }

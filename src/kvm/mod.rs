@@ -966,7 +966,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // CGPreflightPostEventAccess），所以"一个有一个没有"是真实状态。
     if !plat::can_post() {
         return Err(
-            "缺少权限，没法把对端的键鼠注入本机（macOS：系统设置 → 隐私与安全性 → 辅助功能）"
+            "缺少权限，没法把对端的键鼠注入本机（macOS：系统设置 → 隐私与安全性 → 辅助功能）。\
+             **勾完必须重启本程序**：macOS 把 TCC 结论缓存在进程里，已经在跑的进程\
+             即使你刚勾上也还是「没权限」，从托盘菜单点「重启应用」即可"
                 .into(),
         );
     }
@@ -974,7 +976,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     if !capture_ok {
         (opts.log)(
             "⚠️ 缺少抓取权限：本机只能被对端控制，键鼠推不出去\
-             （macOS：系统设置 → 隐私与安全性 → 辅助功能）"
+             （macOS：系统设置 → 隐私与安全性 → 辅助功能）——\
+             如果刚勾上，从托盘菜单点「重启应用」让它生效"
                 .to_string(),
         );
     }

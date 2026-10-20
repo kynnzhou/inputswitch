@@ -53,6 +53,8 @@ const ID_SWITCH: &str = "switch:";
 const ID_PEER: &str = "peer:";
 /// 打开控制面板（程序自己的窗口）
 const ID_PANEL: &str = "open-panel";
+/// 重启本程序（只在权限没生效时出现）
+const MENU_RESTART: &str = "restart-app";
 /// 面板实际监听的端口。build_menu 要拿它拼菜单项，所以放静态里。
 static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
 
@@ -615,6 +617,9 @@ fn menu_signature(
         "kvm={}\u{1e}mode={}\u{1e}side={}",
         config.kvm.enabled, config.kvm.mode, config.kvm.side
     );
+    // 权限也要进指纹：勾完以后菜单里那条"重启应用"得自己消失，
+    // 不然用户会盯着一条已经无意义的提示
+    let _ = write!(sig, "\u{1e}perms={}", perms_ok());
     sig
 }
 
@@ -797,6 +802,18 @@ fn build_menu(
     };
     let _ = menu.append(&MenuItem::with_id(MENU_KVM_MODE, other, true, None));
 
+    // 权限没生效时给一条明路。macOS 把授权结论缓存在进程里，刚在设置里
+    // 勾上时本进程照样报"没权限"，这时点上面的开关只会再弹一次设置页 ——
+    // 用户会觉得"勾了没用/装错版本"。唯一解法是重启进程。
+    if !perms_ok() {
+        let _ = menu.append(&MenuItem::with_id(
+            MENU_RESTART,
+            "⚠ 系统授权没生效 · 点这里重启应用",
+            true,
+            None,
+        ));
+    }
+
     // 多屏共享必须知道对端屏幕在本机哪一侧，不然鼠标推错边永远越不过去。
     // 两台要各配各的：Mac 选"对端在右"，Windows 那台就要选"对端在左"。
     if !mode_is_follow {
@@ -823,6 +840,50 @@ fn build_menu(
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id(MENU_QUIT, "退出", true, None));
     menu
+}
+
+/// 两个系统权限都齐了吗。缺任一，共用键鼠要么开不起来、要么只能单向。
+fn perms_ok() -> bool {
+    kvm::trusted() && kvm::can_post()
+}
+
+/// 重启本程序。
+///
+/// 存在的理由只有一个：**macOS 把 TCC 授权结论缓存在进程里**。用户在设置里
+/// 勾上以后，正在跑的这个进程照样报"没权限"，点「开启共用键鼠」只会再弹一次
+/// 设置页 —— 看起来就是"勾选无效 / 装错版本"（2026-10-20 连踩两次）。
+/// 唯一解法是重启进程，所以把它做成一个按钮。
+///
+/// 延迟 1 秒再拉起新实例：本进程要先退出，否则托盘图标和面板端口还被占着，
+/// 新实例起来抢不到，表现为"重启之后更没反应了"。
+fn restart_app() {
+    #[cfg(target_os = "macos")]
+    {
+        // 从 .../X.app/Contents/MacOS/X 反推 bundle 路径，装在别处也能重启
+        let bundle = std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors()
+                .find(|p| p.extension().map(|e| e == "app").unwrap_or(false))
+                .map(|p| p.to_path_buf())
+        });
+        let script = match bundle {
+            Some(path) => format!("sleep 1; open -n '{}'", path.display()),
+            None => "sleep 1; open -n -a InputSwitch".to_string(),
+        };
+        let _ = std::process::Command::new("sh").arg("-c").arg(script).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let cmd = format!("timeout /t 1 >nul & start \"\" \"{}\"", exe.display());
+            let mut child = std::process::Command::new("cmd");
+            crate::hidden::quiet(&mut child);
+            let _ = child.arg("/C").arg(cmd).spawn();
+        }
+    }
+    log_line("重启中…（1 秒后自动起来）");
+    // 日志是追加写的，退出前给文件系统一点时间把它落盘
+    thread::sleep(Duration::from_millis(150));
+    std::process::exit(0);
 }
 
 fn open_config_dir() {
@@ -2187,7 +2248,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.52",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.53",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2436,10 +2497,18 @@ pub fn run() -> ! {
                                         status = text;
                                     }
                                     Err(err) => {
-                                        kvm::open_settings();
-                                        status = format!(
-                                            "共用键鼠开不了：{err}（已经打开设置页，勾上本程序再点一次）"
-                                        );
+                                        // 缺权限时**别再说"勾上再点一次"** —— 勾上
+                                        // 也不会生效：macOS 把 TCC 结论缓存在进程里，
+                                        // 必须重启进程。这句话误导过用户两次。
+                                        if perms_ok() {
+                                            status = format!("共用键鼠开不了：{err}");
+                                        } else {
+                                            kvm::open_settings();
+                                            status = "共用键鼠开不了：缺系统授权。设置页已打开，\
+                                                      勾上本程序后点托盘里的「重启应用」\
+                                                      —— 不重启这个进程不会认新授权"
+                                                .to_string();
+                                        }
                                         config.kvm.enabled = false;
                                         let _ = config.save();
                                     }
@@ -2592,6 +2661,11 @@ pub fn run() -> ! {
                         status = "链路没变".to_string();
                     }
                     log_line(&status);
+                }
+                Action::RestartApp => {
+                    // 先落日志再退出：重启之后用户/我都要能对上"是这一步干的"
+                    log_line("收到重启请求（权限刚改过，旧进程里的 TCC 结论已过期）");
+                    restart_app();
                 }
                 Action::KvmTakeBack => {
                     status = match kvm_now() {
@@ -2814,6 +2888,9 @@ pub fn run() -> ! {
                             handle.stop();
                         }
                         std::process::exit(0);
+                    } else if id == MENU_RESTART {
+                        log_line("菜单里点了「重启应用」");
+                        restart_app();
                     } else if id == ID_PANEL {
                         let port = PANEL_PORT.load(AtomicOrdering::SeqCst);
                         // 已经有窗口就只是叫到前面来；没有才建，建不出来退回浏览器

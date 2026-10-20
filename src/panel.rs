@@ -179,6 +179,12 @@ pub enum Action {
         side: Option<String>,
         mode: Option<String>,
     },
+    /// 重启本程序。
+    ///
+    /// 只为一件事存在：macOS 把 TCC 授权结论**缓存在进程里**。用户在设置里
+    /// 勾上以后，已经在跑的进程照样报"没权限"，点「开启共用键鼠」只会再弹
+    /// 一次设置页 —— 看起来像"勾选无效 / 装错版本"。唯一解法是重启进程。
+    RestartApp,
 }
 
 pub type State = Arc<Mutex<Snapshot>>;
@@ -455,6 +461,11 @@ fn handle(
         },
         ("POST", "/api/kvm-takeback") => {
             dispatch(Action::KvmTakeBack);
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        // 先回包再重启：进程一退，连接就断了，客户端看不到 ok 会以为失败
+        ("POST", "/api/restart") => {
+            dispatch(Action::RestartApp);
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
         _ => respond(&mut stream, 404, "text/plain; charset=utf-8", "not found"),
