@@ -111,8 +111,11 @@ cp -R "$BUNDLE" "${INSTALL_DIR}/${APP_NAME}.app"
 
 "$LSR" -u "$(pwd)/${BUNDLE}" >/dev/null 2>&1 || true
 "$LSR" -f "${INSTALL_DIR}/${APP_NAME}.app" >/dev/null 2>&1 || true
-# 最后再注销一次 dist 里那份：copy 动作本身会把它重新注册回来
+# 最后再注销一次 dist 里那份：copy 动作本身会把它重新注册回来。
+# 废纸篓里那份也要注销 —— 文件还在，系统重新扫描就会再注册回来，
+# 于是设置页的添加列表里又冒出第二个同名 InputSwitch（不删文件，只注销注册）。
 "$LSR" -u "$(pwd)/${BUNDLE}" >/dev/null 2>&1 || true
+"$LSR" -u "$HOME/.Trash/${APP_NAME}.app" >/dev/null 2>&1 || true
 
 echo
 echo "完成: ${INSTALL_DIR}/${APP_NAME}.app  (v${VERSION})"

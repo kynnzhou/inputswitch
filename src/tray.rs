@@ -2413,7 +2413,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.55",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.56",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2826,6 +2826,16 @@ pub fn run() -> ! {
                                     changed = true;
                                 }
                             }
+                        }
+                        // 有门就是多屏共享、没门就是跟随画面 —— 这两个字段是绑定的。
+                        // 「有门却跟随」在摆位图上会画在格子里，实际却根本不占边，
+                        // 是那种看着正常、推过去毫无反应的组合，顺手纠正掉。
+                        if problem.is_none()
+                            && !link.side.trim().is_empty()
+                            && link.mode.trim() == "follow"
+                        {
+                            link.mode = "edge".to_string();
+                            changed = true;
                         }
                     } else {
                         problem = Some(format!(

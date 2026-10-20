@@ -576,11 +576,13 @@ function renderKvm() {
   renderKvmGrid(k);
 }
 
-// 一台对端一行：方向 / 模式 / 存活 / 键鼠在谁手上。
-// 方向是「对端在本机哪一侧」，不是对端的方位 —— 配反了表现为"往那侧推没反应"，
-// 所以下拉里直接写「右侧/左侧/上方/下方」而不是英文 left/right。
-const SIDE_LABELS = [['right', '右侧'], ['left', '左侧'], ['top', '上方'], ['bottom', '下方']];
-const MODE_LABELS = [['edge', '多屏共享'], ['follow', '跟随画面']];
+// 一台对端一行：只显示"它现在是什么状态" + 一个动作按钮。
+//
+// **方向和模式都不再给下拉** —— 摆位图已经把它们都表达了：
+// 拖进某个格子 = 多屏共享（朝那条边推出去），拖到"没有门"= 跟随画面。
+// 两套控件改同一个字段，用户会不知道该信哪个；摆位图里拖一下比下拉框快，
+// 而且"两台同侧"这种配重错误只有图上看得出来。
+const MODE_NAME = { edge: '多屏共享', follow: '跟随画面' };
 
 function renderKvmLinks(k) {
   const box = document.getElementById('kvmLinks');
@@ -593,30 +595,21 @@ function renderKvmLinks(k) {
     return;
   }
   box.innerHTML = links.map(l => {
-    const sideOpts = [['', '（无门）'], ...SIDE_LABELS]
-      .map(([v, label]) => `<option value="${v}"${l.side === v ? ' selected' : ''}>${label}</option>`)
-      .join('');
-    const modeOpts = MODE_LABELS
-      .map(([v, label]) => `<option value="${v}"${l.mode === v ? ' selected' : ''}>${label}</option>`)
-      .join('');
+    const where = l.side ? SIDE_NAME[l.side] : '没有门';
+    const mode = MODE_NAME[l.mode] || '多屏共享';
+    const dead = l.alive ? '' : ' · 没回应';
     const held = l.active ? '<span class="held">键鼠在这台</span>'
       : `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">交给它</button>`;
     return `<div class="linkrow">
       <span class="node"><i class="dot${l.alive ? ' on' : ''}">●</i>${esc(l.node)}</span>
-      <select title="对端在本机的哪一侧" onchange="setLinkSide('${esc(l.node)}', this.value)">${sideOpts}</select>
-      <select title="这条链路的模式" onchange="setLinkMode('${esc(l.node)}', this.value)">${modeOpts}</select>
+      <span class="tag">${where} · ${mode}${dead}</span>
       ${held}
     </div>`;
   }).join('');
-  hint.textContent = '方向 = 那台机器摆在本机的哪一侧。改成「无门」表示它和本机共用一块屏（跟随画面）。';
+  hint.textContent = '方向和模式都由上面的摆位图决定：拖进某个格子 = 多屏共享（朝那条边推出去），'
+    + '拖到"没有门"= 跟随画面（共用一块屏，切到哪台键鼠跟到哪台）。';
 }
 
-function setLinkSide(node, side) {
-  api('/api/link?node=' + encodeURIComponent(node) + '&side=' + encodeURIComponent(side)).then(pull);
-}
-function setLinkMode(node, mode) {
-  api('/api/link?node=' + encodeURIComponent(node) + '&mode=' + encodeURIComponent(mode)).then(pull);
-}
 function handOverTo(node) {
   api('/api/kvm-handover?node=' + encodeURIComponent(node)).then(pull);
 }
@@ -742,7 +735,8 @@ async function placeOn(side, node) {
   const me = links.find(l => l.node === node);
   if (me) {
     me.side = side;
-    if (!side && me.mode === 'edge') me.mode = 'follow';
+    // 有没有门 = 模式，这两个字段是绑定的（后端也会做同样的纠正）
+    me.mode = side ? 'edge' : 'follow';
   } else {
     // 托盘里"未配链路"那类：先本地插一条，后端会真的建出来
     links.push({ node, side, alive: true, mode: side ? 'edge' : 'follow', active: false });
