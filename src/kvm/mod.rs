@@ -1410,6 +1410,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             );
             // 上一次"越界被忽略"的告警时间（抢占矩阵里忽略第三方 Enter 时用）
             let mut last_ignore_ms: u64 = 0;
+            // 上一次"陌生来源"的告警时间。同上面一样限流：不做的话一台没配
+            // 链路的机器一秒能刷几十行。
+            let mut last_stranger_ms: u64 = 0;
             let mut buf = [0u8; 64];
             while !stop.load(Ordering::Relaxed) {
                 let (len, from) = match out.socket.recv_from(&mut buf) {
@@ -1419,7 +1422,21 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 // 只认链路表里的地址：别台装过本程序的机器、扫描器、别的
                 // 端口误撞过来的包，一律丢。5 台同网时这条是安全边界 ——
                 // 密钥全机共用，光靠签名分不出是谁发的。
+                //
+                // **但丢了必须说出来**：三台互连时，A 推给 B 的前提不只是"B
+                // 在线"，而是 **B 的链路表里也有 A**。少配一边的表现是
+                // "推过去键鼠就没了" —— 光标卡在边上、画面也不切，日志里
+                // 一片安静（这台只能看到自己把包丢掉了）。所以这里留一句话
+                // 说明是谁发来的、该去哪补。
                 let Some(from_link) = links_rx.iter().position(|l| l.ip == from.ip()) else {
+                    if now_ms().saturating_sub(last_stranger_ms) > 5000 {
+                        last_stranger_ms = now_ms();
+                        (log)(format!(
+                            "收到 {} 发来的键鼠包，但它不在这台的链路表里（已丢弃）。\
+                             去那台的摆位图上把本机拖进某个方向，否则它的键鼠推过来会消失",
+                            from.ip()
+                        ));
+                    }
                     continue;
                 };
                 let data = &buf[..len];

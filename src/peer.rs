@@ -74,6 +74,14 @@ struct Message {
     /// **同样不进 canonical**，理由同上。
     #[serde(default)]
     kvm_v: u8,
+    /// 对端的共用键鼠有没有开着。
+    ///
+    /// 只用来**说清楚话**：对端程序开着、但共用键鼠关着时，表现和对端
+    /// 没开机一模一样（KVM 心跳不来 → `link_alive` 永远是 false），
+    /// 原来一律报"对面没开程序、不在同一网段，或防火墙拦了"。
+    /// **不进 canonical**：老端不认识这个字段也照样验签通过。
+    #[serde(default)]
+    kvm_on: bool,
 }
 
 impl Message {
@@ -115,6 +123,9 @@ pub struct Peer {
     pub clip_v: u8,
     /// 对端的多对端路由能力（见 `KVM_VERSION`；< 2 = 不能加入多链路路由）
     pub kvm_v: u8,
+    /// 对端的共用键鼠开着没有（只在上面那个 `kvm_on` 能力位存在时有意义）。
+    /// 排除"对面没开机"之后，这是"键鼠交不出去"最常见的另一半原因。
+    pub kvm_on: bool,
 }
 
 impl Peer {
@@ -154,6 +165,9 @@ pub struct Mesh {
     /// 签名没问题但 nonce 已见过的包数。局域网里重发、多网卡重复收都会走到这里，
     /// 这类包**不代表**有人攻击，混在 `rejected` 里只会吓人。
     replayed: Arc<AtomicU64>,
+    /// 本机共用键鼠开着没有。随 announce 发出去，让对端能把
+    /// "它没开机" 和 "它开着但键鼠没开" 分开说。
+    kvm_on: Arc<AtomicBool>,
 }
 
 impl Mesh {
@@ -169,7 +183,17 @@ impl Mesh {
             key: Arc::new(Mutex::new(None)),
             rejected: Arc::new(AtomicU64::new(0)),
             replayed: Arc::new(AtomicU64::new(0)),
+            kvm_on: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 本机共用键鼠开着没有 —— 随下一条 announce 广播出去。
+    ///
+    /// 调用点在 `update_snapshot`：那里已经有 `kvm_now()` 的结论，
+    /// 不管 KVM 是被开关、改链路还是改配对码重开的，都在那一处对齐，
+    /// 不用在七八条启停路径上各写一遍（漏一条就是长期错误广播）。
+    pub fn set_kvm_on(&self, on: bool) {
+        self.kvm_on.store(on, Ordering::SeqCst);
     }
 
     /// 装上配对密钥。`None` = 关闭校验（旧行为，局域网里谁都能发指令）。
@@ -283,6 +307,7 @@ impl Mesh {
                                     wants_pair,
                                     clip_v: msg.clip_v,
                                     kvm_v: msg.kvm_v,
+                                    kvm_on: msg.kvm_on,
                                 },
                             );
                         }
@@ -302,6 +327,7 @@ impl Mesh {
             let ddc_ok = self.ddc_ok;
             let own = self.own.clone();
             let key = self.key.clone();
+            let kvm_on = self.kvm_on.clone();
             thread::spawn(move || {
                 while running.load(Ordering::SeqCst) {
                     let (own_input, own_value) = own.lock().unwrap().clone();
@@ -319,6 +345,7 @@ impl Mesh {
                         mac: String::new(),
                         clip_v: CLIP_VERSION,
                         kvm_v: KVM_VERSION,
+                        kvm_on: kvm_on.load(Ordering::SeqCst),
                     };
                     if let Some(k) = *key.lock().unwrap() {
                         msg.mac = pair::sign(&k, &msg.canonical());
@@ -404,6 +431,8 @@ impl Mesh {
             mac: String::new(),
             clip_v: CLIP_VERSION,
             kvm_v: KVM_VERSION,
+            // 指令包里这个位没用：对端只按 announce 更新
+            kvm_on: self.kvm_on.load(Ordering::SeqCst),
         };
         if let Some(k) = *self.key.lock().unwrap() {
             msg.mac = pair::sign(&k, &msg.canonical());
@@ -466,6 +495,7 @@ mod tests {
             wants_pair,
             clip_v: CLIP_VERSION,
             kvm_v: KVM_VERSION,
+            kvm_on: false,
         };
         mesh.peers.lock().unwrap().insert(peer.node.clone(), peer);
     }

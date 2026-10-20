@@ -252,11 +252,14 @@
     </div>
 
     <div id="kvmGrid" class="grid"></div>
-    <!-- 没有门的对端、以及"已发现但还没配链路"的对端都停在这里，
-         拖进格子就等于给它指定方向（后端会顺手新建这条链路）。 -->
+    <!-- 两种卡片停在这里，标签**必须分开**：
+         「没有门」= 已配成跟随画面（共用一块屏）；
+         「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。
+         混成一个标签会让人以为程序认定两台共用一块屏。 -->
     <div id="kvmLoose" class="loosetray" data-drop="loose">
       <div class="loosehead">没有门 · 共用一块屏 —— 拖到这里：切信号源时键鼠跟着画面走</div>
       <div id="kvmLooseBox" class="loosebox"></div>
+      <div class="loosehead" style="opacity:.7;font-weight:400">标「未配链路」的是刚发现、还没摆位的（不是共用一块屏）</div>
     </div>
     <div class="gridhint" id="kvmGridHint"></div>
     <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
@@ -492,10 +495,15 @@ function render() {
       const blocked = p.needs_pair
         ? '<div class="meta" style="color:#e0a030">它设了配对码，本机没设 —— 发给它的指令会被丢弃，请两边填同一个码</div>'
         : '';
+      // 程序在线、但共用键鼠关着：表现和"对面关机"一模一样（心跳不来）。
+      // 不在这里点破，用户会去查网线。
+      const kvmOff = p.kvm_on
+        ? '<span class="tag green">共用键鼠已开</span>'
+        : '<span class="tag" style="color:#e0a030">共用键鼠没开</span>';
       el.innerHTML = `
         <span class="dot ${p.knows_port ? 'on' : 'off'}"></span>
         <div class="grow">
-          <div class="name">${esc(p.node)} ${p.paired ? '<span class="tag green">已配对</span>' : '<span class="tag">未配对</span>'}</div>
+          <div class="name">${esc(p.node)} ${p.paired ? '<span class="tag green">已配对</span>' : '<span class="tag">未配对</span>'} ${kvmOff}</div>
           <div class="meta">${label} · ${esc(p.addr)}</div>
           ${blocked}
         </div>
@@ -600,7 +608,11 @@ function renderKvmLinks(k) {
   box.innerHTML = links.map(l => {
     const where = l.side ? SIDE_NAME[l.side] : '没有门';
     const mode = MODE_NAME[l.mode] || '多屏共享';
-    const dead = l.alive ? '' : ' · 没回应';
+    // 链路不通时把原因说到能动手：心跳就是因为对端共用键鼠没开才不来，
+    // 和对端关机是同一个现象
+    const peer = (snap.peers || []).find(p => p.node === l.node);
+    const dead = l.alive ? ''
+      : (peer && !peer.kvm_on ? ' · 它的共用键鼠没开' : ' · 没回应');
     const held = l.active ? '<span class="held">键鼠在这台</span>'
       : `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">交给它</button>`;
     return `<div class="linkrow">
@@ -646,7 +658,12 @@ function screenCard(node, o) {
   const tag = o.active ? '<span class="stag">键鼠在这台</span>'
     : o.dup ? '<span class="stag warn">同侧冲突</span>'
     : o.fresh ? '<span class="stag new">未配链路</span>' : '';
-  const label = o.side ? SIDE_NAME[o.side] : '没有门';
+  // 「没有门」只该用在**已经配成跟随画面**的链路上。
+  //
+  // 没配链路的对端（刚发现、还没摆位）以前也落在这栏、也印着「没有门」，
+  // 于是用户看到「两台都在没有门里」，以为程序认定它们共用一块屏 ——
+  // 实际那只是"你还没告诉我它放哪"。
+  const label = o.fresh ? '未摆位' : (o.side ? SIDE_NAME[o.side] : '没有门');
   return `<div class="screen" data-node="${esc(node)}" data-side="${esc(o.side || '')}"
       tabindex="0" role="button" title="${esc(node)} · ${label}（可拖动，方向键也能移动）"
       aria-label="${esc(node)}，${label}">

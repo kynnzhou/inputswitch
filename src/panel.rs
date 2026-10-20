@@ -136,6 +136,10 @@ pub struct PeerView {
     /// 对面设了配对码，而本机没设 —— 这时候发给它的指令会被当未签名包丢掉
     #[serde(default)]
     pub needs_pair: bool,
+    /// 对端的共用键鼠开着没有。它开着时键鼠交不过去，跟"对面没开机"
+    /// 表现一样（KVM 心跳不来），所以必须分开显示
+    #[serde(default)]
+    pub kvm_on: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

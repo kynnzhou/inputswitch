@@ -959,6 +959,21 @@ fn build_menu(
 /// 表现是"改了方向但推那侧还是没反应"，而日志里一切正常。
 ///
 /// `ok_text` 是成功时写进状态条的话（已含"改成了什么"），失败再往后拼。
+/// 改链路时把正在进行的会话停下来，留下的是什么。
+///
+/// 一个 bool 会逼着文案替对端宣布它还没做的事：`take_back_from_peer`
+/// 只是把 Takeback 发出去，对端收到才松手。所以这里必须分四态。
+enum Handback {
+    /// 本来就没有会话，没什么可交还的
+    None,
+    /// 本机在转发 → 已经收回本机
+    Back,
+    /// 本机被控 → 已请对端交还（异步，不能断言收回）
+    Asked,
+    /// 有会话但没能正常收场
+    Stuck,
+}
+
 fn restart_kvm(
     config: &mut Config,
     kvm_handle: &mut Option<Arc<kvm::Kvm>>,
@@ -968,9 +983,41 @@ fn restart_kvm(
     ok_text: String,
 ) {
     let was_on = kvm_handle.take();
+    let mut handback = Handback::None;
     if let Some(handle) = was_on.as_ref() {
+        // 改链路必然重建实例（四向掩码是启动时按链路表算出来的），正在
+        // 转发的会话会被掐断。**先把键鼠交还回去再停**：不交还的话两端
+        // 都以为自己在转发 —— 本机在 Sending 直接停手，对端以为还在被
+        // 控制；本机在 Receiving 停掉，对端仍往一个已经没人注入的实例上
+        // 发。用户看到的就是"改个方向，鼠标键盘全部失去控制"。
+        handback = match handle.state() {
+            kvm::State::Sending => {
+                if handle.give_back() {
+                    Handback::Back
+                } else {
+                    Handback::Stuck
+                }
+            }
+            kvm::State::Receiving => {
+                if handle.take_back_from_peer("改链路") {
+                    Handback::Asked
+                } else {
+                    Handback::Stuck
+                }
+            }
+            kvm::State::Idle => Handback::None,
+        };
         handle.stop();
     }
+    // 说清楚"这次改动打断了正在进行的转发"。不说的话，用户看到的是
+    // "我刚把方向改对，键鼠却没反应了"，而其实键鼠已经回到本机 ——
+    // 需要的是重新推一次边、或再点一次「切换」。
+    let ok_text = match handback {
+        Handback::None => ok_text,
+        Handback::Back => format!("{ok_text}（原先的转发已停下，键鼠收回本机）"),
+        Handback::Asked => format!("{ok_text}（原先的转发已停下，已请对端交还键鼠）"),
+        Handback::Stuck => format!("{ok_text}（原先的转发没能正常收场，请按热键收回键鼠）"),
+    };
     if let Ok(mut slot) = KVM.lock() {
         *slot = None;
     }
@@ -1317,6 +1364,12 @@ fn update_snapshot(
     snap.has_display = HAS_DISPLAY.load(AtomicOrdering::SeqCst);
     snap.own_value = config.own_value;
     // 共用键鼠：开没开、跑哪种模式、现在键鼠在哪边、每条链路什么状态
+    //
+    // 顺手把"本机开没开"告诉网络层，随下一条 announce 广播出去。选在这里
+    // 对齐是因为它跑得够勤（面板轮询 + 托盘 5s 刷新），而且 KVM 的所有
+    // 启停路径最后都会反映到 `kvm_now()` —— 在七八个启停点上各写一遍，
+    // 漏一个就是长期错误广播。
+    mesh.set_kvm_on(kvm_now().is_some());
     snap.kvm = match kvm_now() {
         Some(handle) => {
             let active_idx = handle.active_index();
@@ -1425,6 +1478,7 @@ fn update_snapshot(
             paired: peer.paired,
             knows_port: peer.knows_port(),
             needs_pair: peer.wants_pair && !config.pair.is_set(),
+            kvm_on: peer.kvm_on,
         })
         .collect();
 
@@ -1747,6 +1801,35 @@ fn inspect(switcher: &Switcher) -> (String, String) {
 // 对端的口仍然在广播里（KVM 的 sync_own 要用它防误记），只是不再变成
 // 本机的输入源结论。
 
+/// 把「对端没有回应」说到能照着动手的程度。
+///
+/// `link_alive` 只看**共用键鼠的心跳包**。对端程序开着、但它的共用键鼠
+/// 关着的时候，心跳一个都不会来 —— 表现和对端关机、不在同一网段、
+/// 防火墙拦了**完全一样**。announce 里带了 `kvm_on` 能力位，于是这两种
+/// 情况现在能分开说：让人去对面把开关打开，而不是去查网线。
+fn explain_silent_peer(mesh: &Mesh, node: Option<&str>, err: &str) -> String {
+    let peers = mesh.live_peers();
+    let hit = match node {
+        Some(n) => peers.iter().find(|p| p.node == n),
+        // 不知道是哪台（follow 链路里唯一那条）时：在线的那几台里
+        // 只要有键鼠没开的，它就是最可疑的那个
+        None => peers.iter().find(|p| !p.kvm_on),
+    };
+    match hit {
+        Some(p) if !p.kvm_on => format!("{err}（{} 的程序在线，是它的共用键鼠没开）", p.node),
+        _ => err.to_string(),
+    }
+}
+
+/// 一条链路的方向（`follow_target` 用的是同一条判据：第一条 Follow 链路）。
+fn follow_link_node(handle: &kvm::Kvm) -> Option<String> {
+    handle
+        .links()
+        .iter()
+        .find(|l| l.mode == kvm::Mode::Follow)
+        .map(|l| l.node.clone())
+}
+
 /// 这次切屏给键鼠留下了什么结果 —— 成功文案的**唯一**依据。
 ///
 /// 原来是 `handed / reclaimed / stranded` 三个互不相干的 bool：任何一个
@@ -1837,7 +1920,15 @@ fn do_switch(
                             handle.active_node().unwrap_or("对端").to_string(),
                         );
                     }
-                    Err(err) => keys = Keys::Stranded(err),
+                    Err(err) => {
+                        // 「没有回应」有两种截然不同的原因，说错就白查网线
+                        let target = follow_link_node(&handle);
+                        keys = Keys::Stranded(explain_silent_peer(
+                            mesh,
+                            target.as_deref(),
+                            &err,
+                        ));
+                    }
                 },
                 // 已经在往外送：follow() 这时是空转，不能当"刚交过去"
                 kvm::State::Sending => {
@@ -2531,7 +2622,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.58",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.59",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2920,7 +3011,16 @@ pub fn run() -> ! {
                                                 .to_string(),
                                         }
                                     }
-                                    Err(err) => format!("交不出去：{err}"),
+                                    Err(err) => {
+                                        let target = match node.as_deref() {
+                                            Some(n) => Some(n.to_string()),
+                                            None => follow_link_node(&handle),
+                                        };
+                                        format!(
+                                            "交不出去：{}",
+                                            explain_silent_peer(&mesh, target.as_deref(), &err)
+                                        )
+                                    }
                                 }
                             }
                             None => "共用键鼠没开，先在面板上打开它".to_string(),
@@ -3438,7 +3538,10 @@ pub fn run() -> ! {
                             Some(handle) => {
                                 status = match handle.hand_over_to(rest) {
                                     Ok(()) => format!("键鼠已交给 {rest}"),
-                                    Err(err) => format!("交不出去：{err}"),
+                                    Err(err) => format!(
+                                        "交不出去：{}",
+                                        explain_silent_peer(&mesh, Some(rest), &err)
+                                    ),
                                 };
                             }
                             None => status = "共用键鼠没开，面板上先打开它".to_string(),
