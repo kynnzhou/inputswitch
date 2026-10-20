@@ -52,6 +52,7 @@ mod mac;
 #[cfg(windows)]
 mod win;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
@@ -304,6 +305,157 @@ fn state_for(state: &AtomicU8, active: IpAddr, from: IpAddr) -> u8 {
     }
 }
 
+/// 一场会话（"对端正在把键鼠转发给我"）的全部易脏状态。
+///
+/// 为什么打包成一件事，而不是散成一堆局部变量：多对端下会换对端，而
+/// 上一场残留下来的时钟、尺寸、按键栈会变成很难理解的故障 ——
+/// 「刚进门 2 秒就被交还」（带着上一场的 `last_giveback_ms`）、
+/// 「位移按另一台的分辨率缩放」（带着上一场的 `sender_size`）、
+/// 「一到对端就卡住某个键」（带着上一场没补 up 的 `pressed`）。
+/// 打包之后，换对端 = 整体重建，不再依赖"谁记得逐个清零"。
+struct Session {
+    /// 本机门口方向（朝对端那一侧）。Enter 带来的"对端出门侧"会校正它。
+    portal: Side,
+    /// 解密器：记对端的 prefix 与重放水位。换对端必须换一个 —— 水位是
+    /// 给谁用的，换人不能沿用。
+    opener: Option<Opener>,
+    /// 上一笔的 seq（位移乱序丢弃用）
+    last_seq: u16,
+    /// 本机按下尚未松开的键/钮，交还时统一补 up（否则对端卡键）
+    pressed: Vec<Event>,
+    /// 本会话注入了多少笔。0 = 传输断在 Enter 之后，是排障的第一手证据
+    injected: u64,
+    /// 回 Takeback 的限流时间戳（没在被控状态却收到输入事件时用）
+    last_takeback_ms: u64,
+    /// "推门交还"的武装状态：进门后要先往里走够远才武装，
+    /// 防止进门落点贴着门边、手一抖就被弹回去
+    edge_armed: bool,
+    /// 进门时刻：交还判定要加冷却，刚进门那一两秒手还在门口惯性里摆动
+    enter_ms: u64,
+    /// 顶住门边的起始时刻（0=没在顶）：日志用
+    edge_hold_ms: u64,
+    /// 朝门外累计推了多少点（见 RETURN_PUSH）：交还的**主判据**。
+    /// 离开门边就清零，所以只统计"贴着门还在往外推"的那一段。
+    out_push: i32,
+    /// 进门后前 30 笔位移的采样串（诊断「谁把光标按在门口」）
+    motion_sample: String,
+    /// 上次交还时刻：交还后 2 秒内不再触发交还 —— 弹跳循环
+    ///（交还→光标回门口→手没停→立刻再进门→又被按回门口）的破窗器
+    last_giveback_ms: u64,
+    /// 对端屏幕尺寸（Enter 带来的，0 = 旧版或未知）。位移缩放用：
+    /// 对端像素 / 本端点 就是每单位对端位移该在本端走多少。
+    sender_size: (f64, f64),
+    /// 注入有效性验证窗口：(起始毫秒, 起始真实光标位置, 起始账本位移, 笔数)
+    verify: Option<(u64, (f64, f64), f64, u32)>,
+    /// 疑似失效计数：净位移判据在光标来回摆动时会假阳性（摆回起点
+    /// 净位移=0），必须连续两窗都判失效才交还，单窗只复检
+    suspect: u32,
+}
+
+impl Session {
+    fn new(portal: Side, key: Option<[u8; 32]>) -> Self {
+        Self {
+            portal,
+            opener: key.map(|k| Opener::new(&k)),
+            last_seq: 0,
+            pressed: Vec::new(),
+            injected: 0,
+            last_takeback_ms: 0,
+            edge_armed: false,
+            enter_ms: 0,
+            edge_hold_ms: 0,
+            out_push: 0,
+            motion_sample: String::new(),
+            last_giveback_ms: 0,
+            sender_size: (0.0, 0.0),
+            verify: None,
+            suspect: 0,
+        }
+    }
+}
+
+/// 某个对端的心跳与存活信息
+struct PeerRx {
+    /// 最后一次收到合法包的时刻（毫秒）
+    last_rx: u64,
+    /// 有没有真的收到过包。启动时 last_rx 就是当前时间，单看它会把
+    /// "从没连上"误判成"刚刚连上"。
+    seen: bool,
+    /// 最近一次 Pong 里报的状态（`PEER_UNKNOWN` = 老版本，不带这个字节）
+    state: u8,
+}
+
+type PeerRxMap = Arc<Mutex<HashMap<IpAddr, PeerRx>>>;
+
+/// 每对端一份的心跳表。多对端下这三个值都必须按来源分开记，
+/// 否则「谁还活着」和「谁报的什么状态」会互相覆盖。
+#[derive(Clone)]
+struct RxTable(PeerRxMap);
+
+impl RxTable {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    fn entry(&self, ip: IpAddr) -> PeerRx {
+        self.0
+            .lock()
+            .map(|t| {
+                t.get(&ip).map(|r| PeerRx {
+                    last_rx: r.last_rx,
+                    seen: r.seen,
+                    state: r.state,
+                })
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(PeerRx {
+                // 没记录过：当作"刚刚收到过"（避免一上来就判超时），但
+                // seen=false 让调用方知道它从没说过话
+                last_rx: now_ms(),
+                seen: false,
+                state: State::Idle as u8,
+            })
+    }
+
+    /// 收到该对端的任意合法包
+    fn touch(&self, ip: IpAddr) {
+        if let Ok(mut t) = self.0.lock() {
+            let e = t.entry(ip).or_insert(PeerRx {
+                last_rx: 0,
+                seen: false,
+                state: State::Idle as u8,
+            });
+            e.last_rx = now_ms();
+            e.seen = true;
+        }
+    }
+
+    fn idle_ms(&self, ip: IpAddr) -> u64 {
+        now_ms().saturating_sub(self.entry(ip).last_rx)
+    }
+
+    fn alive(&self, ip: IpAddr) -> (u64, bool) {
+        let e = self.entry(ip);
+        (now_ms().saturating_sub(e.last_rx), e.seen)
+    }
+
+    fn state(&self, ip: IpAddr) -> u8 {
+        self.entry(ip).state
+    }
+
+    fn set_state(&self, ip: IpAddr, st: u8) {
+        if let Ok(mut t) = self.0.lock() {
+            let e = t.entry(ip).or_insert(PeerRx {
+                last_rx: now_ms(),
+                seen: true,
+                state: st,
+            });
+            e.state = st;
+        }
+    }
+}
+
 pub struct Kvm {
     state: Arc<AtomicU8>,
     stop: Arc<AtomicBool>,
@@ -312,11 +464,10 @@ pub struct Kvm {
     /// Remote 角色下是 None：不抓取，只等对端发事件来
     capture: Option<Arc<plat::Capture>>,
     out: Arc<Out>,
-    /// 最后一次收到对端合法包的时刻（毫秒时间戳）
-    last_rx: Arc<AtomicU64>,
-    /// 有没有真的收到过对端的包。启动时 last_rx 就是当前时间，
-    /// 单看它会把"从没连上"误判成"刚刚连上"。
-    peer_seen: Arc<AtomicBool>,
+    /// 每个对端一份的心跳/存活记录。**不能是单槽**：静音看守只该看
+    /// 当前会话那台，别台的心跳替它续命的话，它崩了本机会一直卡在
+    /// 转发里（键鼠全吞）。
+    peer_rx: RxTable,
     log: Arc<dyn Fn(String) + Send + Sync>,
 }
 
@@ -333,14 +484,15 @@ impl Kvm {
         self.mode
     }
 
-    /// 距离上次收到对端消息多久了（毫秒）
+    /// 距离上次收到**当前会话对端**消息多久了（毫秒）
     pub fn idle_ms(&self) -> u64 {
-        now_ms().saturating_sub(self.last_rx.load(Ordering::Relaxed))
+        self.peer_rx.idle_ms(self.out.peer.ip())
     }
 
     /// 对端是不是活着（最近收到过它的包）
     pub fn peer_alive(&self) -> bool {
-        self.peer_seen.load(Ordering::Relaxed) && self.idle_ms() <= PEER_ALIVE_MS
+        let (idle, seen) = self.peer_rx.alive(self.out.peer.ip());
+        seen && idle <= PEER_ALIVE_MS
     }
 
     /// 本机手上有"本次复制的文件清单" → 转发期间按 Ctrl+V 会被拦下来。
@@ -531,12 +683,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
 
     let state = Arc::new(AtomicU8::new(State::Idle as u8));
     let stop = Arc::new(AtomicBool::new(false));
-    let last_rx = Arc::new(AtomicU64::new(now_ms()));
-    let peer_seen = Arc::new(AtomicBool::new(false));
-    // 对端在最近一次 Pong 里报告的状态（0=Idle 1=Sending 2=Receiving）。
-    // 控制消息单发 UDP 会丢，丢一包两边状态机就错位卡死；心跳 0.8s 一次
-    // 每次都带状态，任何错位 2.5 秒内必然被看见并自愈。
-    let peer_state = Arc::new(AtomicU8::new(0));
+    // 每对端一份：最后一次收到包的时刻 + 它报的状态（0=Idle 1=Sending
+    // 2=Receiving）。控制消息单发 UDP 会丢，丢一包两边状态机就错位卡死；
+    // 心跳 0.8s 一次每次都带状态，任何错位 2.5 秒内必然被看见并自愈。
+    let peer_rx = RxTable::new();
     // 本机最近一次"收回键鼠"的时间戳：收回后短暂冷却 Begin，防止用户的
     // 手还压在门口就立刻再次越界（日志实测 0.1s 内反复乒乓）
     let last_reclaim_ms = Arc::new(AtomicU64::new(0));
@@ -571,8 +721,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let capture_ref = cap.clone();
         let log = opts.log.clone();
         let on_panic = opts.on_panic.clone();
-        let last_rx_cap = last_rx.clone();
-        let peer_seen_cap = peer_seen.clone();
+        let rx_cap = peer_rx.clone();
         let reclaim_cap = last_reclaim_ms.clone();
         let on_paste = opts.on_paste.clone();
         thread::spawn(move || {
@@ -640,9 +789,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 对端必须活着才敢吞键鼠：吞了又送不出去，要等 2.5 秒
                         // 断线看守放回来，用户的体感就是"卡一下键鼠全没了"。
                         // follow() 有这道检查，这里（边缘越界）同样要有。
-                        let alive = peer_seen_cap.load(Ordering::Relaxed)
-                            && now_ms().saturating_sub(last_rx_cap.load(Ordering::Relaxed))
-                                <= PEER_ALIVE_MS;
+                        let (idle_cap, seen_cap) = rx_cap.alive(peer_addr.ip());
+                        let alive = seen_cap && idle_cap <= PEER_ALIVE_MS;
                         if !alive {
                             if now_ms().saturating_sub(last_begin_warn_ms) > 3000 {
                                 last_begin_warn_ms = now_ms();
@@ -767,20 +915,18 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let state = state.clone();
         let stop = stop.clone();
         let out = out.clone();
-        let last_rx = last_rx.clone();
-        let peer_seen = peer_seen.clone();
+        let peer_rx_rx = peer_rx.clone();
         let log = opts.log.clone();
         let key = opts.key;
         let mode = opts.mode;
         let side = opts.side;
         let capture_rx = capture.clone();
-        let peer_state_rx = peer_state.clone();
+
         let reclaim_rx = last_reclaim_ms.clone();
         thread::spawn(move || {
             // 门口方向可变：每当对端带着它自己的出门侧过来，就按拓扑改一次。
             // 两台屏水平相邻时，它从右边出去 ⇒ 我这边必然在它左边 —— 这是
             // 几何定理，不该让两台各自配、配反了就 1 秒弹回去。
-            let mut side = side;
             let inject = plat::Inject::new();
             if mode == Mode::Edge {
                 // 多屏共享：注入限制在"本机工作屏"内。工作屏不在这里定 ——
@@ -789,52 +935,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 let layout = plat::monitor_layout();
                 (log)(format!("显示器布局（x, y, 宽, 高）：{layout:?}"));
             }
-            let mut opener = key.map(|k| Opener::new(&k));
+            // 一场会话的全部易脏状态打包在一起：换对端时整体重建，从结构
+            // 上保证上一场的时钟、尺寸、按键栈、交还账本不会被带进下一场。
+            let mut sess = Session::new(side, key);
             let mut buf = [0u8; 64];
-            let mut last_seq: u16 = 0;
-            let mut pressed: Vec<Event> = Vec::new();
-            let mut injected: u64 = 0;
-            // 回 Takeback 的限流时间戳（没在被控状态却收到输入事件时用）
-            let mut last_takeback_ms: u64 = 0;
-            // "推门交还"的武装状态：进门后要先往里走够远才武装，
-            // 防止进门落点贴着门边、手一抖就被弹回去
-            let mut edge_armed = false;
-            // 进门时刻：交还判定要加冷却 —— 刚进门那一两秒手还在
-            // 门口区域惯性摆动，不算"推门回去"
-            let mut enter_ms: u64 = 0;
-            // 顶住门边的起始时刻（0=没在顶）：日志用
-            let mut edge_hold_ms: u64 = 0;
-            // 朝门外累计推了多少点（见 RETURN_PUSH）：交还的**主判据**。
-            // 离开门边就清零，所以只统计"贴着门还在往外推"的那一段。
-            let mut out_push: i32 = 0;
-            // 进门后前 30 笔位移的采样串（诊断「谁把光标按在门口」）
-            let mut motion_sample = String::new();
-            // 上次交还时刻：交还后 2 秒内不再触发交还 —— 弹跳循环
-            //（交还→Mac 光标回门口→手没停→立刻再进门→又被按回门口）
-            // 的破窗器：至少给用户留出可用窗口
-            let mut last_giveback_ms: u64 = 0;
-            // 对端屏幕尺寸（Enter 带来的，0 = 旧版或未知）。
-            // 位移缩放用：对端宽度像素、本端宽度点，比例就是每单位
-            // 对端位移该在本端走多少。
-            let mut sender_size = (0.0_f64, 0.0_f64);
-            // 注入有效性验证（v0.6.15，v0.6.18 改进判据）：Edge 模式被控
-            // 期间，持续注入位移、真实光标却纹丝不动 = 注入环节失效
-            //（SendInput 被安全软件拒收、事件进了看不见的屏、权限被吊销
-            // ……）。此时对端还抓着键鼠往这里转发，用户两边全卡死、只能
-            // 强制杀进程 —— 必须自动发现、立刻交还。探测需要**新发生的
-            // 位移**：光标静置不动不会触发。
-            // 判据（v0.6.18）：**账本走了 + 真实光标没动**才算失效。光标
-            // 被推到屏幕对头钳死时，用户继续往那个方向推，位移照收、
-            // 光标顶死不动 —— 账本也没走（钳位后目标=原地）。v0.6.15 只看
-            // 真实光标，把这种物理事实误判成失效，自动交还 → 用户还在推
-            // → 又越界 → 又顶死 → 又交还……来回横跳死循环（实测踩过：
-            // 两秒一次交还，连着四五轮）。账本（注入器本地坐标跟踪）
-            // 顶死在边上时不涨，天然区分这两种情况。
-            // (窗口起始毫秒, 起始真实光标位置, 起始账本累计位移, 窗口内位移笔数)
-            let mut verify: Option<(u64, (f64, f64), f64, u32)> = None;
-            // 疑似失效计数：净位移判据在光标来回摆动时会假阳性（摆回
-            // 起点净位移=0），必须连续两窗都判失效才交还，单窗只复检
-            let mut suspect: u32 = 0;
             while !stop.load(Ordering::Relaxed) {
                 let (len, from) = match out.socket.recv_from(&mut buf) {
                     Ok(v) => v,
@@ -845,7 +949,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     continue;
                 }
                 let data = &buf[..len];
-                let parsed = match opener.as_mut() {
+                let parsed = match sess.opener.as_mut() {
                     Some(op) => op.open(data),
                     None => Event::decode(data).map(|ev| {
                         let seq = u16::from_le_bytes([data[2], data[3]]);
@@ -856,8 +960,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     continue;
                 };
                 // 收到任何合法包都算"对端还活着"
-                last_rx.store(now_ms(), Ordering::Relaxed);
-                peer_seen.store(true, Ordering::Relaxed);
+                peer_rx_rx.touch(from.ip());
 
                 match ev {
                     Event::Enter {
@@ -868,16 +971,16 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         ..
                     } => {
                         if width > 0 && height > 0 {
-                            sender_size = (width as f64, height as f64);
+                            sess.sender_size = (width as f64, height as f64);
                         }
                         // 对端带了自己的出门侧：本机门口 = 它的对面。
-                        // 这一条同时兜住「两台配置里 side 各配一半」的情况
+                        // 这一条同时兜住「两台配置里门口方向各配一半」的情况
                         //（v0.6.42 实测：Mac→Windows 每 0.5~2 秒就被交还，
                         // 就是因为 Windows 那边把门口当成了自己出门的那侧）。
                         if let Some(ps) = Side::from_code(peer_side) {
                             let want = ps.opposite();
-                            if want != side {
-                                side = want;
+                            if want != sess.portal {
+                                sess.portal = want;
                                 (log)(format!(
                                     "门口方向按对端校正：对端从 {} 出门 → 本机门口改到 {}",
                                     ps.as_str(),
@@ -900,25 +1003,25 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 if let Some(cap) = capture_rx.as_ref() {
                                     cap.set_grabbing(false);
                                 }
-                                for ev in pressed.drain(..) {
+                                for ev in sess.pressed.drain(..) {
                                     inject.apply(&up_of(&ev));
                                 }
                                 out.send(&Event::Leave);
-                                last_seq = seq;
-                                injected = 0;
-                                verify = None;
-                                suspect = 0;
+                                sess.last_seq = seq;
+                                sess.injected = 0;
+                                sess.verify = None;
+                                sess.suspect = 0;
                                 // 每次接管重新锚定工作屏：物理用户实际看着的那块
-                                let own = inject.enable_own_screen(side);
+                                let own = inject.enable_own_screen(sess.portal);
                                 let src = plat::work_screen_source();
                                 (log)(format!("本机工作屏锚定：{own:?}（来源：{}，1=物理活动屏 5=窗口分布 2=主屏 3=光标屏 4=几何）", src));
                                 // 从对端出门时的对应高度进门，别居中猛跳
-                                let (ex, ey) = entry_spot(&inject, side, along);
+                                let (ex, ey) = entry_spot(&inject, sess.portal, along);
                                 inject.place_cursor(ex, ey);
-                                edge_armed = false;
-                                enter_ms = now_ms();
-                                edge_hold_ms = 0;
-                                motion_sample.clear();
+                                sess.edge_armed = false;
+                                sess.enter_ms = now_ms();
+                                sess.edge_hold_ms = 0;
+                                sess.motion_sample.clear();
                                 (log)("对端过来接管了，键鼠已让给它".to_string());
                                 continue;
                             }
@@ -928,11 +1031,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             continue;
                         }
                         let was = state.swap(State::Receiving as u8, Ordering::SeqCst);
-                        last_seq = seq;
+                        sess.last_seq = seq;
                         if was != State::Receiving as u8 {
-                            injected = 0;
-                            verify = None;
-                            suspect = 0;
+                            sess.injected = 0;
+                            sess.verify = None;
+                            sess.suspect = 0;
                             // 接管这一刻强制"放开抓取"：幂等调用，作用是
                             // 无条件重申 CGAssociate(true) + 清钉扎点。
                             // 光标若不是关联着的，注入的位移一个像素都推
@@ -946,35 +1049,35 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 免得光标莫名跳一下。
                             if mode == Mode::Edge {
                                 // 每次接管重新锚定工作屏：物理用户实际看着的那块
-                                let own = inject.enable_own_screen(side);
+                                let own = inject.enable_own_screen(sess.portal);
                                 let src = plat::work_screen_source();
                                 (log)(format!("本机工作屏锚定：{own:?}（来源：{}，1=物理活动屏 5=窗口分布 2=主屏 3=光标屏 4=几何）", src));
-                                let (ex, ey) = entry_spot(&inject, side, along);
+                                let (ex, ey) = entry_spot(&inject, sess.portal, along);
                                 inject.place_cursor(ex, ey);
                             } else {
                                 inject.center();
                             }
-                            edge_armed = false;
-                            enter_ms = now_ms();
-                            edge_hold_ms = 0;
-                            motion_sample.clear();
+                            sess.edge_armed = false;
+                            sess.enter_ms = now_ms();
+                            sess.edge_hold_ms = 0;
+                            sess.motion_sample.clear();
                             (log)("对端接管了键鼠（画面在你这边）".to_string());
                         }
                     }
                     Event::Leave => {
                         // 对端松手了，把可能残留的按下状态清掉
-                        release_local(&inject, &mut pressed);
+                        release_local(&inject, &mut sess.pressed);
                         match State::from_u8(state.load(Ordering::Relaxed)) {
                             State::Receiving => {
                                 state.store(State::Idle as u8, Ordering::SeqCst);
                                 // 事件计数是排障的关键证据：有数 = 传输通、注入环节有问题；
                                 // 为 0 = Enter 之后一条事件都没到（传输问题）
-                                if injected > 0 {
-                                    (log)(format!("对端已收回键鼠（本次注入 {injected} 笔事件）"));
+                                if sess.injected > 0 {
+                                    (log)(format!("对端已收回键鼠（本次注入 {} 笔事件）", sess.injected));
                                 } else {
                                     (log)("对端已收回键鼠（⚠️ 本次一条事件都没收到，传输断了）".to_string());
                                 }
-                                injected = 0;
+                                sess.injected = 0;
                             }
                             State::Sending => {
                                 // 我们在转发时收到 Leave = 对端接受了我们的
@@ -1013,7 +1116,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         out.to(from, &Event::Pong { state: st });
                     }
                     Event::Pong { state: peer } => {
-                        peer_state_rx.store(peer, Ordering::Relaxed);
+                        peer_rx_rx.set_state(from.ip(), peer);
                     }
                     _ => {
                         // 只有真在被控制时才注入。否则对端明明已经松手，
@@ -1024,8 +1127,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // （Enter 丢了，或它那边卡在 Sending）。回一条
                             // Takeback 让它收回；限流，别被每秒几百笔的
                             // 位移事件刷爆。
-                            if now_ms().saturating_sub(last_takeback_ms) > 1000 {
-                                last_takeback_ms = now_ms();
+                            if now_ms().saturating_sub(sess.last_takeback_ms) > 1000 {
+                                sess.last_takeback_ms = now_ms();
                                 // 救援也要回给来源：把 Takeback 发给会话目标，
                                 // 真正该收回的那台就永远收不到
                                 out.to(from, &Event::Takeback);
@@ -1039,10 +1142,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 都没反应，比重复一笔点击严重得多。高频流下 UDP
                         // 偶发乱序，Button-up 被吞是实测踩过的坑。
                         if let Event::Motion { .. } = ev {
-                            if seq.wrapping_sub(last_seq) > 0x8000 && seq != 0 {
+                            if seq.wrapping_sub(sess.last_seq) > 0x8000 && seq != 0 {
                                 continue;
                             }
-                            last_seq = seq;
+                            sess.last_seq = seq;
                         }
                         // 按键/键盘逐笔落日志：区分"Mac 端发来了右键"和
                         // "注入环节自己生出右键"（位移量大不打）
@@ -1060,19 +1163,19 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 个问题；我们是 delta 流，所以在注入前按比例换算。）
                         let to_inject = match &ev {
                             Event::Motion { dx, dy }
-                                if sender_size.0 >= 1.0 && sender_size.1 >= 1.0 =>
+                                if sess.sender_size.0 >= 1.0 && sess.sender_size.1 >= 1.0 =>
                             {
                                 let (lw, lh) = inject.screen();
                                 Event::Motion {
-                                    dx: rescale_delta(*dx, lw / sender_size.0),
-                                    dy: rescale_delta(*dy, lh / sender_size.1),
+                                    dx: rescale_delta(*dx, lw / sess.sender_size.0),
+                                    dy: rescale_delta(*dy, lh / sess.sender_size.1),
                                 }
                             }
                             _ => ev.clone(),
                         };
                         inject.apply(&to_inject);
-                        injected += 1;
-                        if injected == 1 {
+                        sess.injected += 1;
+                        if sess.injected == 1 {
                             // 把首笔事件的具体数值打进日志：位移是 0、键码是
                             // 乱码这类「内容坏掉」的问题，只有这里能看出来
                             (log)(format!("事件流开始注入（首笔：{to_inject:?}）"));
@@ -1081,14 +1184,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 按死在门口 x=0 顶住 300ms，必须分辨是"位移流里
                         // 持续来负数"还是"外力直接挪真实光标"
                         if let Event::Motion { dx, dy } = to_inject {
-                            if injected <= 30 {
-                                if injected == 1 {
-                                    motion_sample.clear();
+                            if sess.injected <= 30 {
+                                if sess.injected == 1 {
+                                    sess.motion_sample.clear();
                                 }
-                                motion_sample.push_str(&format!(" {dx},{dy}"));
-                                if injected == 30 {
+                                sess.motion_sample.push_str(&format!(" {dx},{dy}"));
+                                if sess.injected == 30 {
                                     (log)(format!(
-                                        "进门位移流（前 30 笔 dx,dy）：{motion_sample}"
+                                        "进门位移流（前 30 笔 dx,dy）：{}", sess.motion_sample
                                     ));
                                 }
                             }
@@ -1106,10 +1209,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             if let Event::Motion { .. } = ev {
                                 // (是否判失效, 真实光标移动, 账本移动)
                                 let mut verdict: Option<(bool, f64, f64)> = None;
-                                if verify.is_none() {
+                                if sess.verify.is_none() {
                                     let p = inject.cursor().unwrap_or((0.0, 0.0));
-                                    verify = Some((now_ms(), p, inject.walked(), 1));
-                                } else if let Some(slot) = verify.as_mut() {
+                                    sess.verify = Some((now_ms(), p, inject.walked(), 1));
+                                } else if let Some(slot) = sess.verify.as_mut() {
                                     slot.3 += 1;
                                     if slot.3 >= 40 && now_ms().saturating_sub(slot.0) >= 1000 {
                                         let cur = inject.cursor().unwrap_or(slot.1);
@@ -1124,9 +1227,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 match verdict {
                                     // 注入无效：先复检。连续第二个窗口仍失效才交还
                                     Some((true, real_moved, ledger_moved)) => {
-                                        verify = None;
-                                        if suspect >= 1 {
-                                            release_local(&inject, &mut pressed);
+                                        sess.verify = None;
+                                        if sess.suspect >= 1 {
+                                            release_local(&inject, &mut sess.pressed);
                                             out.send(&Event::Takeback);
                                             out.send(&Event::Takeback);
                                             state.store(State::Idle as u8, Ordering::SeqCst);
@@ -1138,7 +1241,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                             ));
                                             continue;
                                         }
-                                        suspect += 1;
+                                        sess.suspect += 1;
                                         // 判"失效"之前先做一次最廉价的自愈：
                                         // 重申光标关联（幂等）。v0.6.40 的根因
                                         // 就是光标被留在"断开"状态，注入推不动；
@@ -1155,20 +1258,20 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     }
                                     // 注入正常（或只是顶死在屏幕边上）：重开窗口
                                     Some((false, ..)) => {
-                                        verify = None;
-                                        suspect = 0;
+                                        sess.verify = None;
+                                        sess.suspect = 0;
                                     }
                                     None => {}
                                 }
                             }
                         }
                         if ev.is_down() {
-                            pressed.push(ev);
+                            sess.pressed.push(ev);
                         } else {
-                            pressed.retain(|p| !same_key(p, &ev));
+                            sess.pressed.retain(|p| !same_key(p, &ev));
                         }
                         // Edge 模式：对端光标撞回"朝着对端"的那条边（本机
-                        // `side` 这一侧），说明用户想把控制权还回去了 ——
+                        // 门口那一侧），说明用户想把控制权还回去了 ——
                         // 必须回 Takeback 让对端收回键鼠，否则它会一直抓着
                         // 键鼠往这边转发，两边全卡死。以前有两个 bug：判的
                         // 是 opposite（用户得横穿整个屏幕到最远端才触发），
@@ -1191,19 +1294,19 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     // 距门边的向内距离。进门落点贴着门边：必须先
                                     // 往里走够远才武装交还判定，否则刚进门手一抖
                                     // 就被弹回去（Deskflow avoidJumpZone 同款问题）。
-                                    let inside = match side {
+                                    let inside = match sess.portal {
                                         Side::Left => x,
                                         Side::Right => w - x,
                                         Side::Top => y,
                                         Side::Bottom => h - y,
                                     };
-                                    if !edge_armed {
+                                    if !sess.edge_armed {
                                         if inside > EDGE_REARM_DIST * scale {
-                                            edge_armed = true;
+                                            sess.edge_armed = true;
                                         }
-                                        edge_hold_ms = 0;
-                                        out_push = 0;
-                                    } else if event::hit_edge(side, x, y, w, h) {
+                                        sess.edge_hold_ms = 0;
+                                        sess.out_push = 0;
+                                    } else if event::hit_edge(sess.portal, x, y, w, h) {
                                         // 交还判据（v0.6.30 重做）：**累计朝门外
                                         // 推了多远**，不再"顶住 300ms"。
                                         //
@@ -1215,32 +1318,32 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                         // 按位移记账后，一次果断推门只需三五十
                                         // 毫秒；门口扫过的一两笔杂音（每笔 2~8
                                         // 点）攒不到阈值，误切照样挡住。
-                                        let outward = match side {
+                                        let outward = match sess.portal {
                                             Side::Left => -dx,
                                             Side::Right => dx,
                                             Side::Top => -dy,
                                             Side::Bottom => dy,
                                         };
                                         if outward > 0 {
-                                            out_push += outward;
+                                            sess.out_push += outward;
                                         }
                                         let now = now_ms();
-                                        if edge_hold_ms == 0 {
-                                            edge_hold_ms = now;
+                                        if sess.edge_hold_ms == 0 {
+                                            sess.edge_hold_ms = now;
                                         }
-                                        if out_push as f64 >= RETURN_PUSH * scale
+                                        if sess.out_push as f64 >= RETURN_PUSH * scale
                                             // 进门 0.5 秒内不算：手还在门口惯性里
-                                            && now.saturating_sub(enter_ms) >= 500
+                                            && now.saturating_sub(sess.enter_ms) >= 500
                                             // 交还后 2 秒内不重复交还：打断
                                             // 门口弹跳循环（见变量注释）
-                                            && now.saturating_sub(last_giveback_ms) >= 2000
+                                            && now.saturating_sub(sess.last_giveback_ms) >= 2000
                                         {
-                                            let held = now.saturating_sub(edge_hold_ms);
-                                            let pushed = out_push;
-                                            edge_hold_ms = 0;
-                                            out_push = 0;
-                                            last_giveback_ms = now;
-                                            release_local(&inject, &mut pressed);
+                                            let held = now.saturating_sub(sess.edge_hold_ms);
+                                            let pushed = sess.out_push;
+                                            sess.edge_hold_ms = 0;
+                                            sess.out_push = 0;
+                                            sess.last_giveback_ms = now;
+                                            release_local(&inject, &mut sess.pressed);
                                             // 单发 UDP 会丢：丢一包对端就卡在 Sending
                                             // 连发两笔，接收端有状态闸门，幂等
                                             out.send(&Event::Takeback);
@@ -1256,14 +1359,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                                 .unwrap_or_else(|| "?".to_string());
                                             (log)(format!(
                                                 "推门交还（真实 {x:.0},{y:.0} / 账本 {ledger}，推了 {pushed} 点 {held}ms，进门 {:.1}s）",
-                                                now.saturating_sub(enter_ms) as f64 / 1000.0,
+                                                now.saturating_sub(sess.enter_ms) as f64 / 1000.0,
                                             ));
                                         }
                                     } else {
                                         // 离开门边：累计位移与计时都清零 —— 攒的是
                                         // "这一顶"的量，不是历史总量
-                                        edge_hold_ms = 0;
-                                        out_push = 0;
+                                        sess.edge_hold_ms = 0;
+                                        sess.out_push = 0;
                                     }
                                 }
                             }
@@ -1283,10 +1386,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let state = state.clone();
         let stop = stop.clone();
         let out = out.clone();
-        let last_rx = last_rx.clone();
+        let peer_rx_gd = peer_rx.clone();
         let log = opts.log.clone();
         let capture = capture.clone();
-        let peer_state_gd = peer_state.clone();
         let reclaim_gd = last_reclaim_ms.clone();
         thread::spawn(move || {
             let mut warned = false;
@@ -1373,7 +1475,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 // Idle —— 心跳照常走，下面的"完全静音"看守永远不触发
                 //（实测：来回多切几次必中一次，只能热键救）。
                 // Pong 现在每 0.8s 带一次对端状态，任何错位 2.5 秒内可见。
-                let peer = peer_state_gd.load(Ordering::Relaxed);
+                let peer = peer_rx_gd.state(peer_addr.ip());
                 // 对端状态未知（旧版本，Pong 不带状态字节）时不判定错位：
                 // 没法判断就别动手，此时自愈降级为 v0.6.10 的行为
                 //（完全静音看守 + Takeback 自愈仍然有效）。
@@ -1426,7 +1528,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     warned = false;
                     continue;
                 }
-                if now_ms().saturating_sub(last_rx.load(Ordering::Relaxed)) > IDLE_TIMEOUT_MS
+                if peer_rx_gd.idle_ms(peer_addr.ip()) > IDLE_TIMEOUT_MS
                     && !warned
                 {
                     warned = true;
@@ -1496,8 +1598,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         role: opts.role,
         capture,
         out,
-        last_rx,
-        peer_seen,
+        peer_rx,
         log: opts.log,
     })
 }
