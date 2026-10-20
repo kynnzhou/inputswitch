@@ -15,7 +15,7 @@
 //! 扩展键标志发送，不然 AltGr、右侧 Ctrl 会错。
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -68,6 +68,17 @@ const WM_KEYUP: usize = 0x0101;
 const WM_SYSKEYDOWN: usize = 0x0104;
 const WM_SYSKEYUP: usize = 0x0105;
 const WM_QUIT: u32 = 0x0012;
+const WM_INPUT: u32 = 0x00FF;
+
+/// 注册原始输入：即使不在前台也收（钩子线程本来就没窗口在前台）
+const RIDEV_INPUTSINK: u32 = 0x0000_0100;
+const RIM_TYPEMOUSE: u32 = 0;
+const RID_INPUT: u32 = 0x1000_0003;
+/// RAWMOUSE.usFlags：置位表示 lLastX/lLastY 是绝对坐标（远程桌面 / 某些
+/// 虚拟鼠标），不是相对位移 —— 那种情况直接跳过，别把绝对坐标当位移发
+const MOUSE_MOVE_ABSOLUTE: u16 = 0x0001;
+/// 窗口样式：不可见的弹出窗，只为给原始输入当 hwndTarget
+const WS_POPUP: u32 = 0x8000_0000;
 
 const INPUT_MOUSE: u32 = 0;
 const INPUT_KEYBOARD: u32 = 1;
@@ -110,6 +121,52 @@ struct MSLLHOOKSTRUCT {
     flags: u32,
     time: u32,
     extra: usize,
+}
+
+/// 原始输入的头部（x64：4+4+8+8 = 24 字节）
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawInputHeader {
+    dw_type: u32,
+    dw_size: u32,
+    h_device: isize,
+    w_param: isize,
+}
+
+/// RAWMOUSE（x64：24 字节）。联合体里我们只关心 ul_buttons 那一支，
+/// 按键照旧走低级钩子，这里只取位移。
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawMouse {
+    us_flags: u16,
+    ul_buttons: u32,
+    ul_raw_buttons: u32,
+    last_x: i32,
+    last_y: i32,
+    extra: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawInputDevice {
+    us_usage_page: u16,
+    us_usage: u16,
+    dw_flags: u32,
+    hwnd_target: Hwnd,
+}
+
+#[repr(C)]
+struct WndClassW {
+    style: u32,
+    lpfn_wnd_proc: isize,
+    cb_cls_extra: i32,
+    cb_wnd_extra: i32,
+    h_instance: Hinstance,
+    h_icon: isize,
+    h_cursor: isize,
+    hbr_background: isize,
+    lpsz_menu_name: *const u16,
+    lpsz_class_name: *const u16,
 }
 
 #[repr(C)]
@@ -216,6 +273,31 @@ extern "system" {
     fn IsIconic(hwnd: Hwnd) -> i32;
     fn GetWindowRect(hwnd: Hwnd, rect: *mut RectL) -> i32;
     fn GetClassNameW(hwnd: Hwnd, buf: *mut u16, max: i32) -> i32;
+
+    fn RegisterClassW(class: *const WndClassW) -> u16;
+    fn CreateWindowExW(
+        ex_style: u32,
+        class_name: *const u16,
+        window_name: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        parent: Hwnd,
+        menu: isize,
+        instance: Hinstance,
+        param: *mut c_void,
+    ) -> Hwnd;
+    fn DefWindowProcW(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam) -> isize;
+    fn RegisterRawInputDevices(devices: *const RawInputDevice, count: u32, size: u32) -> i32;
+    fn GetRawInputData(
+        raw: isize,
+        command: u32,
+        data: *mut c_void,
+        size: *mut u32,
+        header_size: u32,
+    ) -> u32;
 }
 
 #[link(name = "dwmapi")]
@@ -310,6 +392,62 @@ pub fn start_capture(
             let _ = ready_tx.send(Err("SetWindowsHookEx 失败（可能被安全软件拦了）".to_string()));
             return;
         }
+
+        // 原始输入（Raw Input）：位移的**唯一**来源。
+        //
+        // 低级钩子返回 1 确实拦得住光标（v0.6.42 实锤：抓取后光标停在原地，
+        // 差分只剩手抖的 ±1），但也正因为光标不动了，"相邻两笔 pt 相减"
+        // 这条信息链就彻底断了 —— 光标不动 ≠ 手没动。手动了多少，只有
+        // 原始输入知道（lLastX/lLastY 是设备上报的增量，与光标位置无关，
+        // 也不受钳位、SetCursorPos 影响）。
+        let class_name: Vec<u16> = "InputSwitchRaw\0".encode_utf16().collect();
+        let wc = WndClassW {
+            style: 0,
+            lpfn_wnd_proc: raw_wnd_proc as isize,
+            cb_cls_extra: 0,
+            cb_wnd_extra: 0,
+            h_instance: module,
+            h_icon: 0,
+            h_cursor: 0,
+            hbr_background: 0,
+            lpsz_menu_name: std::ptr::null(),
+            lpsz_class_name: class_name.as_ptr(),
+        };
+        RegisterClassW(&wc);
+        // 0x0 的隐藏弹出窗。不用 message-only（HWND_MESSAGE）—— 那种窗口
+        // 收不到原始输入，必须是有独立消息队列的普通窗口。
+        let hwnd = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            class_name.as_ptr(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            module,
+            std::ptr::null_mut(),
+        );
+        if hwnd == 0 {
+            let _ = ready_tx.send(Err("建接收窗口失败，拿不到原始输入".to_string()));
+            UnhookWindowsHookEx(mouse);
+            UnhookWindowsHookEx(key);
+            return;
+        }
+        let rid = RawInputDevice {
+            us_usage_page: 1, // Generic Desktop
+            us_usage: 2,      // Mouse
+            dw_flags: RIDEV_INPUTSINK,
+            hwnd_target: hwnd,
+        };
+        if RegisterRawInputDevices(&rid, 1, std::mem::size_of::<RawInputDevice>() as u32) == 0 {
+            let _ = ready_tx.send(Err("注册原始输入失败，键鼠共享无法工作".to_string()));
+            UnhookWindowsHookEx(mouse);
+            UnhookWindowsHookEx(key);
+            return;
+        }
         let _ = ready_tx.send(Ok(()));
 
         // 低级钩子要求线程有消息循环，否则事件永远送不过来
@@ -369,39 +507,15 @@ impl Capture {
         if was == on {
             return;
         }
-        // 抓取：先落钉扎点（光标往屏内收一截），再开始转发。
-        // 见 set_pin 注释 —— 不钉的话光标贴边被系统钳住，位移就没了。
-        let geo = STATE
-            .lock()
-            .ok()
-            .and_then(|s| s.as_ref().map(|m| m.lock().map(|x| {
-                (
-                    x.ox.load(Ordering::Relaxed),
-                    x.oy.load(Ordering::Relaxed),
-                    x.width.load(Ordering::Relaxed) as i32,
-                    x.height.load(Ordering::Relaxed) as i32,
-                )
-            }).unwrap_or((0, 0, 0, 0))))
-            .unwrap_or((0, 0, 0, 0));
-        let (ox, oy, gw, gh) = geo;
+        // 不再钉扎光标：原始输入（WM_INPUT）取位移，光标停哪儿都不影响
+        // 计数的准确性。抓取/释放只打一行诊断，方便判断"这条路通不通"。
         if on {
-            if gw > 0 && gh > 0 {
-                set_pin(ox, oy, gw, gh);
-                log_file(&format!(
-                    "抓取钉扎：工作屏 ({},{}) {}x{} → 光标钉在 ({},{})，允许半径 {}",
-                    ox,
-                    oy,
-                    gw,
-                    gh,
-                    ox + gw / 2,
-                    oy + gh / 2,
-                    PIN_GUARD.load(Ordering::Relaxed)
-                ));
-            } else {
-                log_file(&format!("抓取钉扎：工作屏尺寸未知（{gw}x{gh}），本次不钉扎"));
-            }
+            RAW_COUNT.store(0, Ordering::Relaxed);
         } else {
-            clear_pin();
+            log_file(&format!(
+                "抓取结束：本次收到原始位移 {} 笔",
+                RAW_COUNT.load(Ordering::Relaxed)
+            ));
         }
         // 松手时把光标挪回边缘内侧 —— 只在多屏共享模式下有意义。
         // 离门 16 点：太贴门口的话手一抖就又越界了。
@@ -446,6 +560,80 @@ fn with_shared<F: FnOnce(&Shared)>(f: F) {
         }
     }
 }
+
+/// 接收原始输入的窗口过程。只有 WM_INPUT 有用，其余原样交还系统。
+extern "system" fn raw_wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam) -> isize {
+    if msg == WM_INPUT {
+        read_raw_motion(lparam);
+    }
+    // WM_INPUT 处理完必须走 DefWindowProc，否则系统不会回收这块缓冲
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// 从 WM_INPUT 里取出鼠标的相对位移并转发。
+///
+/// 注意这是**设备增量**，与光标在哪儿毫无关系：钩子把光标拦在原地不动，
+/// 这里照样能拿到"手移动了多少" —— 这正是 v0.6.43 要解决的事。
+fn read_raw_motion(lparam: Lparam) {
+    let hdr_size = std::mem::size_of::<RawInputHeader>() as u32;
+    let mut size: u32 = 0;
+    unsafe {
+        if GetRawInputData(
+            lparam as isize,
+            RID_INPUT,
+            std::ptr::null_mut(),
+            &mut size,
+            hdr_size,
+        ) == u32::MAX
+        {
+            return;
+        }
+    }
+    if size == 0 || size > 256 {
+        return;
+    }
+    // 12 个 u64 = 96 字节，足够放一条鼠标 RAWINPUT（x64 约 48 字节），
+    // 且天然 8 字节对齐
+    let mut buf = [0u64; 12];
+    let mut got = size;
+    let ret = unsafe {
+        GetRawInputData(
+            lparam as isize,
+            RID_INPUT,
+            buf.as_mut_ptr() as *mut c_void,
+            &mut got,
+            hdr_size,
+        )
+    };
+    if ret == u32::MAX || got < hdr_size {
+        return;
+    }
+    let hdr = unsafe { &*(buf.as_ptr() as *const RawInputHeader) };
+    if hdr.dw_type != RIM_TYPEMOUSE {
+        return;
+    }
+    let mouse = unsafe { &*((buf.as_ptr() as *const u8).add(hdr_size as usize) as *const RawMouse) };
+    // 远端/虚拟鼠标上报的是绝对坐标，当位移发出去会把对端光标瞬间甩飞
+    if mouse.us_flags & MOUSE_MOVE_ABSOLUTE != 0 {
+        return;
+    }
+    if mouse.last_x == 0 && mouse.last_y == 0 {
+        return;
+    }
+    RAW_COUNT.fetch_add(1, Ordering::Relaxed);
+    with_shared(|shared| {
+        if !shared.grabbing.load(Ordering::Relaxed) {
+            return;
+        }
+        let _ = shared.tx.send(Captured::Input(Event::Motion {
+            dx: mouse.last_x,
+            dy: mouse.last_y,
+        }));
+    });
+}
+
+/// 抓取期间收到的原始位移笔数。只用来判断"这条路通不通"（交还时落日志）。
+static RAW_COUNT: AtomicU32 = AtomicU32::new(0);
 
 extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize {
     if code < 0 {
@@ -506,14 +694,11 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
             return;
         }
         swallow = true;
-        // `SetCursorPos` 自己产生的那一笔：认领掉，只更新「上一笔位置」，
-        // 不转发。见 WARP_TO 注释 —— 漏这一笔就会凭空给对端一笔几百上千
-        // 点的位移，它的光标被推到屏幕另一头，撞门立刻交还。
-        if wparam == WM_MOUSEMOVE && claim_warp(info.pt) {
-            return;
-        }
         let emitted = match wparam {
-            WM_MOUSEMOVE => last_point(info.pt),
+            // 位移不从这里出：钩子把光标拦在原地，`pt` 跟手已经没关系了
+            //（v0.6.42 实测抓取后只剩手抖的 ±1）。位移由 `read_raw_motion`
+            // 从原始输入里取，这里只负责把消息吞掉，不让本机光标乱跑。
+            WM_MOUSEMOVE => None,
             WM_LBUTTONDOWN => Some(Event::Button {
                 button: 1,
                 down: true,
@@ -555,12 +740,6 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
         if let Some(ev) = emitted {
             let _ = shared.tx.send(Captured::Input(ev));
         }
-        // 位移算完再拽回钉扎点：顺序反了的话，先拽再算会凭空多出一笔
-        // 反方向的位移（拽回去多少就报多少），对端光标原地抖 —— 和 Mac
-        // 端 v0.6.34 踩的是同一个坑。
-        if wparam == WM_MOUSEMOVE {
-            pin_back_if_drifted(info.pt);
-        }
     });
 
     if swallow {
@@ -570,144 +749,14 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
     }
 }
 
-/// 鼠标位移：低级钩子只给绝对坐标，自己跟上一次比出差值
+/// 位移不再由"相邻两笔 pt 相减"得到。
 ///
-/// v0.6.41 补丁点：钩子**吞不掉光标移动**（返回 1 只拦按键和点击，
-/// 指针照走，和 macOS 的 HID tap 是同一个坑）。所以光标一路顶到屏幕边上
-/// 就被系统钳在 w-1，`pt` 再也不会变 —— 算出来的位移全是 0 或 ±1，对端
-/// 收到的就是那串抖动，用户看到的是"推过去光标基本不动"。因此抓取期间
-/// 必须由我们自己把光标按在钉扎点上（见 pin_cursor_if_drifted）。
-fn last_point(pt: POINT) -> Option<Event> {
-    let packed = pack_point(pt);
-    let prev = LAST_POINT.swap(packed, Ordering::Relaxed);
-    if prev == isize::MIN {
-        return None;
-    }
-    let px = (prev >> 16) as i32;
-    let py = (prev & 0xFFFF) as i16 as i32;
-    let dx = pt.x - px;
-    let dy = pt.y - py;
-    if dx == 0 && dy == 0 {
-        None
-    } else {
-        Some(Event::Motion { dx, dy })
-    }
-}
-
-fn pack_point(pt: POINT) -> isize {
-    ((pt.x as isize) << 16) | (pt.y as isize & 0xFFFF)
-}
-
-/// 把"上一笔位置"改写成指定点。钉扎回中之后必须调它：否则回中本身
-/// 产生的那笔位移（锚点 → 原位置，几百像素）会被当成手的移动转给对端。
-fn set_last_point(x: i32, y: i32) {
-    LAST_POINT.store(pack_point(POINT { x, y }), Ordering::Relaxed);
-}
-
-static LAST_POINT: AtomicIsize = AtomicIsize::new(isize::MIN);
-
-/// 抓取期间的钉扎点（全局坐标，isize::MIN = 未钉扎）
-static PIN: AtomicIsize = AtomicIsize::new(isize::MIN);
-
-/// 最近一次 `SetCursorPos` 的目标点和时刻（毫秒）。
-///
-/// **这是 v0.6.42 的核心修复**：`SetCursorPos` 自己也会产生一笔
-/// WM_MOUSEMOVE。那笔事件到达钩子时，`LAST_POINT` 已经被
-/// `set_last_point` 改成钉扎点了，于是它被算成「上一笔位置 → 钉扎点」
-/// 的位移转发给对端 —— Mac 日志里那笔 **+1785** 就是它（1920 - 135）。
-/// 对端光标被这一笔猛地推到屏幕另一头，撞门 → 立刻交还，用户看到
-/// 的就是「推过去 1 秒被弹回来」+「光标原地抖」。所以必须认领并丢弃。
-static WARP_TO: AtomicIsize = AtomicIsize::new(isize::MIN);
-static WARP_MS: AtomicU64 = AtomicU64::new(0);
-
-/// 允许偏离钉扎点的半径（像素），由 `set_pin` 按屏幕尺寸算好存这里。
-static PIN_GUARD: AtomicI32 = AtomicI32::new(240);
-
-/// 钉扎点离屏心的允许半径 = 屏幕短边 × 这个比例。
-///
-/// 取 1/4 而不是固定 64 像素：钉扎点在屏心，手里有半个屏幕的余量，
-/// 正常人推鼠标根本到不了边界，也就不会频繁 warp（每次 warp 都是一次
-/// 风险）。v0.6.41 用 64 像素、钉扎点又在离边 135 像素处，推四笔就
-/// 撞墙拽回，实测对端收到的是一条 -35,-35,-35… 的死循环。
-const PIN_GUARD_RATIO: f64 = 0.25;
-
-/// 把光标摆到指定点，并登记"这一笔是我们自己造成的"。
-fn warp_to(x: i32, y: i32) {
-    WARP_TO.store(pack_point(POINT { x, y }), Ordering::Relaxed);
-    WARP_MS.store(now_unix_ms(), Ordering::Relaxed);
-    unsafe { SetCursorPos(x, y) };
-    // 摆位产生的那笔位移不算手的移动
-    set_last_point(x, y);
-}
-
-/// 认领「warp 自己产生的那一笔」。命中则只更新上一笔位置、不转发。
-///
-/// 超时兜底：`SetCursorPos` 在位置没变时不会产生事件，登记的点会一直
-/// 留着。超过 60ms 没被认领就作废，免得以后某笔真实事件正好落在附近
-/// 被误吞。
-fn claim_warp(pt: POINT) -> bool {
-    let v = WARP_TO.load(Ordering::Relaxed);
-    if v == isize::MIN {
-        return false;
-    }
-    let age = now_unix_ms().saturating_sub(WARP_MS.load(Ordering::Relaxed));
-    let wx = (v >> 16) as i32;
-    let wy = (v & 0xFFFF) as i16 as i32;
-    if age > 60 {
-        WARP_TO.store(isize::MIN, Ordering::Relaxed);
-        return false;
-    }
-    if (pt.x - wx).abs() <= 2 && (pt.y - wy).abs() <= 2 {
-        WARP_TO.store(isize::MIN, Ordering::Relaxed);
-        set_last_point(wx, wy);
-        return true;
-    }
-    false
-}
-
-/// 记钉扎点并把光标摆过去。
-///
-/// 钉扎点 = **工作屏的正中心**。为什么要离边远：钩子拦不住指针移动，
-/// 光标贴在边上就会被系统钳在最后一列，`pt` 定死，之后所有位移都被算成
-/// 0 —— 对端收到的只有 ±1 抖动（v0.6.41 实测「账本走 262 点、真实光标
-/// 动 1.0 点」）。放屏心而不是"抓着的位置往内收"：抓取瞬间人往往正
-/// 贴着门口推，往里收的那点距离根本不够。
-fn set_pin(ox: i32, oy: i32, w: i32, h: i32) {
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    let ax = ox + w / 2;
-    let ay = oy + h / 2;
-    let guard = ((w.min(h) as f64 * PIN_GUARD_RATIO) as i32).max(48);
-    PIN_GUARD.store(guard, Ordering::Relaxed);
-    PIN.store(pack_point(POINT { x: ax, y: ay }), Ordering::Relaxed);
-    warp_to(ax, ay);
-}
-
-fn clear_pin() {
-    PIN.store(isize::MIN, Ordering::Relaxed);
-    WARP_TO.store(isize::MIN, Ordering::Relaxed);
-}
-
-fn pin_point() -> Option<(i32, i32)> {
-    let v = PIN.load(Ordering::Relaxed);
-    if v == isize::MIN {
-        return None;
-    }
-    Some(((v >> 16) as i32, (v & 0xFFFF) as i16 as i32))
-}
-
-/// 抓取期间把光标拽回钉扎点。偏移超过 PIN_GUARD 才动手（省调用），
-/// 拽完把"上一笔位置"同步成钉扎点，否则这一拽会被当成手的移动转发出去。
-fn pin_back_if_drifted(cur: POINT) {
-    let Some((ax, ay)) = pin_point() else {
-        return;
-    };
-    let guard = PIN_GUARD.load(Ordering::Relaxed);
-    if (cur.x - ax).abs() > guard || (cur.y - ay).abs() > guard {
-        warp_to(ax, ay);
-    }
-}
+/// 历史：v0.6.41 以为钩子拦不住光标，于是自己钉扎 + 拽回；v0.6.42 又发现
+/// 拽回本身会伪造一笔位移。v0.6.43 用 Mac 日志（首笔 -960 = 屏宽一半、
+/// 之后全是 ±1）确认了真相：**钩子返回 1 是拦得住光标的**，光标停在原地
+/// 不动 → pt 恒定 → 差分为 0 → 手推多久都没东西可发。
+/// 所以位移改从 `read_raw_motion`（WM_INPUT / Raw Input）取，那是设备
+/// 上报的增量，与光标位置、钳位、SetCursorPos 全部无关。
 
 extern "system" fn key_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize {
     if code < 0 {
