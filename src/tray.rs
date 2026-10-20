@@ -2413,7 +2413,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.54",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.55",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2743,25 +2743,52 @@ pub fn run() -> ! {
                     log_line(&status);
                 }
                 Action::KvmHandOver(node) => {
-                    status = match kvm_now() {
-                        Some(handle) => {
-                            // 多机时点名交给哪台；不带 node 就是老行为（挑一条 Follow 链路）
-                            let outcome = match node.as_deref() {
-                                Some(node) => handle.hand_over_to(node),
-                                None => handle.follow(),
-                            };
-                            match outcome {
-                                Ok(()) => "键鼠已交给对端（画面这边黑着是正常的）".to_string(),
-                                Err(err) => format!("交不出去：{err}"),
+                    // 不带 node 就是面板上那个全局按钮。多机时它靠 follow_target() 猜，
+                    // 猜错的表现是"点了 A、键鼠跑到 B" —— 直接拒绝，让人点名。
+                    let ambiguous = node.is_none() && mesh.live_peers().len() > 1;
+                    status = if ambiguous {
+                        "有多台对端在线，得点名：点下面某一行末尾的「交给它」".to_string()
+                    } else {
+                        match kvm_now() {
+                            Some(handle) => {
+                                // 点名交给哪台；不带 node 就是老行为（挑一条 Follow 链路）
+                                let outcome = match node.as_deref() {
+                                    Some(node) => handle.hand_over_to(node),
+                                    None => handle.follow(),
+                                };
+                                match outcome {
+                                    Ok(()) => {
+                                        "键鼠已交给对端（画面这边黑着是正常的）".to_string()
+                                    }
+                                    Err(err) => format!("交不出去：{err}"),
+                                }
                             }
+                            None => "共用键鼠没开，先在面板上打开它".to_string(),
                         }
-                        None => "共用键鼠没开，先在面板上打开它".to_string(),
                     };
                     log_line(&status);
                 }
                 Action::KvmLink { node, side, mode } => {
                     let mut changed = false;
                     let mut problem: Option<String> = None;
+                    // 面板上可以把"已发现但还没配链路"的对端拖进格子 —— 链路表里没有它
+                    // 时现建一条。不建的话第二台机器只能手改 config.json（五台的拓扑下
+                    // 这就是硬阻塞），而且拖拽托盘里那类"未配链路"的卡片永远落不了地。
+                    //
+                    // 只认**在线**的对端：地址来自发现层广播，本机不编造。
+                    if !config.kvm.links.iter().any(|l| l.node == node) {
+                        if let Some(p) = mesh.live_peers().into_iter().find(|p| p.node == node) {
+                            config.kvm.links.push(crate::config::LinkConfig {
+                                node: node.clone(),
+                                side: String::new(),
+                                mode: String::new(),
+                                input: String::new(),
+                                addr: p.addr.ip().to_string(),
+                            });
+                            changed = true;
+                            log_line(&format!("新建了一条到 {node} 的链路"));
+                        }
+                    }
                     if let Some(link) = config.kvm.links.iter_mut().find(|l| l.node == node) {
                         if let Some(side) = side {
                             let side = side.trim().to_string();
@@ -2801,7 +2828,9 @@ pub fn run() -> ! {
                             }
                         }
                     } else {
-                        problem = Some(format!("没有叫 {node} 的链路"));
+                        problem = Some(format!(
+                            "没有叫 {node} 的链路，它现在也不在局域网里 —— 先让对面开机并开着本程序"
+                        ));
                     }
 
                     if let Some(problem) = problem {
@@ -2810,18 +2839,18 @@ pub fn run() -> ! {
                         // v3 起运行时只认链路表，改完要回写镜像让老版本也能读到
                         config.kvm.mirror_from_primary();
                         let _ = config.save();
-                        // 掩码是按链路表算出来的，改了必须重启实例才生效
-                        if let Some(handle) = kvm_handle.take() {
-                            handle.stop();
-                            if let Ok(mut slot) = KVM.lock() {
-                                *slot = None;
-                            }
-                            config.kvm.enabled = false;
-                            let _ = config.save();
-                            status = "链路已改，共用键鼠需要重新打开".to_string();
-                        } else {
-                            status = "链路已改，下次打开生效".to_string();
-                        }
+                        // 掩码是按链路表算出来的，改了必须重启实例才生效。
+                        // 交给 restart_kvm 自动重开，不再"关掉让你自己再点一次" ——
+                        // 摆位图是拖的，一张图要摆好几台，每拖一次都重开一遍没人受得了。
+                        // （托盘菜单里改方向走的是同一个函数，两条路行为一致）
+                        restart_kvm(
+                            &mut config,
+                            &mut kvm_handle,
+                            &mesh,
+                            &tx,
+                            &mut status,
+                            "链路已改".to_string(),
+                        );
                     } else {
                         status = "链路没变".to_string();
                     }

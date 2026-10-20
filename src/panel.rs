@@ -442,20 +442,29 @@ fn handle(
                 } else if side.is_none() && mode.is_none() {
                     respond_json(&mut stream, r#"{"ok":false,"error":"side 和 mode 都没给"}"#)
                 } else {
-                    // 链路表里没有这台就直接拒：不然只能等托盘侧写进状态条，
-                    // 网页这边拿到 ok:true 会以为改成功了。
-                    let known = state
+                    // 链路表里没有这台，但发现层看到过（snap.peers）就放行 ——
+                    // 托盘侧会现建一条链路。这是面板上"把还没配的对端拖进格子"
+                    // 那条路；两边都没有才拒。
+                    //
+                    // 为什么入口要挡：dispatch 是异步的，等不到结果，
+                    // 这里回 ok:true 而实际没改，网页只会看见"改了没生效"。
+                    let (known, discovered) = state
                         .lock()
-                        .map(|snap| snap.kvm.links.iter().any(|link| link.node == node))
-                        .unwrap_or(false);
-                    if !known {
-                        respond_json(
-                            &mut stream,
-                            r#"{"ok":false,"error":"链路表里没有这个节点"}"#,
-                        )
-                    } else {
+                        .map(|snap| {
+                            (
+                                snap.kvm.links.iter().any(|link| link.node == node),
+                                snap.peers.iter().any(|p| p.node == node),
+                            )
+                        })
+                        .unwrap_or((false, false));
+                    if known || discovered {
                         dispatch(Action::KvmLink { node, side, mode });
                         respond_json(&mut stream, r#"{"ok":true}"#)
+                    } else {
+                        respond_json(
+                            &mut stream,
+                            r#"{"ok":false,"error":"链路表里没有这个节点，局域网里也没发现它"}"#,
+                        )
                     }
                 }
             }

@@ -122,31 +122,72 @@
     border: 1px solid var(--line); background: var(--chip); color: var(--text);
   }
   .linkrow .held { color: var(--green); font-weight: 600; font-size: 13px; }
-  /* 3×3 摆位图：中心是本机，四边是对端。
+  /* 3×3 摆位图：中心是本机，四边是对端，可以拖着换位置。
      存在的理由不是"好看"，而是"配重了看不出来" —— 四台对端如果两台都填
      右侧，下拉框上完全正常，推过去落到谁那儿是不确定的。摆位图里一个格子
-     只能放一台，从结构上就不可能出现重复。 */
+     只能放一台，从结构上就不可能出现重复。
+     四角仍然是"斜角不连"：协议里一条链路只有上下左右四个门之一，
+     越界判定是四向掩码，斜着没有可用的方向。 */
   .grid {
     display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 6px; margin-top: 12px; max-width: 420px;
+    gap: 6px; margin: 12px auto 0; max-width: 560px;
+    user-select: none; -webkit-user-select: none;
   }
   .grid .cell {
     border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 6px; min-height: 64px;
+    padding: 7px 6px; min-height: 76px;
     display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 4px; font-size: 12px; text-align: center;
+    justify-content: center; gap: 5px; font-size: 12px; text-align: center;
+    transition: border-color .12s, background .12s;
   }
   .grid .cell.self { background: var(--chip); font-weight: 600; }
   .grid .cell.self small { color: var(--muted); font-weight: 400; font-size: 11px; }
-  .grid .cell.corner { border-style: dashed; color: var(--muted); opacity: .5; }
-  .grid .cell select {
-    font: inherit; font-size: 12px; max-width: 100%;
-    padding: 3px 4px; border-radius: 7px;
-    border: 1px solid var(--line); background: var(--card); color: var(--text);
+  .grid .cell.corner { border-style: dashed; color: var(--muted); opacity: .45; }
+  .grid .cell.hit { border-color: var(--blue); background: rgba(0,122,255,.08); }
+  .grid .cell.bad { border-color: var(--red); background: rgba(255,59,48,.07); }
+  .sideslot { color: var(--muted); font-size: 11px; line-height: 1; }
+  .dropzone {
+    color: var(--muted); font-size: 11px; width: 100%;
+    border: 1px dashed var(--line); border-radius: 8px; padding: 9px 4px;
   }
-  .grid .cell .dotrow { font-size: 10px; color: var(--muted); }
-  .grid .cell .dotrow.on { color: var(--green); }
-  .gridhint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  /* 对端 = 一块可拖的"屏幕"。光标 grip，touch-action:none 防止
+     触控板惯性滚动把拖拽事件抢走。 */
+  .screen {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 7px 8px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    font: inherit; font-size: 12px; text-align: left;
+    cursor: grab; touch-action: none;
+    user-select: none; -webkit-user-select: none;
+    transition: transform .12s, box-shadow .12s, border-color .12s;
+  }
+  .screen:hover { border-color: var(--blue); }
+  .screen:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  /* 拖动中用 fixed 跟手；pointer-events:none 是必须的 ——
+     否则 elementFromPoint 永远命中卡片自己，判不出落点。 */
+  .screen.dragging {
+    position: fixed; z-index: 999; pointer-events: none; cursor: grabbing;
+    transform: scale(1.04); box-shadow: 0 8px 24px rgba(0,0,0,.3);
+  }
+  .screen .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .screen .stag {
+    margin-left: auto; flex: none; white-space: nowrap;
+    font-size: 10px; color: var(--green);
+    border: 1px solid rgba(52,199,89,.4); border-radius: 5px; padding: 0 4px;
+  }
+  .screen .stag.new { color: var(--muted); border-color: var(--line); }
+  .screen .stag.warn { color: var(--orange); border-color: rgba(255,149,0,.45); }
+  /* "没有门"的对端 + 已发现但还没配链路的对端都停在这里 */
+  .loosetray {
+    margin: 8px auto 0; padding: 8px; max-width: 560px;
+    border: 1px dashed var(--line); border-radius: 10px;
+    transition: border-color .12s, background .12s;
+  }
+  .loosetray.hit { border-color: var(--blue); background: rgba(0,122,255,.06); }
+  .loosehead { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+  .loosebox { display: flex; flex-wrap: wrap; gap: 6px; }
+  .loosebox .screen { width: auto; max-width: 100%; }
+  .gridhint { color: var(--muted); font-size: 12px; margin: 8px auto 0; max-width: 560px; }
 </style>
 </head>
 <body>
@@ -217,7 +258,16 @@
     </div>
 
     <div id="kvmGrid" class="grid"></div>
+    <!-- 没有门的对端、以及"已发现但还没配链路"的对端都停在这里，
+         拖进格子就等于给它指定方向（后端会顺手新建这条链路）。 -->
+    <div id="kvmLoose" class="loosetray" data-drop="loose">
+      <div class="loosehead">没有门（共用一块屏）· 拖到这里就是"不占边"</div>
+      <div id="kvmLooseBox" class="loosebox"></div>
+    </div>
     <div class="gridhint" id="kvmGridHint"></div>
+    <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
+         因为 #kvmGridHint 每次重绘都会被重写 -->
+    <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
 
     <div id="kvmLinks"></div>
     <div class="hint" id="kvmLinkHint"></div>
@@ -455,7 +505,7 @@ function render() {
           <div class="meta">${label} · ${esc(p.addr)}</div>
           ${blocked}
         </div>
-        <button class="ghost" onclick="post('/api/send')">发文件</button>`;
+        <button class="ghost" onclick="sendTo('${esc(p.node)}')">发文件</button>`;
       peers.appendChild(el);
     });
   }
@@ -556,7 +606,6 @@ function renderKvmLinks(k) {
       <select title="对端在本机的哪一侧" onchange="setLinkSide('${esc(l.node)}', this.value)">${sideOpts}</select>
       <select title="这条链路的模式" onchange="setLinkMode('${esc(l.node)}', this.value)">${modeOpts}</select>
       ${held}
-      <button class="ghost" onclick="sendTo('${esc(l.node)}')">发文件</button>
     </div>`;
   }).join('');
   hint.textContent = '方向 = 那台机器摆在本机的哪一侧。改成「无门」表示它和本机共用一块屏（跟随画面）。';
@@ -580,72 +629,233 @@ function sendTo(node) {
 // ---- 3×3 摆位图 ----
 //
 // 中心是本机，四边是对端，四角是斜角（协议只支持上下左右，斜角不连）。
-// 每个边格就是一个下拉：选一台机器 = 它摆在这个方向。
+// 交互是拖的（deskflow 那种手感）：抓住一台对端丢到某个方向，松手即生效。
+// 四角仍然丢不进去 —— 越界判定是四向掩码，斜着没有可用的"门"。
 //
 // 为什么要有它：方向在配置里是每台对端一个字符串，两台都填 "right" 时
 // 下拉框上完全正常，而实际推过去落到谁那儿是不确定的。格子天然一人一位，
 // 摆不进去就说明配重了 —— 这类错误靠读下拉框永远发现不了。
 const GRID_ROWS = [
-  [null, 'top', null],
+  ['corner', 'top', 'corner'],
   ['left', 'self', 'right'],
-  [null, 'bottom', null],
+  ['corner', 'bottom', 'corner'],
 ];
 const SIDE_NAME = { right: '右侧', left: '左侧', top: '上方', bottom: '下方' };
 
+// 拖动中的状态。面板每 400ms 全量重绘一次（innerHTML 替换），
+// 拖到一半被重绘 = 手里的卡片凭空消失，所以重绘期间必须让路。
+let dragState = null;
+
+function screenCard(node, o) {
+  const tag = o.active ? '<span class="stag">键鼠在这台</span>'
+    : o.dup ? '<span class="stag warn">同侧冲突</span>'
+    : o.fresh ? '<span class="stag new">未配链路</span>' : '';
+  const label = o.side ? SIDE_NAME[o.side] : '没有门';
+  return `<div class="screen" data-node="${esc(node)}" data-side="${esc(o.side || '')}"
+      tabindex="0" role="button" title="${esc(node)} · ${label}（可拖动，方向键也能移动）"
+      aria-label="${esc(node)}，${label}">
+    <span class="dot${o.alive ? ' on' : ''}"></span>
+    <span class="sname">${esc(node)}</span>${tag}</div>`;
+}
+
 function renderKvmGrid(k) {
+  // 拖动中不重绘：innerHTML 一换，手里那张卡片就没了
+  if (dragState) return;
   const box = document.getElementById('kvmGrid');
+  const looseBox = document.getElementById('kvmLooseBox');
   const hint = document.getElementById('kvmGridHint');
-  if (!box) return;
+  if (!box || !looseBox) return;
+
+  // 重绘会重建节点，焦点会丢。记住是哪一台，画完再还给它的新节点。
+  const focused = document.activeElement && document.activeElement.classList
+    && document.activeElement.classList.contains('screen')
+    ? document.activeElement.dataset.node : null;
+
   const links = k.links || [];
-  if (!links.length) {
-    box.innerHTML = '';
-    hint.textContent = '';
-    return;
-  }
+  const peers = snap.peers || [];
   const bySide = {};
-  const extra = [];
+  const loose = [];
+  const dup = [];
+  const known = new Set();
   links.forEach(l => {
-    if (!l.side) return;
-    if (bySide[l.side]) extra.push(l.node);
-    else bySide[l.side] = l;
+    known.add(l.node);
+    const item = { node: l.node, side: l.side || '', alive: !!l.alive, active: !!l.active };
+    if (!l.side) loose.push(item);
+    else if (bySide[l.side]) { dup.push(l.node); loose.push(Object.assign({ dup: true }, item)); }
+    else bySide[l.side] = item;
   });
+  // 已发现但还没配链路的对端：拖进格子就等于给它建一条（后端会新建）
+  peers.forEach(p => {
+    if (!known.has(p.node)) loose.push({ node: p.node, side: '', alive: true, fresh: true });
+  });
+
   const cell = (slot) => {
     if (slot === 'self') {
-      return `<div class="cell self">本机<small>${esc(snap.node || '—')}</small></div>`;
+      return `<div class="cell self" data-drop="self">本机<small>${esc(snap.node || '—')}</small></div>`;
     }
-    if (slot === null) return '<div class="cell corner">斜角不连</div>';
+    if (slot === 'corner') {
+      return '<div class="cell corner" data-drop="corner">斜角不连</div>';
+    }
     const taken = bySide[slot];
-    const list = ['<option value="">（空）</option>']
-      .concat(links.map(l =>
-        `<option value="${esc(l.node)}"${taken && taken.node === l.node ? ' selected' : ''}>${esc(l.node)}</option>`
-      )).join('');
-    const dot = taken
-      ? `<span class="dotrow${taken.alive ? ' on' : ''}">● ${taken.alive ? '在线' : '没回应'}</span>`
-      : '';
-    return `<div class="cell"><span>${SIDE_NAME[slot]}</span>
-      <select onchange="placeOn('${slot}', this.value)">${list}</select>${dot}</div>`;
+    const inner = taken
+      ? screenCard(taken.node, taken)
+      : '<span class="dropzone">拖到这里</span>';
+    return `<div class="cell" data-drop="${slot}"><span class="sideslot">${SIDE_NAME[slot]}</span>${inner}</div>`;
   };
   box.innerHTML = GRID_ROWS.map(row => row.map(cell).join('')).join('');
 
-  const loose = links.filter(l => !l.side).map(l => l.node);
-  const parts = ['一个格子只能放一台，所以摆位图本身就是"配重检查"。'];
-  if (loose.length) parts.push(`没摆位的：${loose.join('、')}（共用一块屏，不占边）。`);
-  if (extra.length) {
-    parts.push(`⚠ ${extra.join('、')} 也配在同一侧，图里只画得下一台 —— 给它们换个方向。`);
+  looseBox.innerHTML = loose.length
+    ? loose.map(item => screenCard(item.node, item)).join('')
+    : '<span class="dropzone">（没有未摆位的对端）</span>';
+
+  const parked = loose.filter(x => !x.fresh && !x.dup).map(x => x.node);
+  const fresh = loose.filter(x => x.fresh).map(x => x.node);
+  const parts = ['抓着对端丢到某个方向，松手就生效；一个格子只能放一台，所以这张图本身就是"配重检查"。'];
+  if (parked.length) parts.push(`未占边：${parked.join('、')}（共用一块屏，跟随画面）。`);
+  if (fresh.length) parts.push(`发现但还没配链路：${fresh.join('、')}，拖进格子就建一条。`);
+  if (dup.length) parts.push(`⚠ ${dup.join('、')} 也配在同一侧 —— 推过去落到谁那儿不确定，给它换个方向。`);
+  hint.textContent = parts.join(' ');
+
+  if (focused) {
+    const again = box.querySelector(`.screen[data-node="${focused}"]`)
+      || looseBox.querySelector(`.screen[data-node="${focused}"]`);
+    if (again) again.focus();
   }
-  hint.textContent = parts.join('');
 }
 
 // 往某个方向放一台。这格原本那台先撤下来 —— 后端是"每台一份 side"，
 // 只设置新的那台会变成两台同侧，而图里根本画不出来。
+//
+// 先乐观改本地快照再发请求：否则松手后卡片会先弹回旧位置，等 400ms 后那次
+// 轮询回来再跳到新位置，手感像"放不进去"。
 async function placeOn(side, node) {
-  const links = (snap.kvm && snap.kvm.links) || [];
-  const prev = links.find(l => l.side === side);
-  const put = (n, s) => api('/api/link?node=' + encodeURIComponent(n) + '&side=' + encodeURIComponent(s));
-  if (prev && prev.node !== node) await put(prev.node, '');
-  if (node) await put(node, side);
+  if (!snap) return;
+  const k = snap.kvm || (snap.kvm = {});
+  const links = k.links || (k.links = []);
+  const posts = [];
+  const prev = links.find(l => l.side === side && l.node !== node);
+  if (prev) {
+    prev.side = '';
+    if (prev.mode === 'edge') prev.mode = 'follow';   // 后端：无门的 edge 自动降级
+    posts.push(linkApi(prev.node, ''));
+  }
+  const me = links.find(l => l.node === node);
+  if (me) {
+    me.side = side;
+    if (!side && me.mode === 'edge') me.mode = 'follow';
+  } else {
+    // 托盘里"未配链路"那类：先本地插一条，后端会真的建出来
+    links.push({ node, side, alive: true, mode: side ? 'edge' : 'follow', active: false });
+  }
+  renderKvmGrid(k);
+  posts.push(linkApi(node, side));
+  await Promise.all(posts);
   pull();
 }
+
+function linkApi(node, side) {
+  return api('/api/link?node=' + encodeURIComponent(node) + '&side=' + encodeURIComponent(side));
+}
+
+// ---- 拖拽：Pointer Events，不用 HTML5 拖放 ----
+// WKWebView 对 draggable 元素的 HTML5 拖放有历史怪癖（dragstart / dataTransfer
+// 在 WebView 里不可靠），而且没有"幽灵图像"可用；pointer 事件两端都稳。
+function dropTargetAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el && el.closest ? el.closest('[data-drop]') : null;
+}
+
+function paintTarget(el) {
+  document.querySelectorAll('[data-drop].hit, [data-drop].bad')
+    .forEach(n => n.classList.remove('hit', 'bad'));
+  if (!el) return;
+  el.classList.add(el.dataset.drop === 'corner' ? 'bad' : 'hit');
+}
+
+document.addEventListener('pointerdown', (e) => {
+  const card = e.target.closest && e.target.closest('.screen');
+  if (!card || e.button !== 0 || dragState) return;
+  const r = card.getBoundingClientRect();
+  dragState = {
+    node: card.dataset.node, el: card, id: e.pointerId,
+    sx: e.clientX, sy: e.clientY,
+    dx: e.clientX - r.left, dy: e.clientY - r.top,
+    w: r.width, h: r.height, moved: false,
+  };
+  try { card.setPointerCapture(e.pointerId); } catch (_) { /* 老 WebKit 没有也照样能拖 */ }
+}, true);
+
+document.addEventListener('pointermove', (e) => {
+  const d = dragState;
+  if (!d || e.pointerId !== d.id) return;
+  if (!d.moved) {
+    // 4px 以内当点击，不算拖 —— 否则轻轻一点就把卡片甩飞
+    if (Math.abs(e.clientX - d.sx) < 4 && Math.abs(e.clientY - d.sy) < 4) return;
+    d.moved = true;
+    // 脱离原容器：格子是 flex 居中的，留在里面会被布局拽回去
+    d.el.style.width = d.w + 'px';
+    d.el.style.height = d.h + 'px';
+    d.el.style.left = (d.sx - d.dx) + 'px';
+    d.el.style.top = (d.sy - d.dy) + 'px';
+    d.el.classList.add('dragging');
+    document.body.appendChild(d.el);
+  }
+  e.preventDefault();
+  d.el.style.left = (e.clientX - d.dx) + 'px';
+  d.el.style.top = (e.clientY - d.dy) + 'px';
+  paintTarget(dropTargetAt(e.clientX, e.clientY));
+}, true);
+
+document.addEventListener('pointerup', (e) => {
+  const d = dragState;
+  if (!d || e.pointerId !== d.id) return;
+  if (!d.moved) { dragState = null; return; }   // 没移动 = 点击，什么都不做
+  const hit = dropTargetAt(e.clientX, e.clientY);
+  const slot = hit ? hit.dataset.drop : null;
+  if (slot && slot !== 'corner' && slot !== 'self') {
+    finishDrag(() => placeOn(slot === 'loose' ? '' : slot, d.node));
+  } else {
+    finishDrag(null);
+    if (slot === 'corner') flashGrid('斜角放不了：协议只有上下左右四个门。');
+    if (slot === 'self') flashGrid('想让它和本机共用一块屏，拖到下面那栏"没有门"里。');
+  }
+}, true);
+
+document.addEventListener('pointercancel', () => finishDrag(null), true);
+
+function finishDrag(then) {
+  const d = dragState;
+  dragState = null;
+  paintTarget(null);
+  if (!d) return;
+  d.el.classList.remove('dragging');
+  d.el.removeAttribute('style');
+  if (d.moved) d.el.remove();   // 已经被挪到 body 下，重绘会重建整张图
+  renderKvmGrid(snap.kvm || {});
+  if (then) then();
+}
+
+// 提示单独一行：renderKvmGrid 每次都会重写 #kvmGridHint，
+// 放下即被覆盖，等于没提示
+function flashGrid(text) {
+  const el = document.getElementById('kvmFlash');
+  if (!el) return;
+  el.textContent = text;
+  clearTimeout(flashGrid.timer);
+  flashGrid.timer = setTimeout(() => { el.textContent = ''; }, 2600);
+}
+
+// 键盘兜底：触控板拖不准、远程桌面里拖不动，方向键一样能摆
+document.addEventListener('keydown', (e) => {
+  const card = e.target.closest && e.target.closest('.screen');
+  if (!card) return;
+  const dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'top', ArrowDown: 'bottom' }[e.key];
+  if (dir) { e.preventDefault(); placeOn(dir, card.dataset.node); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    placeOn('', card.dataset.node);
+  }
+});
 
 function esc(text) {
   return String(text == null ? '' : text).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
