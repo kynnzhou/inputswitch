@@ -1295,11 +1295,21 @@ fn cmd_kvm(peer: &str, mode: &str, role: &str, side: &str, seconds: u64) -> i32 
         };
         let config = Config::load();
         let log = Arc::new(|text: String| println!("[kvm] {text}"));
+        // CLI 只有一台对端，也没有发现层可查节点名 —— 名字就用地址，
+        // 日志里至少一眼能看出是跟谁在开会话。
         let opts = inputswitch::kvm::Options {
-            peer: ip,
+            links: vec![inputswitch::kvm::Link {
+                node: ip.to_string(),
+                ip,
+                side: if mode == inputswitch::kvm::Mode::Edge {
+                    Some(side)
+                } else {
+                    None
+                },
+                mode,
+            }],
             mode,
             role,
-            side,
             base_port: config.network.port,
             key: inputswitch::pair::link_key(&config.pair.code),
             on_panic: None,

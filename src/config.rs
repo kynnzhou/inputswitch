@@ -15,7 +15,8 @@ use crate::models::{normalize_model, Capability, DisplayProfile, Presence};
 /// 配置结构版本。
 ///
 /// 1 → 2：清掉旧版从对端广播里抄来的「有主机」标记（见 `Config::migrate`）。
-pub const CONFIG_VERSION: u32 = 2;
+/// 2 → 3：`kvm` 从"一条链路四个字段"改成链路表 + 网格坐标（见 `Kvm::links`）。
+pub const CONFIG_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Network {
@@ -144,29 +145,176 @@ pub struct Clipboard {
 }
 
 /// 共用键鼠。两种模式，见 `kvm::Mode`。
+///
+/// **v3 起拓扑是一张表**：一台对端一条 `LinkConfig`，每台机器自己在网格里
+/// 占一格。相邻关系由坐标决定，不需要两边各配一次方向 —— 这是对着
+/// Deskflow「有向边要写两遍、写漏一边就是能出去回不来」那处缺陷的直接修正。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Kvm {
     /// 是否启动。默认关：它会接管键盘鼠标，不能一装就生效。
     #[serde(default)]
     pub enabled: bool,
-    /// `follow` = 跟随画面（软件 KVM，一套键鼠）；
-    /// `edge`   = 边缘跨界（多屏共享，两台各有键鼠）。
+    /// 默认模式。`follow` = 跟随画面（软件 KVM）；
+    /// `edge` = 边缘跨界（多屏共享）。链路自己没填 mode 时用它。
     #[serde(default = "default_kvm_mode")]
     pub mode: String,
     /// `console` = 键鼠插在本机；`remote` = 键鼠在对面。只在 follow 模式用。
     #[serde(default = "default_kvm_role")]
     pub role: String,
-    /// 边缘跨界模式下从哪一侧出去
+    /// 本机在拓扑网格里占的格子。右边那台 = (x+1, y)，上面那台 = (x, y-1)。
+    #[serde(default)]
+    pub grid_x: i32,
+    #[serde(default)]
+    pub grid_y: i32,
+    /// 链路表：一台对端一条。空 = 老配置，由降级镜像升上来。
+    #[serde(default)]
+    pub links: Vec<LinkConfig>,
+
+    // ---- 降级镜像 ----
+    //
+    // v3 起运行时不再读这三个字段（`peer_node` 除了"上次选的那台"这一
+    // 层含义还留着）。它们的存在只为两件事：① 让还没升级的对端/旧版本
+    // 读到"一条链路 + 一个方向"时不至于全空；② 旧 UI（P7 之前的菜单与
+    // 面板）改的正是这三个字段，靠 `Kvm::mirror_*` 写透到主链路。
     #[serde(default = "default_side")]
     pub side: String,
-    /// 上次共用键鼠实际在用的对端节点名。启动/重启 KVM 时优先找它，
-    /// 找不到才退回第一个在线节点 —— 局域网里有第三台装过本程序的
-    /// 机器时（旧笔记本自启没关很常见），peers.first() 会稳定选错人，
-    /// 两边各自对着错的机器发心跳，表现就是"两边都空闲、对端没回应"
-    /// （2026-10-18 实测踩过：网上同时有 CHINAMI-0DFF1JU 和
-    /// CHINAMI-MC5K9SJ 两台在通告）。
+    /// 上次共用键鼠实际在用的对端节点名（= links[0].node 的镜像）。
     #[serde(default)]
     pub peer_node: String,
+}
+
+/// 一条链路 = 一台对端。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LinkConfig {
+    /// 对端节点名（发现层广播的 `node`）
+    #[serde(default)]
+    pub node: String,
+    /// 从本机哪一侧出去：`left` / `right` / `top` / `bottom`。
+    /// 空 = 没有门（跟随画面链路，不占边、不进掩码）。
+    #[serde(default)]
+    pub side: String,
+    /// 这条链路的模式，空 = 用 `Kvm::mode`
+    #[serde(default)]
+    pub mode: String,
+    /// 对端接在显示器哪个口（VCP 0x60 取值，十进制或 0x 前缀）。
+    /// 空 = 用它广播的 `own_value`。
+    #[serde(default)]
+    pub input: String,
+    /// 上次见到的地址。**只用来在它离线时占住那条边**：这样用户朝那边推
+    /// 会得到一句"没有回应，不越界"，而不是静默无反应（静默会被当成程序
+    /// 坏了）。真连得上时一律以发现层广播为准。
+    #[serde(default)]
+    pub addr: String,
+}
+
+impl LinkConfig {
+    pub fn mode_or(&self, default: &str) -> String {
+        if self.mode.trim().is_empty() {
+            default.to_string()
+        } else {
+            self.mode.clone()
+        }
+    }
+}
+
+impl Kvm {
+    /// 主链路：`peer_node` 记住的那条，找不到就第一条。
+    pub fn primary(&self) -> Option<&LinkConfig> {
+        if !self.peer_node.trim().is_empty() {
+            if let Some(l) = self
+                .links
+                .iter()
+                .find(|l| l.node.eq_ignore_ascii_case(self.peer_node.trim()))
+            {
+                return Some(l);
+            }
+        }
+        self.links.first()
+    }
+
+    /// 归一化链路表，返回值 = 配置有没有被改动（要落盘）。
+    ///
+    /// 三件事：① 去掉没填节点的空行；② 同一台对端只留第一条（重复链路会
+    /// 让"同一台机器占两条边"，掩码里两条边都通向它，出门方向就随机了）；
+    /// ③ 表空但有旧字段时，用旧字段升成一条链路。
+    pub fn normalize(&mut self) -> bool {
+        let before = (self.links.len(), self.peer_node.clone());
+        self.links.retain(|l| !l.node.trim().is_empty());
+        let mut seen: Vec<String> = Vec::new();
+        self.links.retain(|l| {
+            let key = l.node.trim().to_ascii_lowercase();
+            if seen.contains(&key) {
+                false
+            } else {
+                seen.push(key);
+                true
+            }
+        });
+        // 旧配置升上来：一条链路，方向来自降级镜像
+        if self.links.is_empty() && !self.peer_node.trim().is_empty() {
+            self.links.push(LinkConfig {
+                node: self.peer_node.trim().to_string(),
+                side: self.side.clone(),
+                mode: self.mode.clone(),
+                input: String::new(),
+                addr: String::new(),
+            });
+        }
+        let changed = before.0 != self.links.len() || before.1 != self.peer_node;
+        let mirrored = self.mirror_from_primary();
+        changed || mirrored
+    }
+
+    /// 主链路 → 降级镜像。旧版本读到的仍是"一条链路 + 一个方向"。
+    pub fn mirror_from_primary(&mut self) -> bool {
+        let Some(l) = self.links.first() else {
+            return false;
+        };
+        let (node, side, mode) = (l.node.clone(), l.side.clone(), l.mode.clone());
+        let mut changed = false;
+        if self.peer_node != node {
+            self.peer_node = node;
+            changed = true;
+        }
+        // 空 side 是"没有门"，别拿它覆盖旧字段里那个真实方向 ——
+        // 否则跟随画面链路会把降级镜像清成空，老版本读不出方向
+        if !side.trim().is_empty() && self.side != side {
+            self.side = side;
+            changed = true;
+        }
+        if !mode.trim().is_empty() && self.mode != mode {
+            self.mode = mode;
+            changed = true;
+        }
+        changed
+    }
+
+    /// 旧 UI 改方向时写透到主链路。返回是否真的变了。
+    ///
+    /// 只改镜像不写链路的话，界面上"方向"改了却毫无效果 —— 因为 v3 起
+    /// 运行时只认链路表。
+    pub fn set_primary_side(&mut self, side: &str) -> bool {
+        self.side = side.to_string();
+        match self.primary().map(|l| l.node.clone()) {
+            Some(node) => {
+                if let Some(l) = self.links.iter_mut().find(|l| l.node == node) {
+                    l.side = side.to_string();
+                } else {
+                    return true;
+                }
+            }
+            None => return true,
+        }
+        true
+    }
+
+    /// 旧 UI 切模式时写透到主链路（旧语义是全局一个模式，所以整表一起改）。
+    pub fn set_mode_all(&mut self, mode: &str) {
+        self.mode = mode.to_string();
+        for l in self.links.iter_mut() {
+            l.mode = mode.to_string();
+        }
+    }
 }
 
 fn default_side() -> String {
@@ -188,6 +336,9 @@ impl Default for Kvm {
             enabled: false,
             mode: default_kvm_mode(),
             role: default_kvm_role(),
+            grid_x: 0,
+            grid_y: 0,
+            links: Vec::new(),
             side: default_side(),
             peer_node: String::new(),
         }
@@ -295,7 +446,11 @@ impl Config {
         cfg
     }
 
-    /// 老配置的一次性清理。只跑一次（靠 `version` 门控），幂等。
+    /// 老配置的一次性清理。**链式**：每一段只看自己那条版本线，
+    /// 从 v1 直接升到 v3 时两段都要跑。
+    ///
+    /// 早先是"版本不到位就整段跑一遍然后直接把 version 写成最新"，
+    /// 那样把版本提到 3 会**跳过** v2 那段清理 —— 幽灵输入口就留在表里了。
     ///
     /// v1→v2：旧版会把对端广播的「我挂在 0x12」写进本机显示器的口表，
     /// 但每台显示器的口编号是各自固件定义的，跨机器搬过来就是错的 ——
@@ -305,33 +460,47 @@ impl Config {
     /// 一定同时被标成已验证（`record_success` 两个字段一起写），所以这条
     /// 判据只命中"从来没在本机验证过、却声称有主机"的条目。
     /// 代价：只跑过扫描、从没手动切过去的口也会回到"未检测"，重扫一次即可。
+    ///
+    /// v2→v3：`kvm` 从"一条链路"改成链路表。老字段升成 links[0]。
     fn migrate(&mut self) {
         if self.version >= CONFIG_VERSION {
             return;
         }
-        let mut cleared = 0usize;
-        for profile in self.monitors.values_mut() {
-            for src in profile.inputs.iter_mut() {
-                if src.presence == Presence::Occupied && !src.verified {
-                    src.presence = Presence::Unknown;
-                    src.checked_at = 0;
-                    cleared += 1;
+        let mut dirty = false;
+        if self.version < 2 {
+            let mut cleared = 0usize;
+            for profile in self.monitors.values_mut() {
+                for src in profile.inputs.iter_mut() {
+                    if src.presence == Presence::Occupied && !src.verified {
+                        src.presence = Presence::Unknown;
+                        src.checked_at = 0;
+                        cleared += 1;
+                    }
                 }
             }
+            if cleared > 0 {
+                // 注意：这个 crate 也会以 `--no-default-features` 编译成纯 CLI
+                // 诊断程序，那时 `tray` 模块整个被 cfg 掉，直接引用会 E0433。
+                // 托盘版写日志文件，CLI 版打到 stderr。
+                #[cfg(feature = "tray")]
+                crate::tray::log_line(&format!(
+                    "已清理 {cleared} 条来自对端的输入口状态：每台显示器的口编号互不相通，\
+                     跨机器抄来的「有主机」是错的"
+                ));
+                #[cfg(not(feature = "tray"))]
+                eprintln!("已清理 {cleared} 条来自对端的输入口状态（跨机器抄来的「有主机」是错的）");
+            }
+            dirty = true;
         }
-        self.version = CONFIG_VERSION;
-        let _ = self.save();
-        if cleared > 0 {
-            // 注意：这个 crate 也会以 `--no-default-features` 编译成纯 CLI
-            // 诊断程序，那时 `tray` 模块整个被 cfg 掉，直接引用会 E0433。
-            // 托盘版写日志文件，CLI 版打到 stderr。
-            #[cfg(feature = "tray")]
-            crate::tray::log_line(&format!(
-                "已清理 {cleared} 条来自对端的输入口状态：每台显示器的口编号互不相通，\
-                 跨机器抄来的「有主机」是错的"
-            ));
-            #[cfg(not(feature = "tray"))]
-            eprintln!("已清理 {cleared} 条来自对端的输入口状态（跨机器抄来的「有主机」是错的）");
+        if self.version < 3 {
+            // 老字段 → 链路表。已经手写过 links 的（P4 的手工验收配置）
+            // 保持不动，只补镜像。
+            self.kvm.normalize();
+            dirty = true;
+        }
+        if dirty {
+            self.version = CONFIG_VERSION;
+            let _ = self.save();
         }
     }
 
@@ -584,6 +753,92 @@ pub fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn link(node: &str, side: &str) -> LinkConfig {
+        LinkConfig {
+            node: node.to_string(),
+            side: side.to_string(),
+            mode: String::new(),
+            input: String::new(),
+            addr: String::new(),
+        }
+    }
+
+    /// 老配置（只有降级镜像）必须能升出链路表，方向不能丢。
+    #[test]
+    fn legacy_kvm_upgrades_to_one_link() {
+        let mut kvm = Kvm::default();
+        kvm.mode = "edge".into();
+        kvm.side = "left".into();
+        kvm.peer_node = "WIN-A".into();
+        assert!(kvm.normalize());
+        assert_eq!(kvm.links.len(), 1);
+        assert_eq!(kvm.links[0].node, "WIN-A");
+        assert_eq!(kvm.links[0].side, "left");
+        assert_eq!(kvm.links[0].mode, "edge");
+    }
+
+    /// 同一台对端配两条 = 两条边都通向它，出门方向会随机 → 必须去重。
+    #[test]
+    fn duplicate_links_collapse() {
+        let mut kvm = Kvm::default();
+        kvm.links = vec![link("WIN-A", "right"), link("win-a", "top")];
+        kvm.normalize();
+        assert_eq!(kvm.links.len(), 1);
+        assert_eq!(kvm.links[0].side, "right");
+    }
+
+    /// 主链路写透到镜像：老版本读到的仍是"一条链路 + 一个方向"。
+    #[test]
+    fn mirror_follows_primary() {
+        let mut kvm = Kvm::default();
+        kvm.links = vec![link("WIN-A", "bottom"), link("WIN-B", "left")];
+        kvm.links[0].mode = "edge".into();
+        assert!(kvm.mirror_from_primary());
+        assert_eq!(kvm.peer_node, "WIN-A");
+        assert_eq!(kvm.side, "bottom");
+        assert_eq!(kvm.mode, "edge");
+        // 第二条不该影响镜像
+        kvm.links[1].side = "right".into();
+        assert!(!kvm.mirror_from_primary());
+        assert_eq!(kvm.side, "bottom");
+    }
+
+    /// 跟随画面链路 side 为空，不能把镜像里的方向清成空 —— 老版本会读不出方向。
+    #[test]
+    fn empty_side_keeps_mirror() {
+        let mut kvm = Kvm::default();
+        kvm.side = "right".into();
+        kvm.links = vec![link("WIN-A", "")];
+        kvm.mirror_from_primary();
+        assert_eq!(kvm.side, "right");
+    }
+
+    /// 旧 UI 改方向必须写透到链路表，否则界面上改了、运行时没变。
+    #[test]
+    fn set_primary_side_writes_through() {
+        let mut kvm = Kvm::default();
+        kvm.links = vec![link("WIN-A", "right"), link("WIN-B", "left")];
+        kvm.peer_node = "WIN-B".into();
+        kvm.set_primary_side("top");
+        assert_eq!(kvm.links[1].side, "top");
+        assert_eq!(kvm.links[0].side, "right");
+    }
+
+    /// 主链路按 peer_node 找，找不到退回第一条。
+    #[test]
+    fn primary_resolution() {
+        let mut kvm = Kvm::default();
+        kvm.links = vec![link("WIN-A", "right")];
+        assert_eq!(kvm.primary().map(|l| l.node.as_str()), Some("WIN-A"));
+        kvm.peer_node = "GONE".into();
+        assert_eq!(kvm.primary().map(|l| l.node.as_str()), Some("WIN-A"));
+    }
 }
 
 /// 记录"上一次把屏幕给了哪个输入"，用于读不到 VCP 时推断当前状态。
