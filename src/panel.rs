@@ -154,7 +154,9 @@ pub enum Action {
     ToggleClipboard(bool),
     ChooseInbox,
     OpenInbox,
-    SendFiles,
+    /// 选文件发给对端。多机时必须点名 —— 不带 `node` 时按
+    /// "握着键鼠的那台 > 唯一在线那台" 兜底，多台又没会话就直接拒绝。
+    SendFiles(Option<String>),
     /// 弹出原生录制窗口让用户按一下新的组合键。
     /// 放不到网页里做：网页只收得到"焦点在页面上"的按键，按不出全局热键。
     RecordHotkey,
@@ -380,7 +382,7 @@ fn handle(
             }
         }
         ("POST", "/api/send") => {
-            dispatch(Action::SendFiles);
+            dispatch(Action::SendFiles(param_str(&query, "node")));
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
         ("POST", "/api/inbox") => {

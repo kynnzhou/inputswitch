@@ -122,6 +122,31 @@
     border: 1px solid var(--line); background: var(--chip); color: var(--text);
   }
   .linkrow .held { color: var(--green); font-weight: 600; font-size: 13px; }
+  /* 3×3 摆位图：中心是本机，四边是对端。
+     存在的理由不是"好看"，而是"配重了看不出来" —— 四台对端如果两台都填
+     右侧，下拉框上完全正常，推过去落到谁那儿是不确定的。摆位图里一个格子
+     只能放一台，从结构上就不可能出现重复。 */
+  .grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 6px; margin-top: 12px; max-width: 420px;
+  }
+  .grid .cell {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 6px; min-height: 64px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 4px; font-size: 12px; text-align: center;
+  }
+  .grid .cell.self { background: var(--chip); font-weight: 600; }
+  .grid .cell.self small { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .grid .cell.corner { border-style: dashed; color: var(--muted); opacity: .5; }
+  .grid .cell select {
+    font: inherit; font-size: 12px; max-width: 100%;
+    padding: 3px 4px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+  }
+  .grid .cell .dotrow { font-size: 10px; color: var(--muted); }
+  .grid .cell .dotrow.on { color: var(--green); }
+  .gridhint { color: var(--muted); font-size: 12px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -190,6 +215,9 @@
         <button class="green" onclick="post('/api/restart')">重启应用</button>
       </div>
     </div>
+
+    <div id="kvmGrid" class="grid"></div>
+    <div class="gridhint" id="kvmGridHint"></div>
 
     <div id="kvmLinks"></div>
     <div class="hint" id="kvmLinkHint"></div>
@@ -495,6 +523,7 @@ function renderKvm() {
   }
 
   renderKvmLinks(k);
+  renderKvmGrid(k);
 }
 
 // 一台对端一行：方向 / 模式 / 存活 / 键鼠在谁手上。
@@ -527,6 +556,7 @@ function renderKvmLinks(k) {
       <select title="对端在本机的哪一侧" onchange="setLinkSide('${esc(l.node)}', this.value)">${sideOpts}</select>
       <select title="这条链路的模式" onchange="setLinkMode('${esc(l.node)}', this.value)">${modeOpts}</select>
       ${held}
+      <button class="ghost" onclick="sendTo('${esc(l.node)}')">发文件</button>
     </div>`;
   }).join('');
   hint.textContent = '方向 = 那台机器摆在本机的哪一侧。改成「无门」表示它和本机共用一块屏（跟随画面）。';
@@ -540,6 +570,81 @@ function setLinkMode(node, mode) {
 }
 function handOverTo(node) {
   api('/api/kvm-handover?node=' + encodeURIComponent(node)).then(pull);
+}
+// 点名发文件给这一台。不带 node 时后端会退回"握着键鼠的那台"，
+// 多台在线又没会话就直接拒绝 —— 多机时猜人必然猜错
+function sendTo(node) {
+  api('/api/send?node=' + encodeURIComponent(node)).then(pull);
+}
+
+// ---- 3×3 摆位图 ----
+//
+// 中心是本机，四边是对端，四角是斜角（协议只支持上下左右，斜角不连）。
+// 每个边格就是一个下拉：选一台机器 = 它摆在这个方向。
+//
+// 为什么要有它：方向在配置里是每台对端一个字符串，两台都填 "right" 时
+// 下拉框上完全正常，而实际推过去落到谁那儿是不确定的。格子天然一人一位，
+// 摆不进去就说明配重了 —— 这类错误靠读下拉框永远发现不了。
+const GRID_ROWS = [
+  [null, 'top', null],
+  ['left', 'self', 'right'],
+  [null, 'bottom', null],
+];
+const SIDE_NAME = { right: '右侧', left: '左侧', top: '上方', bottom: '下方' };
+
+function renderKvmGrid(k) {
+  const box = document.getElementById('kvmGrid');
+  const hint = document.getElementById('kvmGridHint');
+  if (!box) return;
+  const links = k.links || [];
+  if (!links.length) {
+    box.innerHTML = '';
+    hint.textContent = '';
+    return;
+  }
+  const bySide = {};
+  const extra = [];
+  links.forEach(l => {
+    if (!l.side) return;
+    if (bySide[l.side]) extra.push(l.node);
+    else bySide[l.side] = l;
+  });
+  const cell = (slot) => {
+    if (slot === 'self') {
+      return `<div class="cell self">本机<small>${esc(snap.node || '—')}</small></div>`;
+    }
+    if (slot === null) return '<div class="cell corner">斜角不连</div>';
+    const taken = bySide[slot];
+    const list = ['<option value="">（空）</option>']
+      .concat(links.map(l =>
+        `<option value="${esc(l.node)}"${taken && taken.node === l.node ? ' selected' : ''}>${esc(l.node)}</option>`
+      )).join('');
+    const dot = taken
+      ? `<span class="dotrow${taken.alive ? ' on' : ''}">● ${taken.alive ? '在线' : '没回应'}</span>`
+      : '';
+    return `<div class="cell"><span>${SIDE_NAME[slot]}</span>
+      <select onchange="placeOn('${slot}', this.value)">${list}</select>${dot}</div>`;
+  };
+  box.innerHTML = GRID_ROWS.map(row => row.map(cell).join('')).join('');
+
+  const loose = links.filter(l => !l.side).map(l => l.node);
+  const parts = ['一个格子只能放一台，所以摆位图本身就是"配重检查"。'];
+  if (loose.length) parts.push(`没摆位的：${loose.join('、')}（共用一块屏，不占边）。`);
+  if (extra.length) {
+    parts.push(`⚠ ${extra.join('、')} 也配在同一侧，图里只画得下一台 —— 给它们换个方向。`);
+  }
+  hint.textContent = parts.join('');
+}
+
+// 往某个方向放一台。这格原本那台先撤下来 —— 后端是"每台一份 side"，
+// 只设置新的那台会变成两台同侧，而图里根本画不出来。
+async function placeOn(side, node) {
+  const links = (snap.kvm && snap.kvm.links) || [];
+  const prev = links.find(l => l.side === side);
+  const put = (n, s) => api('/api/link?node=' + encodeURIComponent(n) + '&side=' + encodeURIComponent(s));
+  if (prev && prev.node !== node) await put(prev.node, '');
+  if (node) await put(node, side);
+  pull();
 }
 
 function esc(text) {

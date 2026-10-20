@@ -51,6 +51,12 @@ const MENU_KVM_SIDE: &str = "kvm-side:";
 const ID_SWITCH: &str = "switch:";
 /// `peer:<node>:<value>` —— 直接切到某台对端机器占用的口
 const ID_PEER: &str = "peer:";
+/// `peer-hand:<node>` —— 把键鼠交给这台
+const ID_PEER_HAND: &str = "peer-hand:";
+/// `peer-file:<node>` —— 发文件给这台
+const ID_PEER_FILE: &str = "peer-file:";
+/// `peer-side:<node>:<side>` —— 这台摆在本机的哪一侧（`none` = 共用一块屏）
+const ID_PEER_SIDE: &str = "peer-side:";
 /// 打开控制面板（程序自己的窗口）
 const ID_PANEL: &str = "open-panel";
 /// 重启本程序（只在权限没生效时出现）
@@ -617,6 +623,18 @@ fn menu_signature(
         "kvm={}\u{1e}mode={}\u{1e}side={}",
         config.kvm.enabled, config.kvm.mode, config.kvm.side
     );
+    // 链路表进指纹：v3 起每台对端有自己的一行方向/模式，托盘按对端展开子菜单，
+    // 改了某台的 side 而不进指纹，菜单会一直显示旧值
+    for link in &config.kvm.links {
+        let _ = write!(
+            sig,
+            "\u{1e}link={}|{}|{}",
+            link.node, link.side, link.mode
+        );
+    }
+    // 键鼠现在在哪台手上 —— 子菜单标题上要标"键鼠在它那儿"
+    let active = kvm_now().and_then(|h| h.active_node().map(str::to_string));
+    let _ = write!(sig, "\u{1e}active={}", active.unwrap_or_default());
     // 权限也要进指纹：勾完以后菜单里那条"重启应用"得自己消失，
     // 不然用户会盯着一条已经无意义的提示
     let _ = write!(sig, "\u{1e}perms={}", perms_ok());
@@ -711,23 +729,111 @@ fn build_menu(
         let _ = menu.append(&MenuItem::new(line, false, None));
     }
 
-    // 对端机器：它自己广播了占用的口，直接给出"切到某台机器"，不用猜口名
-    let known: Vec<&Peer> = peers.iter().filter(|p| p.knows_port()).collect();
-    if !known.is_empty() {
+    // ---- 每台对端一个子菜单 ----
+    //
+    // 以前是顶层平铺「切到 X（口）」，另加一个全局四选一「对端在右侧 ✓/左侧/…」。
+    // 一机四台时这两块都塌了：平铺的几行看不出哪一行属于哪台；而"对端在右侧"
+    // 只对**一条链路**成立（v0.6.47 起每台对端各有一条边），全局只有一个值
+    // 本身就是错的 —— 改一次会把四台的方向一起改掉。
+    let active_node = kvm_now().and_then(|h| h.active_node().map(str::to_string));
+    if config.kvm.links.is_empty() {
+        // 还没配链路表（只切输入源、没开过共用键鼠）：保留老的平铺写法，
+        // 切画面本来就不依赖共用键鼠，不能因为没配链路就没了入口
+        let known: Vec<&Peer> = peers.iter().filter(|p| p.knows_port()).collect();
+        if !known.is_empty() {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+            for peer in known {
+                let port_label = if peer.own_input.is_empty() {
+                    format!("0x{:02X}", peer.own_value)
+                } else {
+                    format!("{} · 0x{:02X}", config.label_for(&peer.own_input), peer.own_value)
+                };
+                let id = format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value);
+                let _ = menu.append(&MenuItem::with_id(
+                    id,
+                    format!("切到 {}（{}）", peer.node, port_label),
+                    true,
+                    None,
+                ));
+            }
+        }
+    } else {
         let _ = menu.append(&PredefinedMenuItem::separator());
-        for peer in known {
-            let port_label = if peer.own_input.is_empty() {
-                format!("0x{:02X}", peer.own_value)
+        for link in &config.kvm.links {
+            let live = peers.iter().find(|p| p.node == link.node);
+            let mut head = link.node.clone();
+            if live.is_none() {
+                head.push_str("（没回应）");
+            } else if link.side.is_empty() {
+                head.push_str(" · 共用屏");
             } else {
-                format!("{} · 0x{:02X}", config.label_for(&peer.own_input), peer.own_value)
-            };
-            let id = format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value);
-            let _ = menu.append(&MenuItem::with_id(
-                id,
-                format!("切到 {}（{}）", peer.node, port_label),
+                head.push_str(&format!(" · 在{}侧", side_label(&link.side)));
+            }
+            if active_node.as_deref() == Some(link.node.as_str()) {
+                head.push_str(" · 键鼠在它那儿");
+            }
+            let sub = Submenu::new(head, true);
+
+            // 1) 切到它。它自己广播了占用的口，不用猜口名
+            match live.filter(|p| p.knows_port()) {
+                Some(peer) => {
+                    let port_label = if peer.own_input.is_empty() {
+                        format!("0x{:02X}", peer.own_value)
+                    } else {
+                        format!(
+                            "{} · 0x{:02X}",
+                            config.label_for(&peer.own_input),
+                            peer.own_value
+                        )
+                    };
+                    let _ = sub.append(&MenuItem::with_id(
+                        format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value),
+                        format!("切到它（{port_label}）"),
+                        true,
+                        None,
+                    ));
+                }
+                None => {
+                    let _ = sub.append(&MenuItem::new("它还没报告占用的口", false, None));
+                }
+            }
+
+            // 2) 交键鼠 / 发文件 —— 都点名到这一台。
+            // v0.6.52 之前这两件事在多机时会"猜"，猜错的表现是"点了 A，东西到了 B"
+            let _ = sub.append(&MenuItem::with_id(
+                format!("{ID_PEER_HAND}{}", link.node),
+                "把键鼠交给它",
                 true,
                 None,
             ));
+            let _ = sub.append(&MenuItem::with_id(
+                format!("{ID_PEER_FILE}{}", link.node),
+                "发文件给它…",
+                true,
+                None,
+            ));
+
+            // 3) 它摆在本机的哪一侧 —— 每条链路各有一份，不再是全局一个值
+            let _ = sub.append(&PredefinedMenuItem::separator());
+            let _ = sub.append(&MenuItem::new("它摆在本机的：", false, None));
+            for (value, label) in [
+                ("right", "右侧"),
+                ("left", "左侧"),
+                ("top", "上方"),
+                ("bottom", "下方"),
+                ("", "共用一块屏（跟随画面）"),
+            ] {
+                let mark = if link.side == value { "✓ " } else { "　 " };
+                // 空值走 `none`：`peer-side:<node>:` 尾部空串在 rsplit 里
+                // 与"没带值"分不开，两种错法表现不同、排查很烦
+                let id = if value.is_empty() {
+                    format!("{ID_PEER_SIDE}{}:none", link.node)
+                } else {
+                    format!("{ID_PEER_SIDE}{}:{value}", link.node)
+                };
+                let _ = sub.append(&MenuItem::with_id(id, format!("{mark}{label}"), true, None));
+            }
+            let _ = menu.append(&sub);
         }
     }
 
@@ -816,7 +922,11 @@ fn build_menu(
 
     // 多屏共享必须知道对端屏幕在本机哪一侧，不然鼠标推错边永远越不过去。
     // 两台要各配各的：Mac 选"对端在右"，Windows 那台就要选"对端在左"。
-    if !mode_is_follow {
+    //
+    // v3 起**方向是每条链路各一份**（上面每台对端的子菜单里），这里只在
+    // 还没配链路表时留着 —— 那种情况共用键鼠本来也开不起来，纯粹是给
+    // 手改配置的人一个入口。两个入口同时出现会让人以为改一个没用。
+    if !mode_is_follow && config.kvm.links.is_empty() {
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&MenuItem::new("对端屏幕在本机哪一侧？（两台各配各的）", false, None));
         for (value, label) in [
@@ -840,6 +950,61 @@ fn build_menu(
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id(MENU_QUIT, "退出", true, None));
     menu
+}
+
+/// 改完链路方向/模式之后重启共用键鼠实例。
+///
+/// 必须重启的理由：平台层的抓取钩子里**记死了边缘掩码**（哪几条边通向邻居），
+/// 这是启动时按链路表算出来的。热改配置只会让"配置说的"和"钩子判的"不一致，
+/// 表现是"改了方向但推那侧还是没反应"，而日志里一切正常。
+///
+/// `ok_text` 是成功时写进状态条的话（已含"改成了什么"），失败再往后拼。
+fn restart_kvm(
+    config: &mut Config,
+    kvm_handle: &mut Option<Arc<kvm::Kvm>>,
+    mesh: &Mesh,
+    tx: &mpsc::Sender<Command>,
+    status: &mut String,
+    ok_text: String,
+) {
+    let was_on = kvm_handle.take();
+    if let Some(handle) = was_on.as_ref() {
+        handle.stop();
+    }
+    if let Ok(mut slot) = KVM.lock() {
+        *slot = None;
+    }
+    if was_on.is_none() {
+        *status = format!("{ok_text}，下次开启共用键鼠生效");
+        log_line(status);
+        return;
+    }
+    let peers_now = mesh.live_peers();
+    match pick_peer(&peers_now, &config.kvm.peer_node) {
+        None => {
+            config.kvm.enabled = false;
+            let _ = config.save();
+            *status = format!("{ok_text}；没找到对端，共用键鼠已关闭，请重新打开");
+        }
+        Some(_) => {
+            let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|text| log_line(&text));
+            match kvm_boot(config, &peers_now, tx, log) {
+                Ok((handle, text)) => {
+                    *kvm_handle = Some(handle.clone());
+                    if let Ok(mut slot) = KVM.lock() {
+                        *slot = Some(handle);
+                    }
+                    *status = format!("{ok_text}，{text}");
+                }
+                Err(err) => {
+                    config.kvm.enabled = false;
+                    let _ = config.save();
+                    *status = format!("{ok_text}，但共用键鼠重启失败：{err}");
+                }
+            }
+        }
+    }
+    log_line(status);
 }
 
 /// 两个系统权限都齐了吗。缺任一，共用键鼠要么开不起来、要么只能单向。
@@ -2248,7 +2413,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.53",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.54",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2463,7 +2628,7 @@ pub fn run() -> ! {
                     let _ = std::fs::create_dir_all(&dir);
                     open_path(&dir);
                 }
-                Action::SendFiles => start_send(&config, &mesh, &proxy, &mut status, None),
+                Action::SendFiles(node) => start_send(&config, &mesh, &proxy, &mut status, node.as_deref()),
                 Action::KvmPower(on) => {
                     if !on {
                         if let Some(handle) = kvm_handle.take() {
@@ -2991,58 +3156,95 @@ pub fn run() -> ! {
                             // 写透到主链路：v3 起掩码由链路表生成
                             config.kvm.set_primary_side(side_value);
                             let _ = config.save();
-                            let was_on = kvm_handle.take();
-                            if let Some(handle) = was_on.as_ref() {
-                                handle.stop();
-                            }
-                            if let Ok(mut slot) = KVM.lock() {
-                                *slot = None;
-                            }
-                            if was_on.is_none() {
-                                status =
-                                    format!("对端方向已改为{}侧，下次开启共用键鼠生效", side_label(side_value));
-                                log_line(&status);
-                            } else {
-                                let peers_now = mesh.live_peers();
-                                match pick_peer(&peers_now, &config.kvm.peer_node) {
-                                    None => {
-                                        config.kvm.enabled = false;
-                                        let _ = config.save();
-                                        status = format!(
-                                            "对端方向已改为{}侧；没找到对端，共用键鼠已关闭，请重新打开",
-                                            side_label(side_value)
-                                        );
-                                        log_line(&status);
+                            let text = format!("对端方向已改为{}侧", side_label(side_value));
+                            restart_kvm(&mut config, &mut kvm_handle, &mesh, &tx, &mut status, text);
+                        }
+                    } else if let Some(rest) = id.strip_prefix(ID_PEER_SIDE) {
+                        // `peer-side:<node>:<side|none>`。
+                        // 空方向走 `none`：`peer-side:<node>:` 尾部空串在 rsplit 里
+                        // 跟"根本没带值"分不开，两种错法表现不同、很难查。
+                        if let Some((node, raw)) = rest.rsplit_once(':') {
+                            let side = if raw == "none" { "" } else { raw };
+                            let old = config
+                                .kvm
+                                .links
+                                .iter()
+                                .find(|l| l.node == node)
+                                .map(|l| l.side.clone());
+                            match old {
+                                None => {
+                                    status = format!(
+                                        "链路表里没有 {node}（可能要重启一次程序让它重新扫描）"
+                                    );
+                                    log_line(&status);
+                                }
+                                Some(old) if old == side => {
+                                    status = format!("{node} 的方向没变");
+                                    log_line(&status);
+                                }
+                                Some(_) => {
+                                    if let Some(link) =
+                                        config.kvm.links.iter_mut().find(|l| l.node == node)
+                                    {
+                                        link.side = side.to_string();
                                     }
-                                    Some(_) => {
-                                        let log: Arc<dyn Fn(String) + Send + Sync> =
-                                            Arc::new(|text| log_line(&text));
-                                        match kvm_boot(&mut config, &peers_now, &tx, log) {
-                                            Ok((handle, text)) => {
-                                                kvm_handle = Some(handle.clone());
-                                                if let Ok(mut slot) = KVM.lock() {
-                                                    *slot = Some(handle);
-                                                }
-                                                status = format!(
-                                                    "对端方向已改为{}侧，{}",
-                                                    side_label(side_value),
-                                                    text
-                                                );
-                                            }
-                                            Err(err) => {
-                                                config.kvm.enabled = false;
-                                                let _ = config.save();
-                                                status = format!(
-                                                    "对端方向已改为{}侧，但共用键鼠重启失败：{err}",
-                                                    side_label(side_value)
-                                                );
-                                            }
+                                    // 镜像要跟着回写：老版本只读镜像里的 side，
+                                    // 不回写的话两台程序看到的拓扑不一样
+                                    config.kvm.mirror_from_primary();
+                                    let _ = config.save();
+
+                                    let where_is = if side.is_empty() {
+                                        "共用一块屏".to_string()
+                                    } else {
+                                        format!("本机{}侧", side_label(side))
+                                    };
+                                    let mut text = format!("{node} 已设为在{where_is}");
+                                    // 同一侧摆了两台：推过去落到谁那儿是不确定的。
+                                    // 不拦（物理摆位是用户的事），但必须说出来
+                                    if !side.is_empty() {
+                                        let clash: Vec<&str> = config
+                                            .kvm
+                                            .links
+                                            .iter()
+                                            .filter(|l| l.node != node && l.side == side)
+                                            .map(|l| l.node.as_str())
+                                            .collect();
+                                        if !clash.is_empty() {
+                                            text.push_str(&format!(
+                                                "。注意{}侧已经有 {}，推过去可能落到它那儿",
+                                                side_label(side),
+                                                clash.join("、")
+                                            ));
                                         }
-                                        log_line(&status);
                                     }
+                                    restart_kvm(
+                                        &mut config,
+                                        &mut kvm_handle,
+                                        &mesh,
+                                        &tx,
+                                        &mut status,
+                                        text,
+                                    );
                                 }
                             }
                         }
+                    } else if let Some(rest) = id.strip_prefix(ID_PEER_HAND) {
+                        // `peer-hand:<node>`
+                        match kvm_now() {
+                            Some(handle) => {
+                                status = match handle.hand_over_to(rest) {
+                                    Ok(()) => format!("键鼠已交给 {rest}"),
+                                    Err(err) => format!("交不出去：{err}"),
+                                };
+                            }
+                            None => status = "共用键鼠没开，面板上先打开它".to_string(),
+                        }
+                        log_line(&status);
+                    } else if let Some(node) = id.strip_prefix(ID_PEER_FILE) {
+                        // `peer-file:<node>` —— 点名发给这一台。菜单里点了谁就发给谁，
+                        // 不再走"握着键鼠的那台"这种猜测
+                        let node = node.to_string();
+                        start_send(&config, &mesh, &proxy, &mut status, Some(&node));
                     } else if let Some(rest) = id.strip_prefix(ID_SWITCH) {
                         if let Some((name, value)) = parse_port(rest) {
                             status = format!("正在切换到 {}…", name);
