@@ -621,14 +621,24 @@ impl Switcher {
                 continue;
             }
             if let Some((node, _)) = peers.iter().find(|(_, v)| *v == src.value) {
+                // **对端自报不等于本机证据**（v0.6.71）。
+                //
+                // 以前这里写 Occupied，于是 0x12 这种"固件声明过、本机从没
+                // 切过去验证"的口通过了 has_evidence()，面板上多出一条
+                // `输入源 0x12`（连名字都没有），点「切换」直接黑屏。
+                // 而且每台显示器的口编号是各自固件定义的，对端说的 0x12
+                // 未必就是本机这块屏的 0x12 —— 用户实测那个口上什么都没接。
+                //
+                // 现在只记一行日志，口的状态保持 Unknown：它仍然能被"真的
+                // 切过去验证"救活，但不会凭别人一句话就出现在切换列表里。
                 steps.push(format!(
-                    "0x{:02X} ← {} 自己报告占用，不用切屏",
+                    "0x{:02X} ← {} 自己报告占用（仅作回程参考，不记为本机输入源）",
                     src.value, node
                 ));
                 ports.push(PortProbe {
                     value: src.value,
                     name: src.name.clone(),
-                    presence: Presence::Occupied,
+                    presence: Presence::Unknown,
                     via: ProbeSource::PeerReport,
                 });
                 continue;

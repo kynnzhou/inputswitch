@@ -205,6 +205,10 @@ ok(/会抓取键鼠并转发/.test(made['kvmRoleHint'].textContent),
 // 14. 顶部状态条：画面 / 键鼠 / 对端 三个事实（v0.6.69）
 ok(/3 台在线/.test(made['hdrPeer'].innerHTML), '状态条显示在线台数');
 ok(made['hdrKeys'].textContent === 'CHINAMI-0DFF1JU', '状态条显示键鼠现在在谁手上');
+// 15. 对端报了端口、但本机没有任何证据 → 不拿它的编号当目标（编号各算各的，
+//     切错就是黑屏）。v0.6.71 起"只凭对端自报"的口不会进 inputs。
+ok(/扫描哪个口有主机/.test(made['mainSwitch'].textContent) && made['mainSwitch'].disabled,
+  '对端口未经验证时，主按钮让人先去扫描而不是盲切');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

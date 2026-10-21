@@ -570,6 +570,8 @@ function render() {
   // 主按钮：只有"本机自己也确认过这个口"才谈得上切过去。
   // 对端报的是它**自己那块屏**的编号，两块屏的 0x0F/0x12 是各算各的，
   // 拿别人的编号切自己的屏 = 按下去直接黑屏（实测踩过）。
+  // v0.6.71 起 `snap.inputs` 里不再有"只凭对端自报"的口（见
+  // clear_unverified_occupancy），所以这里的匹配只会命中本机验证过的。
   const main = document.getElementById('mainSwitch');
   const peer = (snap.peers || []).find(p => p.knows_port);
   const blind = snap.has_display === false;
@@ -588,6 +590,12 @@ function render() {
     main.dataset.name = peerPortLocal.name;
     main.dataset.action = 'local';
     main.disabled = false;
+  } else if (peer && peer.knows_port && peer.value) {
+    // 对端说了自己在哪个口，但**本机没有任何证据**（从没切过去验证过）。
+    // 这种时候不能拿它的编号当目标 —— 编号各算各的，切错就是黑屏。
+    // 老实让人去扫一次：扫描会真的切过去，验证过的口才会出现在列表里。
+    main.textContent = `先「扫描哪个口有主机」确认 ${peer.node} 接在哪个口`;
+    main.disabled = true;
   } else if (snap.inputs && snap.inputs.length) {
     const others = snap.inputs.filter(i => !i.current && i.presence !== 'invalid');
     const cur = others.find(i => i.presence === 'occupied')

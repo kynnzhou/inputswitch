@@ -492,6 +492,19 @@ impl Config {
             }
         };
         cfg.migrate();
+        // 每次都守一道，不只在版本迁移里（见 clear_unverified_occupancy 的注释）：
+        // 扫描/重新检测会把"对端自报占用"再写回来，一次性的迁移拦不住它。
+        let ghost = cfg.clear_unverified_occupancy();
+        if ghost > 0 {
+            #[cfg(feature = "tray")]
+            crate::tray::log_line(&format!(
+                "已清掉 {ghost} 条没有本机验证的「有主机」记录\
+                 （对端自报的口编号不能当本机的输入源）"
+            ));
+            #[cfg(not(feature = "tray"))]
+            eprintln!("已清掉 {ghost} 条没有本机验证的「有主机」记录");
+            let _ = cfg.save();
+        }
         cfg
     }
 
@@ -511,22 +524,44 @@ impl Config {
     /// 代价：只跑过扫描、从没手动切过去的口也会回到"未检测"，重扫一次即可。
     ///
     /// v2→v3：`kvm` 从"一条链路"改成链路表。老字段升成 links[0]。
+    /// 清掉"对端自报占用"留下的假证据，返回清掉几条。
+    ///
+    /// 判据：`presence == Occupied && verified == false`。
+    ///
+    /// 为什么这条判据是对的：真正切过去过、画面留住了的口，`record_success`
+    /// 会把 `verified` 和 `presence` 一起写（见 `mark_verified`）。所以
+    /// "声称有主机却从没验证过"只能是**别人替它说的** —— 最常见的就是对端
+    /// 广播"我挂在 0x12"，扫描直接把 0x12 标成 Occupied。可每台显示器的口
+    /// 编号是各自固件定义的，跨机器搬过来就是错的：面板上会多出一条
+    /// `输入源 0x12`（连名字都没有），点「切换」直接黑屏。
+    ///
+    /// **不能只在版本迁移里跑一次**：v0.6.71 之前它是 v1→v2 的一次性清理，
+    /// 配置升到 v3 之后就不再执行，于是扫描再写一次、这条幽灵口就复活了
+    /// （2026-10-22 用户实测：重新检测后第四行又冒出 `输入源 0x12`）。
+    /// 现在由 `load()` 每次加载都守一道。
+    ///
+    /// 代价：只跑过扫描、从没手动切过去的口会回到"未检测"，重扫一次即可。
+    fn clear_unverified_occupancy(&mut self) -> usize {
+        let mut cleared = 0usize;
+        for profile in self.monitors.values_mut() {
+            for src in profile.inputs.iter_mut() {
+                if src.presence == Presence::Occupied && !src.verified {
+                    src.presence = Presence::Unknown;
+                    src.checked_at = 0;
+                    cleared += 1;
+                }
+            }
+        }
+        cleared
+    }
+
     fn migrate(&mut self) {
         if self.version >= CONFIG_VERSION {
             return;
         }
         let mut dirty = false;
         if self.version < 2 {
-            let mut cleared = 0usize;
-            for profile in self.monitors.values_mut() {
-                for src in profile.inputs.iter_mut() {
-                    if src.presence == Presence::Occupied && !src.verified {
-                        src.presence = Presence::Unknown;
-                        src.checked_at = 0;
-                        cleared += 1;
-                    }
-                }
-            }
+            let cleared = self.clear_unverified_occupancy();
             if cleared > 0 {
                 // 注意：这个 crate 也会以 `--no-default-features` 编译成纯 CLI
                 // 诊断程序，那时 `tray` 模块整个被 cfg 掉，直接引用会 E0433。
@@ -921,5 +956,51 @@ impl RuntimeState {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = fs::write(Self::path(), text);
         }
+    }
+}
+
+#[cfg(test)]
+mod ghost_input_tests {
+    use super::*;
+
+    /// 对端自报"我挂在 0x12"留下的 Occupied 必须被清掉 —— 它不是本机证据。
+    ///
+    /// 这条锁的是 2026-10-22 那个回归：清理只写在 v1→v2 迁移里，配置升到
+    /// v3 之后不再执行，扫描再写一次 `输入源 0x12` 就复活了。
+    #[test]
+    fn unverified_occupancy_is_cleared() {
+        let mut cfg: Config = serde_json::from_str(
+            r#"{
+              "monitors": {
+                "X": {
+                  "uid": "X",
+                  "name": "P275MV",
+                  "capability": "read_write",
+                  "inputs": [
+                    {"name": "输入源 0x12", "value": 18, "verified": false, "presence": "occupied"},
+                    {"name": "usbc", "value": 15, "verified": true, "presence": "occupied"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .expect("配置要能反序列化");
+        assert_eq!(cfg.monitors.get("X").unwrap().inputs.len(), 2);
+
+        assert_eq!(cfg.clear_unverified_occupancy(), 1);
+        let profile = cfg.monitors.get("X").unwrap();
+        assert_eq!(
+            profile.inputs[0].presence,
+            Presence::Unknown,
+            "未验证的「有主机」必须清掉"
+        );
+        assert_eq!(
+            profile.inputs[1].presence,
+            Presence::Occupied,
+            "真的切过去验证过的口不能动"
+        );
+
+        // 幂等：再跑一次不该有东西可清（否则每次加载都要写盘）
+        assert_eq!(cfg.clear_unverified_occupancy(), 0);
     }
 }
