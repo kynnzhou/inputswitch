@@ -328,11 +328,12 @@
       <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
     </div>
     <div class="actions">
+      <!-- 主操作 + 两个维护动作放在一起：这三个都是"对这块屏做点什么"，
+           散到下面卡片里反而要来回找。主按钮按上下文变（切到 X / 扫描 / 请对端切回），
+           所以这里不再单独放一个「扫描」—— 需要它的时候它就是主按钮本身。 -->
       <button id="mainSwitch" class="primary" onclick="quickSwitch()">切换画面</button>
-      <!-- 没有可切的目标时主按钮整个藏起来，只留一行说明。
-           以前它变灰写一句"先去点另一个按钮"，既点不了又和卡片里的按钮重复
-           （2026-10-22 用户连着报了两轮）。 -->
-      <span class="hdrnote" id="hdrNote" style="display:none"></span>
+      <button class="ghost" onclick="post('/api/rescan')">重新检测</button>
+      <button class="ghost" onclick="post('/api/check')">检测支持性</button>
     </div>
     <div class="toast" id="status">—</div>
   </header>
@@ -345,13 +346,8 @@
       <h2>这台显示器</h2>
       <div id="ports" class="ports"><div class="empty">读取中…</div></div>
       <div class="hint" id="portHint"></div>
-      <div class="btnrow" style="margin-top:12px">
-        <button class="ghost" onclick="post('/api/rescan')">重新检测</button>
-        <button class="ghost" onclick="post('/api/scan')">扫描哪个口有主机</button>
-        <button class="ghost" onclick="post('/api/check')">检测支持性</button>
-      </div>
-      <!-- 这三个按钮的结论必须留在按钮旁边：以前「检测支持性」的结果只写进
-           「高级」里的 dl，收起来之后点了像没反应（2026-10-22 用户报的）。 -->
+      <!-- 三个维护按钮搬到了顶部操作区（和主按钮放一起）。
+           这里只留结果：支持性 + 上次检测的结论。 -->
       <div class="hint" id="supportLine">支持性：<span id="support">—</span></div>
       <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。每试一个口都得靠对面那台把画面切回来，
         所以对面必须开着本程序、并且两边填同一个配对码；这两个条件不满足时只汇总已知信息，不会切屏。</div>
@@ -588,51 +584,43 @@ function render() {
   // v0.6.71 起 `snap.inputs` 里不再有"只凭对端自报"的口（见
   // clear_unverified_occupancy），所以这里的匹配只会命中本机验证过的。
   const main = document.getElementById('mainSwitch');
-  const hdrNote = document.getElementById('hdrNote');
   const peer = (snap.peers || []).find(p => p.knows_port);
   const blind = snap.has_display === false;
   const peerPortLocal = peer && peer.value
     ? (snap.inputs || []).find(i => i.value === peer.value && !i.current && i.presence === 'occupied')
     : null;
-  // 有可切的目标就显示按钮；没有就把按钮整个藏掉、只留一行说明。
-  const showMain = (text) => {
+  // 主按钮按上下文变：切到 X / 扫描 / 请对端切回。它同时承担了"扫描"这个
+  // 维护动作 —— 所以顶部操作区里不再单列一个「扫描」按钮（那才叫重复）。
+  const setMain = (text, action, value, name) => {
     main.style.display = '';
-    hdrNote.style.display = 'none';
+    main.disabled = false;
     main.textContent = text;
-  };
-  const hideMain = (note) => {
-    main.style.display = 'none';
-    hdrNote.style.display = '';
-    hdrNote.textContent = note;
+    main.dataset.action = action;
+    if (value == null) {
+      delete main.dataset.value;
+    } else {
+      main.dataset.value = value;
+    }
+    if (name) main.dataset.name = name;
   };
   if (blind && snap.own_value && (snap.peers || []).length) {
-    showMain(`请 ${peer ? peer.node : '对端'} 把画面切回本机（0x${snap.own_value.toString(16).toUpperCase().padStart(2, '0')}）`);
-    main.dataset.value = snap.own_value;
-    main.dataset.action = 'peer';
-    main.disabled = false;
+    setMain(`请 ${peer ? peer.node : '对端'} 把画面切回本机（0x${snap.own_value.toString(16).toUpperCase().padStart(2, '0')}）`, 'peer', snap.own_value);
   } else if (peerPortLocal) {
     const tail = kvmFollowing() ? '（键鼠跟过去）' : '';
-    showMain(`切到 ${peer.node} · ${peerPortLocal.label}${tail}`);
-    main.dataset.value = peerPortLocal.value;
-    main.dataset.name = peerPortLocal.name;
-    main.dataset.action = 'local';
-    main.disabled = false;
+    setMain(`切到 ${peer.node} · ${peerPortLocal.label}${tail}`, 'local', peerPortLocal.value, peerPortLocal.name);
   } else if (peer && peer.knows_port && peer.value) {
-    // 对端说了自己在哪个口，但本机没有任何证据。这时候不能拿它的编号当目标
-    // （编号各算各的，切错就是黑屏）；也不该在这里再放一个「扫描」按钮 ——
-    // 那是「这台显示器」卡片里的维护动作，重复一份只会让人两头找。
-    hideMain(`${peer.node} 接在哪个口还没验证 —— 在「这台显示器」里点「扫描哪个口有主机」`);
+    // 对端说了自己在哪个口，但本机没有任何证据。不能拿它的编号当目标
+    // （编号各算各的，切错就是黑屏）—— 这时候主按钮本身就是"去扫一次"。
+    setMain('扫描哪个口有主机', 'scan', null);
+    main.title = `${peer.node} 报的端口本机还没验证过，扫一次就知道它接在哪个口`;
   } else if (snap.inputs && snap.inputs.length) {
     const others = snap.inputs.filter(i => !i.current && i.presence !== 'invalid');
     const cur = others.find(i => i.presence === 'occupied')
       || others[0] || snap.inputs.find(i => !i.current) || snap.inputs[0];
-    showMain(`切到 ${cur.label}${kvmFollowing() ? '（键鼠跟过去）' : ''}`);
-    main.dataset.value = cur.value;
-    main.dataset.name = cur.name;
-    main.dataset.action = 'local';
-    main.disabled = false;
+    setMain(`切到 ${cur.label}${kvmFollowing() ? '（键鼠跟过去）' : ''}`, 'local', cur.value, cur.name);
   } else {
-    hideMain(blind ? '本机没接显示器，画面在另一台上' : '没有检测到输入源');
+    setMain(blind ? '本机没接显示器，画面在另一台上' : '没有检测到输入源', 'none', null);
+    main.disabled = true;
   }
 
   // 输入源列表
@@ -673,7 +661,7 @@ function render() {
     } else {
       ports.innerHTML = `
         <div class="empty">显示器在，但没有报输入源。</div>
-        <button class="ghost" style="margin-top:10px" onclick="post('/api/rescan')">重新检测</button>`;
+        <div class="empty" style="margin-top:6px">点顶部的「重新检测」再读一次。</div>`;
     }
   }
   renderKvm();
@@ -1163,6 +1151,12 @@ function kvmFollowing() {
 
 function quickSwitch() {
   const main = document.getElementById('mainSwitch');
+  // 对端端口没验证过时，主按钮本身就是"去扫一次"
+  if (main.dataset.action === 'scan') {
+    main.textContent = '扫描中…';
+    post('/api/scan');
+    return;
+  }
   const value = Number(main.dataset.value || 0);
   if (!value) return;
   // 本机没有显示器时，切换指令得由对端去发（它那边 DDC 才是通的）

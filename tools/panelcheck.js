@@ -205,11 +205,17 @@ ok(/会抓取键鼠并转发/.test(made['kvmRoleHint'].textContent),
 // 14. 顶部状态条：画面 / 键鼠 / 对端 三个事实（v0.6.69）
 ok(/3 台在线/.test(made['hdrPeer'].innerHTML), '状态条显示在线台数');
 ok(made['hdrKeys'].textContent === 'CHINAMI-0DFF1JU', '状态条显示键鼠现在在谁手上');
-// 15. 对端报了端口、但本机没有证据 → 主按钮整个藏起来，只留一行说明。
-//     以前是"变灰 + 一句叫你去点别的按钮"，既点不了又和卡片里的「扫描」
-//     重复（v0.6.73 先改成可点，v0.6.74 按用户意见彻底去掉重复）。
-ok(made['mainSwitch'].style.display === 'none', '没有可切目标时主按钮藏起来');
-ok(/还没验证/.test(made['hdrNote'].textContent), '改由状态条的一行说明指出下一步');
+// 15. 对端报了端口、但本机没有证据 → 主按钮**就是**"去扫一次"（可点）。
+//     v0.6.74 曾把它藏掉、只留一行说明，用户明确说那样更差 —— 顶部那个扫描
+//     按钮是他想要的形态；去重的方式改成"下面卡片不再重复放扫描按钮"。
+ok(made['mainSwitch'].style.display !== 'none', '没有可切目标时主按钮仍然显示');
+ok(/扫描哪个口有主机/.test(made['mainSwitch'].textContent) && !made['mainSwitch'].disabled,
+  '主按钮此时就是「扫描哪个口有主机」，可点');
+ok(made['mainSwitch'].dataset.action === 'scan', '主按钮此时的动作是扫描');
+// 17. 维护动作只在顶部出现一次：卡片里不许再放同名按钮（那就是重复）
+ok(!/onclick="post\('\/api\/scan'\)"/.test(html), '页面里没有第二个「扫描」按钮');
+ok((html.match(/onclick="post\('\/api\/rescan'\)"/g) || []).length === 1, '「重新检测」只有一个入口');
+ok((html.match(/onclick="post\('\/api\/check'\)"/g) || []).length === 1, '「检测支持性」只有一个入口');
 // 16. 输入口可以就地改名（labels 以前只能手改配置文件，看着像写死的）。
 //     行是 JS 拼的，桩里的 appendChild 不聚合 innerHTML，只能查源码。
 ok(/function saveLabel/.test(html) && /\/api\/label/.test(html) && /contenteditable/.test(html),
