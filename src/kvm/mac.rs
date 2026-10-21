@@ -1051,7 +1051,7 @@ impl Inject {
                 Event::Key { code, down } => self.key(code, down),
                 // 心跳、进出控制都不产生输入，不该被注入
                 Event::Enter { .. } | Event::Leave | Event::Ping | Event::Pong { .. }
-                | Event::Takeback => {}
+                | Event::Takeback { .. } => {}
             }
         }
     }

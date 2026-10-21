@@ -89,7 +89,15 @@ pub enum Event {
     /// 与 `Leave` 的区别：Leave 是"抢占被对端接受"的让路应答，对端
     /// 收到后**保持** Sending；Takeback 是"我不要了，你收回"，对端
     /// 收到后必须回到 Idle。
-    Takeback,
+    ///
+    /// `along` = 光标交还那一刻在**门轴**上的位置比例（0xFFFF = 未知）。
+    /// 发送方回程时按它把光标放回对应高度/宽度 —— 不带这一位的话，
+    /// 从邻居推回来的光标只能落在屏幕正中（v0.6.62 用户实测：
+    /// "从 0DFF1JU 回来，光标直接跳到 MC5K9SJ 中间"）。
+    /// 旧版对端只读 kind，多出来的两字节被忽略 → 退化成居中，无害。
+    Takeback {
+        along: u16,
+    },
 }
 
 impl Event {
@@ -103,7 +111,7 @@ impl Event {
             Event::Leave => 6,
             Event::Ping => 7,
             Event::Pong { .. } => 8,
-            Event::Takeback => 9,
+            Event::Takeback { .. } => 9,
         }
     }
 
@@ -151,7 +159,9 @@ impl Event {
                 // 追加在末尾：旧版对端只读前 8 字节，多出来的直接忽略
                 out.push(side);
             }
-            Event::Leave | Event::Ping | Event::Takeback => {}
+            Event::Leave | Event::Ping => {}
+            // 追加 2 字节：旧版对端按 kind 认出 Takeback 就够，多余字节忽略
+            Event::Takeback { along } => out.extend_from_slice(&along.to_le_bytes()),
             Event::Pong { state } => out.push(state),
         }
         out
@@ -205,7 +215,13 @@ impl Event {
                 // 让状态自愈看守跳过判定（优雅降级），详见 PEER_UNKNOWN。
                 state: rest.first().copied().unwrap_or(PEER_UNKNOWN),
             },
-            9 => Event::Takeback,
+            // 旧版对端只发头部：当作"不知道位置"，回程退化为中心
+            9 => Event::Takeback {
+                along: rest
+                    .get(0..2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .unwrap_or(0xFFFF),
+            },
             _ => return None,
         };
         Some((seq, ev))
@@ -724,12 +740,29 @@ mod tests {
             Event::Leave,
             Event::Ping,
             Event::Pong { state: 2 },
-            Event::Takeback,
+            Event::Takeback { along: 0x8000 },
         ];
         for event in cases {
             let bytes = event.encode(7);
             assert_eq!(Event::decode(&bytes), Some(event), "{event:?}");
         }
+    }
+
+    #[test]
+    fn takeback_without_along_means_unknown() {
+        // 旧版对端的 Takeback 只有头部：回程落点退化成居中，不能崩、
+        // 更不能把 0 当成"落在顶部"
+        let old = [MAGIC, 9, 0x01, 0x00];
+        assert_eq!(
+            Event::decode(&old),
+            Some(Event::Takeback { along: 0xFFFF })
+        );
+        // 新端发的带位置，来回一趟要一模一样
+        let bytes = Event::Takeback { along: 0x1234 }.encode(3);
+        assert_eq!(
+            Event::decode(&bytes),
+            Some(Event::Takeback { along: 0x1234 })
+        );
     }
 
     #[test]

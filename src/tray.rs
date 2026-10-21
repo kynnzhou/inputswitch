@@ -645,17 +645,17 @@ fn menu_signature(
     sig
 }
 
-/// 退场菜单的养老院。
-///
-/// `set_menu` 替换旧菜单时会 drop 旧的 `Menu`（连同全部 `MenuChild`），
-/// 但 AppKit 侧还握着旧 NSMenuItem 的引用 —— 点击分发在菜单收起**之后**
-/// 才执行（`_performPostTrackingDismissalActions`），这几十毫秒的窗口里
-/// 旧菜单项的原生对象若还活着而 Rust 侧已释放，点击就会摸到悬空指针，
-/// panic → abort（实测崩了三次，菜单点击时必现窗口）。
-///
-/// 所以每次替换菜单前，把旧菜单的克隆（`Menu` 内部是 Rc，克隆共享底层
-/// 对象）搬进这里住 60 秒再退役：在途点击依然摸得到有效的 MenuChild，
-/// 只是事件带着旧 id 回来，按 id 分发的处理器会安全忽略或照常执行。
+// 退场菜单的养老院。
+//
+// `set_menu` 替换旧菜单时会 drop 旧的 `Menu`（连同全部 `MenuChild`），
+// 但 AppKit 侧还握着旧 NSMenuItem 的引用 —— 点击分发在菜单收起**之后**
+// 才执行（`_performPostTrackingDismissalActions`），这几十毫秒的窗口里
+// 旧菜单项的原生对象若还活着而 Rust 侧已释放，点击就会摸到悬空指针，
+// panic → abort（实测崩了三次，菜单点击时必现窗口）。
+//
+// 所以每次替换菜单前，把旧菜单的克隆（`Menu` 内部是 Rc，克隆共享底层
+// 对象）搬进这里住 60 秒再退役：在途点击依然摸得到有效的 MenuChild，
+// 只是事件带着旧 id 回来，按 id 分发的处理器会安全忽略或照常执行。
 thread_local! {
     static RETIRED_MENUS: RefCell<Vec<(Instant, tray_icon::menu::Menu)>> = const { RefCell::new(Vec::new()) };
     /// 当前挂在托盘上的菜单的克隆。下次替换时它就是要被 drop 的那个，
@@ -2650,7 +2650,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.61",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.62",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

@@ -166,6 +166,19 @@ const EDGE_REARM_DIST: f64 = 32.0;
 /// 几笔就到阈值），而扫过门口那一两笔杂音攒不满 —— 既快又不会误切。
 const RETURN_PUSH: f64 = 26.0;
 
+/// `Enter.flags` 的 bit0：`side` 只用来定**进门落点**，不表示这条链路有门。
+///
+/// 回程专用。共用一块屏那台（Follow 链路）本来没有门，但用户从邻居那边
+/// 把光标推回来时，它会希望光标从**自己刚推出去的那一侧**进来 —— 不带这
+/// 一位的话，接收端只能把它摆到屏幕正中（v0.6.62 用户实测："从 0DFF1JU
+/// 回来，光标直接跳到 MC5K9SJ 中间"）。
+///
+/// 为什么必须单独一位、不能直接发 side：接收端现在把"带有效 side"当成
+/// "这条链路有门"的证据（v0.6.61 的修复，用于对方没摆位的情况）。回程
+/// 借 side 传落点，如果不说清是哪种，那台共用屏机器就会开始判推门交还，
+/// 光标在它上面一顶右边缘就把键鼠弹回 Mac。
+const ENTER_FLAG_LANDING_ONLY: u16 = 1;
+
 /// 改指向后，旧目标回来的 Takeback 要忽略多久（毫秒）。
 ///
 /// 改指向的顺序是「Leave 旧 → Enter 新 → 换 active」，这中间旧目标可能还
@@ -479,12 +492,26 @@ fn pick_retarget(cur: u8, active: Option<usize>, links: &[Link], side: Side) -> 
 /// 直接取目标链路自己的 `side`：门是**本机**通向那台的门。回到 Follow
 /// 链路（共用一块屏那台）时它没有门，回 `CODE_UNKNOWN` —— 对端会沿用
 /// 自己配置的方向，和 `follow()` 逐字一样。
-fn return_side(links: &[Link], to: usize) -> u8 {
-    links
-        .get(to)
-        .and_then(|l| l.side)
-        .map(|s| s.code())
-        .unwrap_or(Side::CODE_UNKNOWN)
+/// 改指向时往 `Enter` 里塞的「进门侧」和标志位。
+///
+/// 两种情况完全不是一回事：
+///
+/// - 目标那台**有门**（Edge 链路）：就是那条边。对端据此把自己的门口
+///   校正到我们的对面，光标落在那侧边缘。
+/// - 目标那台**没有门**（Follow / 共用一块屏）：这是一次**回程**。拿
+///   "来路那条边"的**反面**告诉它 —— `Enter.side` 的语义是"我方从哪侧
+///   出门"，接收端会把门口取反，所以给反面才能让光标落回我们自己出去
+///   的那一侧（给正面就成了屏幕另一头）。同时带上
+///   `ENTER_FLAG_LANDING_ONLY`，否则对端会把这次回程当成"这条链路有
+///   门"，从此开始判推门交还。
+fn enter_aim(links: &[Link], from: usize, to: usize) -> (u8, u16) {
+    if let Some(s) = links.get(to).and_then(|l| l.side) {
+        return (s.code(), 0);
+    }
+    match links.get(from).and_then(|l| l.side) {
+        Some(s) => (s.opposite().code(), ENTER_FLAG_LANDING_ONLY),
+        None => (Side::CODE_UNKNOWN, 0),
+    }
 }
 
 /// 这场会话算不算"有门"。
@@ -612,15 +639,12 @@ impl Linker<'_> {
             self.out
                 .to_link(from, &Event::Key { code, down: false });
         }
-        for button in 1u8..=3 {
-            self.out.to_link(
-                from,
-                &Event::Button {
-                    button,
-                    down: false,
-                },
-            );
-        }
+        // **不补发 button-up。** 按下状态的清理是接收端自己的事：它的
+        // `pressed` 里记着真正按下的键，收到 `Leave` 会逐笔补 up。这边
+        // 盲发「1/2/3 全松开」会被对端当成**一次真实点击** —— Windows
+        // 桌面上收到一个孤立的 WM_RBUTTONUP 就弹右键菜单（v0.6.62 用户
+        // 实测：从 MC5K9SJ 转到 0DFF1JU 时，MC5K9SJ 上凭空弹一次右键）。
+        // 键盘的 up 仍然补：多补一次无害，卡住一个键的代价大得多。
         self.out.to_link(from, &Event::Leave);
         self.out.to_link(from, &Event::Leave);
         let (sw, sh) = match self.capture {
@@ -628,12 +652,13 @@ impl Linker<'_> {
             // 没有抓取模块时不可能在 Sending（上面已挡），这里只是兜底
             None => (0u32, 0u32),
         };
+        let (enter_side, enter_flags) = enter_aim(self.links, from, to);
         let enter = Event::Enter {
             width: sw.min(65535) as u16,
             height: sh.min(65535) as u16,
             along,
-            flags: 0,
-            side: return_side(self.links, to),
+            flags: enter_flags,
+            side: enter_side,
         };
         self.out.to_link(to, &enter);
         self.out.to_link(to, &enter);
@@ -1283,8 +1308,8 @@ impl Kvm {
         }
         // 单发 UDP 会丢：丢一包对端就卡在 Sending，键鼠全被它吞掉。
         // 接收端有状态闸门，重复的 Takeback 是幂等的。
-        self.out.to_link(target, &Event::Takeback);
-        self.out.to_link(target, &Event::Takeback);
+        self.out.to_link(target, &Event::Takeback { along: 0xFFFF });
+        self.out.to_link(target, &Event::Takeback { along: 0xFFFF });
         self.active.set(None);
         // 会话结束了，起点也一并忘了：下一场重新定
         self.root.set(None);
@@ -1323,15 +1348,8 @@ impl Kvm {
                     },
                 );
             }
-            for button in 1u8..=3 {
-                self.out.to_link(
-                    t,
-                    &Event::Button {
-                        button,
-                        down: false,
-                    },
-                );
-            }
+            // 按钮不盲发 up（理由见 `Linker::retarget`）：对端会把孤立的
+            // button-up 当成一次点击
             self.out.to_link(t, &Event::Leave);
         }
         // I2：拆场先改 state 再 clear active（上面 CAS 已改过 state）
@@ -1531,8 +1549,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 capture_ref.set_claim_armed(false);
                 // 单发 UDP 会丢：丢一包对端就卡在 Sending 连键鼠一起吞掉。
                 // 接收端有状态闸门，重复的 Takeback 是幂等的。
-                out.to_link(t, &Event::Takeback);
-                out.to_link(t, &Event::Takeback);
+                out.to_link(t, &Event::Takeback { along: 0xFFFF });
+                out.to_link(t, &Event::Takeback { along: 0xFFFF });
                 active_cap.set(None);
                 root_cap.set(None);
                 reclaim_cap.store(now_ms(), Ordering::SeqCst);
@@ -2071,6 +2089,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         height,
                         along,
                         side: peer_side,
+                        flags,
                         ..
                     } => {
                         let cur = state.load(Ordering::Relaxed);
@@ -2132,8 +2151,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 注入 B 的位移、一边还在收 A 的 —— 两台抢一只光标。
                             release_local(&inject, &mut sess.pressed);
                             if let Some(old) = act {
-                                out.to_link(old, &Event::Takeback);
-                                out.to_link(old, &Event::Takeback);
+                                out.to_link(old, &Event::Takeback { along: 0xFFFF });
+                                out.to_link(old, &Event::Takeback { along: 0xFFFF });
                                 (log)(format!(
                                     "{} 抢走了控制权，已通知 {} 收回",
                                     links_rx[from_link].node,
@@ -2178,6 +2197,13 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 就是因为 Windows 那边把门口当成了自己出门的那侧）。
                         // 拓扑定理在这里也升级成四向版：它从右边出门 ⇒ 我在
                         // 它左边；它从上面出门 ⇒ 我在它下面。
+                        // `side` 现在有两种含义，靠 flags 分清：
+                        //   ① 真·出门侧 —— 这条链路有门；
+                        //   ② 只用来定落点 —— 回程（从邻居回到共用屏那台）。
+                        // ②必须排除在"有门证据"之外，否则那台共用屏机器
+                        // 会开始判推门交还，光标在它上面一顶边就把键鼠
+                        // 弹回 Mac（画面还在它那，用户等于摸黑）。
+                        let landing = flags & ENTER_FLAG_LANDING_ONLY != 0;
                         if let Some(ps) = Side::from_code(peer_side) {
                             // **有没有门，发送方比本地配置更有发言权。**
                             //
@@ -2192,7 +2218,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 在门口也不交还，症状就是"回不去上一台"
                             //（v0.6.61 实测）。门是发送方拓扑的一部分，
                             // 不该要求接收方把同一件事再配一遍。
-                            if session_edge(sess.edge, peer_side) && !sess.edge {
+                            if !landing && session_edge(sess.edge, peer_side) && !sess.edge {
                                 sess.edge = true;
                                 (log)(format!(
                                     "{} 从 {} 出门 ⇒ 这条链路按「有门」处理（本机配置里它没占边，已按对端为准）",
@@ -2234,7 +2260,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 光标落点：多屏共享按出门高度进门；跟随画面模式
                             // 没有"门"的概念，居中。重复的 Enter 不再挪，
                             // 免得光标莫名跳一下。
-                            if sess.edge {
+                            //
+                            // `landing` 是回程：共用屏那台没有门，但我们知道
+                            // 用户是从哪一侧把光标推回来的，就摆到那侧边缘
+                            // —— 否则它只能落在屏幕正中，看起来像"凭空闪现"。
+                            if sess.edge || landing {
                                 // 每次接管重新锚定工作屏：物理用户实际看着的那块
                                 let own = inject.enable_own_screen(sess.portal);
                                 let src = plat::work_screen_source();
@@ -2254,6 +2284,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             // 读代码推，用户贴不出证据来。
                             let kind = if sess.edge {
                                 format!("有门，门口在{}", sess.portal.as_str())
+                            } else if landing {
+                                format!(
+                                    "共用一块屏（不判门；回程从{}侧进门）",
+                                    sess.portal.as_str()
+                                )
                             } else {
                                 "共用一块屏（不判门，交还只能靠对端叫回或热键）".to_string()
                             };
@@ -2307,7 +2342,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             State::Idle => {}
                         }
                     }
-                    Event::Takeback => {
+                    Event::Takeback { along } => {
                         // 接收方主动交还（它的用户把光标推回门口，或它发现
                         // 状态错乱）。必须真的把键鼠收回来：否则我们一直抓着
                         // 键鼠往没人接收的方向转发，两台机器的键鼠全卡死 ——
@@ -2348,7 +2383,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     peer_rx: &peer_rx_rx,
                                     log: &*log,
                                 }
-                                .retarget(to, 0xFFFF, "对面交还，回到起点");
+                                // 把对面交还时的光标位置一路带回去：起点那台
+                                // 按这个比例进门，光标就落在用户推出去的那个
+                                // 高度上，而不是屏幕正中。
+                                .retarget(to, along, "对面交还，回到起点");
                                 match back {
                                     Ok(()) => continue,
                                     Err(err) => {
@@ -2406,8 +2444,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 sess.last_takeback_ms = now_ms();
                                 // 救援也要回给来源：把 Takeback 发给会话目标，
                                 // 真正该收回的那台就永远收不到
-                                out.to(from, &Event::Takeback);
-                                out.to(from, &Event::Takeback);
+                                out.to(from, &Event::Takeback { along: 0xFFFF });
+                                out.to(from, &Event::Takeback { along: 0xFFFF });
                                 (log)(format!(
                                     "没在被控状态却收到 {} 的输入事件，已通知它收回",
                                     links_rx[from_link].node
@@ -2508,8 +2546,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                         sess.verify = None;
                                         if sess.suspect >= 1 {
                                             release_local(&inject, &mut sess.pressed);
-                                            out.to_link(from_link, &Event::Takeback);
-                                            out.to_link(from_link, &Event::Takeback);
+                                            out.to_link(from_link, &Event::Takeback { along: 0xFFFF });
+                                            out.to_link(from_link, &Event::Takeback { along: 0xFFFF });
                                             state.store(State::Idle as u8, Ordering::SeqCst);
                                             active_rx.set(None);
                                             reclaim_rx.store(now_ms(), Ordering::SeqCst);
@@ -2628,8 +2666,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                             // 连发两笔，接收端有状态闸门，幂等。
                                             // **显式寻址到这台**：交还是还给
                                             // 正被释放的那条链路（I4）。
-                                            out.to_link(from_link, &Event::Takeback);
-                                            out.to_link(from_link, &Event::Takeback);
+                                            out.to_link(from_link, &Event::Takeback { along: sess.portal.along(x, y, w, h) });
+                                            out.to_link(from_link, &Event::Takeback { along: sess.portal.along(x, y, w, h) });
                                             state.store(State::Idle as u8, Ordering::SeqCst);
                                             // I2：拆场先改 state 再 clear active
                                             active_rx.set(None);
@@ -2865,9 +2903,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             for code in plat::MODIFIER_KEYS {
                                 out.to_link(t, &Event::Key { code, down: false });
                             }
-                            for button in 1u8..=3 {
-                                out.to_link(t, &Event::Button { button, down: false });
-                            }
+                            // 按钮不盲发 up（理由见 `Linker::retarget`）
                             out.to_link(t, &Event::Leave);
                         }
                         state.store(State::Idle as u8, Ordering::SeqCst);
@@ -2925,15 +2961,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 },
                             );
                         }
-                        for button in 1u8..=3 {
-                            out.to_link(
-                                act,
-                                &Event::Button {
-                                    button,
-                                    down: false,
-                                },
-                            );
-                        }
+                        // 按钮不盲发 up（理由见 `Linker::retarget`）
                         out.to_link(act, &Event::Leave);
                     }
                     state.store(State::Idle as u8, Ordering::SeqCst);
@@ -3255,12 +3283,21 @@ mod tests {
 
     /// 回程的门：回到 Edge 链路按它自己的 side；回到共用屏那台没有门。
     #[test]
-    fn return_side_follows_link() {
+    fn enter_aim_says_where_the_cursor_should_land() {
         let l = three_way();
-        assert_eq!(return_side(&l, 1), Side::Right.code());
-        assert_eq!(return_side(&l, 0), Side::CODE_UNKNOWN);
-        // 越界的下标不能崩
-        assert_eq!(return_side(&l, 9), Side::CODE_UNKNOWN);
+        // 前进：目标是 Edge 链路，就用它自己那条边
+        assert_eq!(enter_aim(&l, 0, 1), (Side::Right.code(), 0));
+        assert_eq!(enter_aim(&l, 0, 2), (Side::Left.code(), 0));
+        // 回程：从右边那台回到共用屏那台 → 落点得在**右边**。这里给的是
+        // 反面（Left），因为接收端会把它取反成自己的门口 —— 给正面光标
+        // 就跑到屏幕另一头去了。同时必须带 landing 标志，否则对端会把
+        // 这次回程当成"这条链路有门"。
+        assert_eq!(
+            enter_aim(&l, 1, 0),
+            (Side::Left.code(), ENTER_FLAG_LANDING_ONLY)
+        );
+        // 来路自己也没有门（两台共用屏互跳）：没有方向可依据，落点居中
+        assert_eq!(enter_aim(&l, 0, 9), (Side::CODE_UNKNOWN, 0));
     }
 
     /// 对面交还：起点不是它 → 改指向回起点；起点就是它 → 常规收回。
