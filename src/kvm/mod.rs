@@ -166,6 +166,19 @@ const EDGE_REARM_DIST: f64 = 32.0;
 /// 几笔就到阈值），而扫过门口那一两笔杂音攒不满 —— 既快又不会误切。
 const RETURN_PUSH: f64 = 26.0;
 
+/// 绝对锚点的发送间隔（毫秒）。
+///
+/// 400ms 的取舍：更密（100ms）等于把相对位移退化成绝对坐标，丢包会跳变；
+/// 更疏（2s）则漂移在两次校正之间已经能被眼睛看出来。400ms 下每帧只多
+/// 4 字节，且接收端只在偏差超阈值时才动手，正常移动完全无感。
+const ANCHOR_MS: u64 = 400;
+
+/// 锚点校正的触发阈值：偏差超过"本机宽度的 0.6%"才纠正（1920 屏 ≈ 12 点）。
+///
+/// 阈值是必须的：注入的位移和账本永远有零点几像素的出入，逐帧纠正会让
+/// 光标看起来在抖。只纠正"明显错了"的情况 —— 漂移、切回来不在原位。
+const ANCHOR_TOL: f64 = 0.006;
+
 /// `Enter.flags` 的 bit0：`side` 只用来定**进门落点**，不表示这条链路有门。
 ///
 /// 回程专用。共用一块屏那台（Follow 链路）本来没有门，但用户从邻居那边
@@ -1553,6 +1566,18 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             let mut last_begin_warn_ms: u64 = 0;
             // 上一次认"物理抢回"的时刻（去抖：连按两下只发一次 Takeback）
             let mut last_claim_ms: u64 = 0;
+            // ---- 绝对锚点（v0.6.67）----
+            //
+            // 传输仍然是**相对位移**（丢包只少走几像素，不会跳），但每隔
+            // 400ms 补一个"虚拟光标在本屏的位置比例"。接收端只在偏差超过
+            // 阈值时才纠正 —— 这样长会话里"比例换算每笔四舍五入"攒出来的
+            // 漂移会被抹掉，而正常移动完全不受影响。
+            //
+            // 初始值取**接收端的落点**（follow 是居中），不是发送端真实
+            // 光标 —— 两边要对齐的是"接收端光标在哪"，不是"发送端光标在哪"。
+            // edge 会话由 Begin 分支按 side/along 覆盖成门口位置。
+            let mut anchor_pos: Option<(f64, f64)> = None;
+            let mut anchor_at: u64 = 0;
 
             // 被控期间把控制权要回来。三条入口动作完全一样：热键、
             // 真动物理键鼠、以及主循环那条"推门"（走 Begin/Receiving 分支，
@@ -1728,6 +1753,21 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 并按两屏比例缩放位移（不然两块屏分辨率不同时，
                         // 一边的 delta 到另一边会被放大/缩小得不成样子）
                         let (sw, sh) = capture_ref.screen();
+                        // 锚点起点 = 接收端的落点（门口那侧 + 出门时的高度比例），
+                        // 不是本机光标位置 —— 两边要对齐的是"接收端光标在哪"。
+                        // along 未知（0xFFFF）时按居中算。
+                        let af = if along == 0xFFFF {
+                            0.5
+                        } else {
+                            along as f64 / 65535.0
+                        };
+                        anchor_pos = Some(match side {
+                            Side::Left => (0.0, af),
+                            Side::Right => (1.0, af),
+                            Side::Top => (af, 0.0),
+                            Side::Bottom => (af, 1.0),
+                        });
+                        anchor_at = 0; // 下一笔输入立刻补一发锚点，把落点钉死
                         // Enter 双发：丢一包对端就收不到开工信号（好在
                         // Pong 状态自愈 2.5s 兜底，双发把卡顿窗口压到最小）
                         // 出门侧用**平台层报回来的那条边**，不是配置里那个：
@@ -1767,7 +1807,16 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     }
                     Captured::Input(ev) => {
                         if state.load(Ordering::Relaxed) != State::Sending as u8 {
+                            // 会话结束：锚点模型作废，下一场重新按落点初始化
+                            anchor_pos = None;
                             continue;
+                        }
+                        // 非 edge 起点（热键/面板切换）进来的会话：接收端是
+                        // **居中**落点，所以虚拟光标也从中心开始 —— 两边对齐
+                        // 的是接收端，不是本机光标。
+                        if anchor_pos.is_none() {
+                            anchor_pos = Some((0.5, 0.5));
+                            anchor_at = 0;
                         }
                         // 按键/键盘逐笔落日志：定位"自发右键"这类问题
                         //（位移每秒几百笔，不打）
@@ -1779,6 +1828,29 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         }
                         out.send(&ev);
                         forwarded += 1;
+                        // 积分虚拟光标，并按固定节奏补一发绝对锚点。
+                        // 只在位移上做：按键/滚轮不改位置。
+                        if let Event::Motion { dx, dy } = ev {
+                            let (aw, ah) = capture_ref.screen();
+                            if aw > 0 && ah > 0 {
+                                if let Some((ax, ay)) = anchor_pos {
+                                    anchor_pos = Some((
+                                        (ax + dx as f64 / aw as f64).clamp(0.0, 1.0),
+                                        (ay + dy as f64 / ah as f64).clamp(0.0, 1.0),
+                                    ));
+                                }
+                            }
+                            let now = now_ms();
+                            if now.saturating_sub(anchor_at) >= ANCHOR_MS {
+                                anchor_at = now;
+                                if let Some((ax, ay)) = anchor_pos {
+                                    out.send(&Event::Anchor {
+                                        fx: (ax * 65535.0).round().clamp(0.0, 65535.0) as u16,
+                                        fy: (ay * 65535.0).round().clamp(0.0, 65535.0) as u16,
+                                    });
+                                }
+                            }
+                        }
                         if let Event::Motion { dx, dy } = ev {
                             motions += 1;
                             sum_dx += dx as i64;
@@ -2466,6 +2538,35 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     Event::Pong { state: peer } => {
                         peer_rx_rx.set_state(from.ip(), peer);
                     }
+                    // 绝对锚点：只用来**纠漂移**，不参与正常移动。
+                    //
+                    // 传输还是相对位移（丢包只少走几像素），锚点每 400ms 来
+                    // 一发"发送端虚拟光标的比例"。偏差小于阈值就完全不管 ——
+                    // 逐帧纠会让光标看起来在抖；超过阈值（≈ 屏宽 0.6%）才
+                    // 直接摆过去，修的是长会话累积漂移和"切回来不在原位"。
+                    Event::Anchor { fx, fy } => {
+                        if state.load(Ordering::Relaxed) != State::Receiving as u8
+                            || active_rx.get() != Some(from_link)
+                        {
+                            continue;
+                        }
+                        // 进门 300ms 内不纠：落点刚摆好，锚点还在路上，
+                        // 这时候纠等于跟自己的落点逻辑打架
+                        if now_ms().saturating_sub(sess.enter_ms) < 300 {
+                            continue;
+                        }
+                        let Some((cx, cy)) = inject.cursor() else {
+                            continue;
+                        };
+                        let (w, h) = inject.screen();
+                        if let Some((tx, ty)) = anchor_target(fx, fy, w, h, (cx, cy)) {
+                            inject.place_cursor(tx, ty);
+                            (log)(format!(
+                                "锚点校正：({cx:.0},{cy:.0}) → ({tx:.0},{ty:.0})"
+                            ));
+                        }
+                        continue;
+                    }
                     _ => {
                         // 只有真在被控制时才注入。否则对端明明已经松手，
                         // 我们还在把它的事件打进系统 —— 注入的事件和本机
@@ -3141,6 +3242,42 @@ fn entry_spot(inject: &plat::Inject, side: Side, along: u16) -> (f64, f64) {
     }
 }
 
+/// 锚点校正的判定：该不该把光标摆到锚点上。
+///
+/// 返回 `Some((x, y))` = 偏差超过阈值，该摆；`None` = 在容差内，别动
+/// （逐帧纠会让光标看起来在抖）。
+///
+/// `fx/fy == 0xFFFF` 表示这一维未知：该维不参与判定。
+fn anchor_target(
+    fx: u16,
+    fy: u16,
+    w: f64,
+    h: f64,
+    cur: (f64, f64),
+) -> Option<(f64, f64)> {
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let tx = if fx == 0xFFFF {
+        cur.0
+    } else {
+        fx as f64 / 65535.0 * w
+    };
+    let ty = if fy == 0xFFFF {
+        cur.1
+    } else {
+        fy as f64 / 65535.0 * h
+    };
+    // 阈值按宽度算（高度常常被任务栏/刘海吃掉一截，按宽度更稳），
+    // 8 点是下限：小屏上 0.6% 只有几个像素，太敏感。
+    let tol = (w * ANCHOR_TOL).max(8.0);
+    if (cur.0 - tx).abs() > tol || (cur.1 - ty).abs() > tol {
+        Some((tx, ty))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3337,6 +3474,26 @@ mod tests {
         );
         // 来路自己也没有门（两台共用屏互跳）：没有方向可依据，落点居中
         assert_eq!(enter_aim(&l, 0, 9), (Side::CODE_UNKNOWN, 0));
+    }
+
+    /// 锚点校正：容差内不动，超了才摆；未知维度不参与判定。
+    #[test]
+    fn anchor_target_only_corrects_real_drift() {
+        let (w, h) = (1920.0, 1080.0);
+        let center = (0x8000u16, 0x8000u16);
+        // 偏 5 点：在容差（1920 × 0.006 ≈ 11.5）内，不许动 ——
+        // 逐帧纠会让光标看起来在抖
+        assert_eq!(
+            anchor_target(center.0, center.1, w, h, (960.0 + 5.0, 540.0)),
+            None
+        );
+        // 偏 40 点：明显是漂移，摆过去
+        let t = anchor_target(center.0, center.1, w, h, (960.0 + 40.0, 540.0)).expect("该校正");
+        assert!((t.0 - 960.0).abs() < 1.0 && (t.1 - 540.0).abs() < 1.0);
+        // 两维都未知：等价于"没有锚点"，不校正
+        assert_eq!(anchor_target(0xFFFF, 0xFFFF, w, h, (123.0, 100.0)), None);
+        // 屏幕尺寸为 0（Windows 在画面切走时会报 0）：不校正，也别除零
+        assert_eq!(anchor_target(center.0, center.1, 0.0, 0.0, (0.0, 0.0)), None);
     }
 
     /// 对面交还：起点不是它 → 改指向回起点；起点就是它 → 常规收回。

@@ -98,6 +98,21 @@ pub enum Event {
     Takeback {
         along: u16,
     },
+    /// **绝对锚点**：发送端虚拟光标在它自己屏幕上的位置比例（0..65535）。
+    ///
+    /// 为什么不干脆全改成绝对坐标（Deskflow 的做法）：绝对坐标丢一个 UDP
+    /// 包就是一次**跳变**，而且绕过系统指针加速，手感会突变。相对位移丢包
+    /// 只是少走几像素。所以这里走中间路线 —— 位移照旧传相对的，每隔几百
+    /// 毫秒补一个绝对锚点，接收端只在偏差超过阈值时才纠正。
+    ///
+    /// 解决的是长会话里的**累积漂移**（分辨率比例换算每笔都四舍五入），
+    /// 以及"切回来光标不在原位"。
+    ///
+    /// `0xFFFF` = 这一维未知（发送端还没建立虚拟光标），该维不校正。
+    Anchor {
+        fx: u16,
+        fy: u16,
+    },
 }
 
 impl Event {
@@ -112,6 +127,7 @@ impl Event {
             Event::Ping => 7,
             Event::Pong { .. } => 8,
             Event::Takeback { .. } => 9,
+            Event::Anchor { .. } => 10,
         }
     }
 
@@ -162,6 +178,10 @@ impl Event {
             Event::Leave | Event::Ping => {}
             // 追加 2 字节：旧版对端按 kind 认出 Takeback 就够，多余字节忽略
             Event::Takeback { along } => out.extend_from_slice(&along.to_le_bytes()),
+            Event::Anchor { fx, fy } => {
+                out.extend_from_slice(&fx.to_le_bytes());
+                out.extend_from_slice(&fy.to_le_bytes());
+            }
             Event::Pong { state } => out.push(state),
         }
         out
@@ -221,6 +241,12 @@ impl Event {
                     .get(0..2)
                     .map(|b| u16::from_le_bytes([b[0], b[1]]))
                     .unwrap_or(0xFFFF),
+            },
+            // 旧版对端根本不发这个；新端发的一定带 4 字节，缺了就整条丢掉
+            // （宁可少校正一次，也别拿半个坐标去拽光标）
+            10 => Event::Anchor {
+                fx: u16::from_le_bytes(rest.get(0..2)?.try_into().ok()?),
+                fy: u16::from_le_bytes(rest.get(2..4)?.try_into().ok()?),
             },
             _ => return None,
         };
@@ -741,6 +767,10 @@ mod tests {
             Event::Ping,
             Event::Pong { state: 2 },
             Event::Takeback { along: 0x8000 },
+            Event::Anchor {
+                fx: 0x1234,
+                fy: 0x8000,
+            },
         ];
         for event in cases {
             let bytes = event.encode(7);
@@ -762,6 +792,26 @@ mod tests {
         assert_eq!(
             Event::decode(&bytes),
             Some(Event::Takeback { along: 0x1234 })
+        );
+    }
+
+    #[test]
+    fn anchor_needs_both_axes() {
+        // 缺一个坐标就整条丢掉：宁可少校正一次，也不能拿半个坐标去拽光标
+        let half = [MAGIC, 10, 0x01, 0x00, 0x34, 0x12];
+        assert_eq!(Event::decode(&half), None);
+        // 旧版对端根本不认识 kind=10，会走到 _ => None（不能崩）
+        let bytes = Event::Anchor {
+            fx: 0,
+            fy: 0xFFFF,
+        }
+        .encode(1);
+        assert_eq!(
+            Event::decode(&bytes),
+            Some(Event::Anchor {
+                fx: 0,
+                fy: 0xFFFF
+            })
         );
     }
 

@@ -1464,7 +1464,8 @@ impl Inject {
             | Event::Leave
             | Event::Ping
             | Event::Pong { .. }
-            | Event::Takeback { .. } => {}
+            | Event::Takeback { .. }
+            | Event::Anchor { .. } => {}
         }
     }
 

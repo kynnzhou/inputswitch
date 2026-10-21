@@ -2697,7 +2697,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.66",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.67",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2806,6 +2806,41 @@ pub fn run() -> ! {
                     support = s;
                 }
                 let peers = mesh.live_peers();
+
+                // ---- 链路表自动回填（v0.6.67）----
+                //
+                // 以前必须**两边都配**：A 的表里要有 B、B 的表里也要有 A ——
+                // 因为收包白名单只认链路表里的 IP。只配一边的症状是"推过去
+                // 键鼠消失、画面不切、日志安静"，极难自查。
+                //
+                // 现在：对端**已配对**（announce 签名验过）并且它自己的共用
+                // 键鼠是开着的，就自动补一条"未摆位"链路，地址取自它的广播，
+                // 本机不编造。用户只需要在**一边**把它拖到某个方向。
+                let mut filled: Vec<String> = Vec::new();
+                for p in &peers {
+                    if !p.paired || !p.kvm_on {
+                        continue;
+                    }
+                    if config.kvm.links.iter().any(|l| l.node == p.node) {
+                        continue;
+                    }
+                    config.kvm.links.push(crate::config::LinkConfig {
+                        node: p.node.clone(),
+                        side: String::new(),
+                        mode: String::new(),
+                        input: String::new(),
+                        addr: p.addr.ip().to_string(),
+                    });
+                    filled.push(p.node.clone());
+                }
+                if !filled.is_empty() {
+                    let _ = config.save();
+                    log_line(&format!(
+                        "已自动补上链路：{}（在摆位图里拖到某个方向就能用；\
+                         不用再让对方也配一遍）",
+                        filled.join("、")
+                    ));
+                }
 
                 // ---- 自动恢复（v0.6.66 改成可重试）----
                 //
