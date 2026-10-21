@@ -216,6 +216,14 @@ ok(made['mainSwitch'].dataset.action === 'scan', '主按钮此时的动作是扫
 ok(!/onclick="post\('\/api\/scan'\)"/.test(html), '页面里没有第二个「扫描」按钮');
 ok((html.match(/onclick="post\('\/api\/rescan'\)"/g) || []).length === 1, '「重新检测」只有一个入口');
 ok((html.match(/onclick="post\('\/api\/check'\)"/g) || []).length === 1, '「检测支持性」只有一个入口');
+// 18. 顶部三个动作样式统一（以前主按钮实心蓝、另两个描边，像两种东西），
+//     结果也跟着按钮走（支持性 / 上次检测结论都在顶部操作区里）
+const topbar = (html.split('<header class="topbar glass">')[1] || '').split('</header>')[0];
+ok(!/class="primary"/.test(topbar), '顶部三个按钮不再有一个"特殊色"');
+ok(/id="supportLine"/.test(topbar) && /id="portHint"/.test(topbar),
+  '支持性和检测结论都显示在按钮下方');
+// 19. 对端行用 grid（名字长了不会把「发文件」挤到中间）
+ok(/\.peerrow/.test(html), '对端行是 grid 布局');
 // 16. 输入口可以就地改名（labels 以前只能手改配置文件，看着像写死的）。
 //     行是 JS 拼的，桩里的 appendChild 不聚合 innerHTML，只能查源码。
 ok(/function saveLabel/.test(html) && /\/api\/label/.test(html) && /contenteditable/.test(html),

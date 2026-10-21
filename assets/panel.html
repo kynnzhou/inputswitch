@@ -149,8 +149,11 @@
   .grow { flex: 1; min-width: 120px; }
   input[type=text] {
     font: inherit; padding: 9px 12px; border-radius: 11px;
-    border: 1px solid var(--edge-2); background: var(--card-solid); color: var(--text);
-    letter-spacing: .28em; width: 150px; text-align: center;
+    border: 1px solid var(--line); background: #fff; color: var(--text);
+    letter-spacing: .22em; width: 150px; text-align: center;
+  }
+  @media (prefers-color-scheme: dark) {
+    input[type=text] { background: rgba(255,255,255,.06); }
   }
 
   .ports { display: flex; flex-direction: column; gap: 7px; }
@@ -189,6 +192,29 @@
   }
   .tag.blue { color: var(--blue); }
   .tag.green { color: #1f8f78; background: rgba(47,184,154,.14); }
+  .tag.warn { color: #b96f22; background: rgba(224,138,60,.16); }
+
+  /* 对端行：左点 / 中间信息 / 右按钮。用 grid 而不是 flex-wrap ——
+     名字长了会把「发文件」挤到中间，看着像错位（2026-10-22 截图）。 */
+  .peerrow {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px; align-items: center;
+    padding: 11px 13px; border-radius: 13px;
+    background: var(--card-solid); border: 1px solid var(--edge-2);
+    transition: transform .18s, box-shadow .18s;
+  }
+  .peerrow + .peerrow { margin-top: 7px; }
+  .peerrow:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(31,38,135,.08); }
+  .peerrow > .dot { align-self: start; margin-top: 6px; }
+  .peerrow .name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; }
+  .peerrow .meta { color: var(--faint); font-size: 12px; margin-top: 3px; word-break: break-all; }
+  .peerrow .meta.warn { color: #b96f22; }
+
+  /* 配对卡：输入框要有边（以前边框是半透明白，落在白卡上等于没有），
+     两个按钮分两行，各自按内容宽度排 */
+  .pairrow { display: flex; gap: 8px; align-items: center; }
+  .pairrow input[type=text] { flex: 1; min-width: 0; width: auto; }
+  .pairrow > button { flex: none; }
 
   .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px; font-size: 13px; }
   .kv dt { color: var(--faint); }
@@ -328,13 +354,15 @@
       <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
     </div>
     <div class="actions">
-      <!-- 主操作 + 两个维护动作放在一起：这三个都是"对这块屏做点什么"，
-           散到下面卡片里反而要来回找。主按钮按上下文变（切到 X / 扫描 / 请对端切回），
-           所以这里不再单独放一个「扫描」—— 需要它的时候它就是主按钮本身。 -->
-      <button id="mainSwitch" class="primary" onclick="quickSwitch()">切换画面</button>
+      <!-- 主操作 + 两个维护动作：三个都是"对这块屏做点什么"，所以样式统一
+           （以前主按钮是实心蓝、另两个是描边，看着像两种东西）。 -->
+      <button id="mainSwitch" class="ghost" onclick="quickSwitch()">切换画面</button>
       <button class="ghost" onclick="post('/api/rescan')">重新检测</button>
       <button class="ghost" onclick="post('/api/check')">检测支持性</button>
     </div>
+    <!-- 结果跟着按钮走：点完就在眼皮底下，不用再去卡片里找 -->
+    <div class="hint" id="supportLine">支持性：<span id="support">—</span></div>
+    <div class="hint" id="portHint"></div>
     <div class="toast" id="status">—</div>
   </header>
 
@@ -345,10 +373,6 @@
   <section class="card">
       <h2>这台显示器</h2>
       <div id="ports" class="ports"><div class="empty">读取中…</div></div>
-      <div class="hint" id="portHint"></div>
-      <!-- 三个维护按钮搬到了顶部操作区（和主按钮放一起）。
-           这里只留结果：支持性 + 上次检测的结论。 -->
-      <div class="hint" id="supportLine">支持性：<span id="support">—</span></div>
       <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。每试一个口都得靠对面那台把画面切回来，
         所以对面必须开着本程序、并且两边填同一个配对码；这两个条件不满足时只汇总已知信息，不会切屏。</div>
   </section>
@@ -431,10 +455,12 @@
     <!-- ⑤ 配对 -->
     <section class="card">
       <h2>配对</h2>
-      <div class="row">
+      <div class="pairrow">
         <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
         <button class="ghost" onclick="genCode()">随机生成</button>
-        <button class="green" onclick="savePair()">保存并连接</button>
+      </div>
+      <div class="btnrow" style="margin-top:10px">
+        <button class="primary" onclick="savePair()">保存并连接</button>
         <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
       </div>
       <div class="hint">两台机器填同一个码。保存后双方的消息都会签名，陌生人发不动你的显示器。码越长越安全。<br>
@@ -445,10 +471,10 @@
   <!-- ⑥ 文件 -->
   <section class="card">
     <h2>文件</h2>
-    <div class="split">
-      <button class="green" onclick="post('/api/send')">发送文件…</button>
-      <button onclick="post('/api/inbox')">改接收目录</button>
-      <button onclick="post('/api/open-inbox')">打开接收目录</button>
+    <div class="btnrow">
+      <button class="ghost" onclick="post('/api/send')">发送文件…</button>
+      <button class="ghost" onclick="post('/api/inbox')">改接收目录</button>
+      <button class="ghost" onclick="post('/api/open-inbox')">打开接收目录</button>
     </div>
     <div class="hint" id="inbox">接收目录：—</div>
     <div id="transfer" class="hint"></div>
@@ -687,23 +713,28 @@ function render() {
   } else {
     snap.peers.forEach(p => {
       const el = document.createElement('div');
-      el.className = 'port';
+      el.className = 'peerrow';
+      // 对端报过来的口名可能是它自己那边的匿名名（`输入源 0x12`）——
+      // 那种时候只写十六进制，别拼成「输入源 0x12（0x12）」
+      const rawLabel = (p.label || p.input || '').trim();
+      const hex = `0x${(p.value || 0).toString(16).toUpperCase().padStart(2, '0')}`;
+      const shown = /^输入源/.test(rawLabel) ? hex : `${rawLabel}（${hex}）`;
       const label = p.knows_port
-        ? `它那块屏当前在 ${p.label || p.input}（0x${p.value.toString(16).toUpperCase().padStart(2, '0')}）`
+        ? `它那块屏当前在 ${shown}`
         : '口未知（它的屏幕此刻不在自己那边）';
       // 对面设了码而本机没设：它会把我们发过去的指令全丢掉，
       // 表现为"点了没反应"，不说清楚会一直找不到原因
       const blocked = p.needs_pair
-        ? '<div class="meta" style="color:#e0a030">它设了配对码，本机没设 —— 发给它的指令会被丢弃，请两边填同一个码</div>'
+        ? '<div class="meta warn">它设了配对码，本机没设 —— 发给它的指令会被丢弃，请两边填同一个码</div>'
         : '';
       // 程序在线、但共用键鼠关着：表现和"对面关机"一模一样（心跳不来）。
       // 不在这里点破，用户会去查网线。
       const kvmOff = p.kvm_on
         ? '<span class="tag green">共用键鼠已开</span>'
-        : '<span class="tag" style="color:#e0a030">共用键鼠没开</span>';
+        : '<span class="tag warn">共用键鼠没开</span>';
       el.innerHTML = `
         <span class="dot ${p.knows_port ? 'on' : 'off'}"></span>
-        <div class="grow">
+        <div class="peerinfo">
           <div class="name">${esc(p.node)} ${p.paired ? '<span class="tag green">已配对</span>' : '<span class="tag">未配对</span>'} ${kvmOff}</div>
           <div class="meta">${label} · ${esc(p.addr)}</div>
           ${blocked}
