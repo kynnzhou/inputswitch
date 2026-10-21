@@ -122,6 +122,26 @@ const KEY_ESCAPE: u16 = 53;
 const KEY_V: u16 = 0x09;
 /// 左 Control 的 keycode（重放粘贴时补按用）
 const KEY_CONTROL_LEFT: u16 = 0x3B;
+/// 四个方向键的 keycode。Ctrl+Alt+方向 = 把键鼠改指向那一侧的机器
+/// （会话中"跨过共用屏那台、直接去并排那台"的快捷方式）。
+///
+/// 为什么必须在这里识别：抓取期间所有按键都被吞掉转发出去，系统级热键
+/// （global-hotkey）收不到任何事件 —— 和 Ctrl+Alt+Esc 是同一个原因。
+const KEY_LEFT: u16 = 0x7B;
+const KEY_RIGHT: u16 = 0x7C;
+const KEY_DOWN: u16 = 0x7D;
+const KEY_UP: u16 = 0x7E;
+
+/// 方向键 → 那一侧。Ctrl+Alt 组合按下去的默认语义。
+fn hop_side(code: u16) -> Option<Side> {
+    match code {
+        KEY_LEFT => Some(Side::Left),
+        KEY_RIGHT => Some(Side::Right),
+        KEY_UP => Some(Side::Top),
+        KEY_DOWN => Some(Side::Bottom),
+        _ => None,
+    }
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -866,6 +886,18 @@ extern "C" fn callback(
                 {
                     let _ = shared.tx.send(Captured::End);
                     return std::ptr::null_mut();
+                }
+                // Ctrl+Alt+方向：把键鼠改指向那一侧的机器（v0.6.60）。
+                // 抬起也一起吞掉（走下面 `swallowed_key` 那条），否则对端
+                // 会收到一个没有对应 down 的孤立 up。
+                if down
+                    && (flags & (FLAG_CONTROL | FLAG_OPTION)) == (FLAG_CONTROL | FLAG_OPTION)
+                {
+                    if let Some(side) = hop_side(code) {
+                        shared.swallowed_key = Some(code);
+                        let _ = shared.tx.send(Captured::Hop(side));
+                        return std::ptr::null_mut();
+                    }
                 }
                 // v0.6.39：剪贴板文件按需传输。
                 // 转发期间（grabbing，上面已经判过）按下 **Ctrl+V**，且本机手上有

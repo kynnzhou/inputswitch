@@ -166,6 +166,21 @@ const EDGE_REARM_DIST: f64 = 32.0;
 /// 几笔就到阈值），而扫过门口那一两笔杂音攒不满 —— 既快又不会误切。
 const RETURN_PUSH: f64 = 26.0;
 
+/// 改指向后，旧目标回来的 Takeback 要忽略多久（毫秒）。
+///
+/// 改指向的顺序是「Leave 旧 → Enter 新 → 换 active」，这中间旧目标可能还
+/// 在收到几笔在途位移，它会按"没在被控状态却收到输入"的救援逻辑回一条
+/// Takeback。v0.6.60 之前那种包会被 `active != from` 天然挡掉，只有
+/// "刚改过去又改回来"这种极窄的情形才需要这条时间闸 —— 但那条路一旦踩中
+/// 就是"改个方向键鼠全回来了"，不值得省这 20 行。
+const RETARGET_GUARD_MS: u64 = 1000;
+
+/// 两次改指向之间至少隔多久（毫秒）。
+///
+/// 按住 Ctrl+Alt+→ 会以键盘重复速率连发 keydown，没有这道闸就是每 30ms
+/// 跳一次。也挡住"推边模拟"在同一趟顶门里连续触发。
+const HOP_THROTTLE_MS: u64 = 1500;
+
 /// 抓取侧发来的消息
 #[derive(Clone, Debug)]
 pub enum Captured {
@@ -190,6 +205,14 @@ pub enum Captured {
     /// 转发期间按下了 Ctrl+V，而本机手上有"本次复制的文件清单"。
     /// 这个键已经被 tap 吞掉，交给上层去传文件、传完再补按。
     PasteIntent,
+    /// 转发期间按下了 Ctrl+Alt+方向键：把键鼠改指向那一侧的机器。
+    ///
+    /// 为什么必须在 tap 里识别：抓取期间所有按键都被吞掉再转发，系统级
+    /// 热键注册（global-hotkey）在这个阶段收不到任何东西 —— 和
+    /// Ctrl+Alt+Esc 必须写在钩子里是同一个原因。
+    ///
+    /// `side` = 想去的方向（本机哪一侧的邻居），主循环按它查本机的 Edge 链路。
+    Hop(Side),
 }
 
 #[cfg(target_os = "macos")]
@@ -411,6 +434,195 @@ fn link_mask(links: &[Link]) -> u8 {
         .fold(0u8, |m, s| m | s.bit())
 }
 
+/// 第 `index` 条链路对端活不活。
+///
+/// 抽成自由函数是因为三处都要同一份判据：`Kvm::link_alive`（面板/托盘）、
+/// 抓取线程（撞边改指向）、接收线程（回程改指向）。三份各写一遍的下场是
+/// "面板说在线、撞边说不在线"。
+fn link_alive_at(peer_rx: &RxTable, links: &[Link], index: usize) -> bool {
+    let Some(link) = links.get(index) else {
+        return false;
+    };
+    let (idle, seen) = peer_rx.alive(link.ip);
+    seen && idle <= PEER_ALIVE_MS
+}
+
+/// 撞到 `side` 这条边时，该把键鼠改指向谁。`None` = 不动作。
+///
+/// **查到的就是当前会话目标时返回 `None`** —— 单条 Edge 链路的两人拓扑
+/// 永远走这一条，行为与改动前逐字节一致（那时撞边只会打一句"忽略"）。
+///
+/// 只有 `Sending` 才有"改指向"可言：Idle 是正常越界（另有一套建场流程）、
+/// Receiving 是抢回（目标必须是当前那台，按 side 查表会让两台同时注入）。
+fn pick_retarget(cur: u8, active: Option<usize>, links: &[Link], side: Side) -> Option<usize> {
+    if cur != State::Sending as u8 {
+        return None;
+    }
+    let to = links
+        .iter()
+        .position(|l| l.mode == Mode::Edge && l.side == Some(side))?;
+    if Some(to) == active {
+        None
+    } else {
+        Some(to)
+    }
+}
+
+/// 回程 Enter 该带的方向字节（语义是"发送方从哪一侧出门"）。
+///
+/// 直接取目标链路自己的 `side`：门是**本机**通向那台的门。回到 Follow
+/// 链路（共用一块屏那台）时它没有门，回 `CODE_UNKNOWN` —— 对端会沿用
+/// 自己配置的方向，和 `follow()` 逐字一样。
+fn return_side(links: &[Link], to: usize) -> u8 {
+    links
+        .get(to)
+        .and_then(|l| l.side)
+        .map(|s| s.code())
+        .unwrap_or(Side::CODE_UNKNOWN)
+}
+
+/// 收到 Takeback 该怎么处理。
+///
+/// 三种结局分开表态的意义：以前只有"收回本机"一条路，而键鼠进了多跳
+/// 会话之后，"对面交还"往往意味着**回到起点那台**（画面还在起点那台上，
+/// 收回本机等于键鼠看不见）。
+enum TakebackAction {
+    /// 不认：不是当前目标，或刚改指向时旧目标的残包
+    Ignore,
+    /// 常规：收回本机
+    ToIdle,
+    /// 跳到这条链路（本次会话的起点）
+    ToRoot(usize),
+}
+
+fn takeback_action(
+    state: u8,
+    active: Option<usize>,
+    from: usize,
+    guard: Option<(usize, u64)>,
+    now: u64,
+    root: Option<usize>,
+) -> TakebackAction {
+    // 只认当前会话目标：正给 A 转发时收到 B 的 Takeback（上一场残包）
+    // 就收回键鼠，等于被已结束的会话打断
+    if active != Some(from) {
+        return TakebackAction::Ignore;
+    }
+    if state != State::Sending as u8 {
+        return TakebackAction::Ignore;
+    }
+    if let Some((who, at)) = guard {
+        if who == from && now.saturating_sub(at) < RETARGET_GUARD_MS {
+            return TakebackAction::Ignore;
+        }
+    }
+    match root {
+        // 起点就是这台：常规交还。`root` 只在多跳里有意义，
+        // 单链路两人拓扑恒等于 active，永远走 ToIdle
+        Some(r) if r != from => TakebackAction::ToRoot(r),
+        _ => TakebackAction::ToIdle,
+    }
+}
+
+/// 「把会话改指向另一台」要用到的那一小撮共享状态。
+///
+/// 抓取线程（撞边、热键）、接收线程（回程）、托盘/面板（点名改指向）三处
+/// 都要做同一件事，而它们手里只有各自 clone 出来的 Arc。抽成这个借用
+/// 结构体，是为了让**动作只有一份实现** —— 三份复制的下场是某一份忘了
+/// 补 key-up 或者忘了堵 Takeback，症状还是"改个方向键鼠全没了"。
+struct Linker<'a> {
+    state: &'a AtomicU8,
+    out: &'a Out,
+    links: &'a [Link],
+    active: &'a Active,
+    /// 本次会话的起点（多跳的回程目标）
+    root: &'a Active,
+    capture: Option<&'a Arc<plat::Capture>>,
+    /// 刚改指向的目标与时刻（旧目标残包要忽略）
+    guard: &'a Mutex<Option<(usize, u64)>>,
+    hop_ms: &'a AtomicU64,
+    peer_rx: &'a RxTable,
+    log: &'a (dyn Fn(String) + Send + Sync),
+}
+
+impl Linker<'_> {
+    fn alive(&self, index: usize) -> bool {
+        link_alive_at(self.peer_rx, self.links, index)
+    }
+
+    /// 把正在进行的会话改指向 `to`：**不重启、不重新抓取、不碰画面**。
+    ///
+    /// 顺序不能换（四个动作各自防一个已实测的故障）：
+    /// 1. 登记 guard —— 旧目标手上有在途位移，会回一条 Takeback 解围；
+    /// 2. 旧目标补 key-up —— 不补的话对面一直以为 Ctrl 还按着；
+    /// 3. `Leave` 双发 —— 单发丢一包旧目标就卡在 Receiving；
+    /// 4. `Enter` 双发 —— **早于切 active**：反过来的话，Enter 还没到就把
+    ///    位移灌给一台还在 Idle 的机器，它会按救援逻辑回 Takeback。
+    fn retarget(&self, to: usize, along: u16, why: &str) -> Result<(), String> {
+        if self.state.load(Ordering::Relaxed) != State::Sending as u8 {
+            return Err("只有键鼠已经在本机对面时才谈得上改指向（现在空闲或被控）".to_string());
+        }
+        let Some(from) = self.active.get() else {
+            return Err("当前没有会话目标".to_string());
+        };
+        if from == to {
+            return Err("键鼠已经在那台".to_string());
+        }
+        let Some(link) = self.links.get(to) else {
+            return Err("那条链路不在链路表里".to_string());
+        };
+        if !self.alive(to) {
+            return Err(format!("{} 没有回应，键鼠还在原处", link.node));
+        }
+        // 起点只在第一跳时定：之后无论跳几次，回程都回这里
+        if self.root.get().is_none() {
+            self.root.set(Some(from));
+        }
+        if let Ok(mut g) = self.guard.lock() {
+            *g = Some((from, now_ms()));
+        }
+        for code in plat::MODIFIER_KEYS {
+            self.out
+                .to_link(from, &Event::Key { code, down: false });
+        }
+        for button in 1u8..=3 {
+            self.out.to_link(
+                from,
+                &Event::Button {
+                    button,
+                    down: false,
+                },
+            );
+        }
+        self.out.to_link(from, &Event::Leave);
+        self.out.to_link(from, &Event::Leave);
+        let (sw, sh) = match self.capture {
+            Some(c) => c.screen(),
+            // 没有抓取模块时不可能在 Sending（上面已挡），这里只是兜底
+            None => (0u32, 0u32),
+        };
+        let enter = Event::Enter {
+            width: sw.min(65535) as u16,
+            height: sh.min(65535) as u16,
+            along,
+            flags: 0,
+            side: return_side(self.links, to),
+        };
+        self.out.to_link(to, &enter);
+        self.out.to_link(to, &enter);
+        // **最后**才切 active：上面几笔仍打在旧目标上（它刚收到 Leave，
+        // 多出的几笔会被它当"没在被控却收到输入"丢掉），切完之后的流才
+        // 打向新目标（它已经收到 Enter 了）。
+        self.active.set(Some(to));
+        self.hop_ms.store(now_ms(), Ordering::Relaxed);
+        (self.log)(format!(
+            "键鼠从 {} 转到 {}（本机直发，不经中转；{why}）",
+            self.links[from].node, link.node
+        ));
+        Ok(())
+    }
+}
+
 /// 一场会话（"对端正在把键鼠转发给我"）的全部易脏状态。
 ///
 /// 为什么打包成一件事，而不是散成一堆局部变量：多对端下会换对端，而
@@ -585,6 +797,17 @@ pub struct Kvm {
     links: Arc<Vec<Link>>,
     /// 当前会话目标
     active: Active,
+    /// **本次会话的起点**（多跳的回程目标）。
+    ///
+    /// 只有"共用屏那台 → 并排那台"这种一跳才用得上：对面交还时如果
+    /// 直接收回本机，画面还在起点那台上，用户看不见光标。有了它，
+    /// 交还 = 改指向回起点，画面和键鼠重新一致。
+    root: Active,
+    /// 刚改指向到的链路与时刻。旧目标手上有在途位移，会回 Takeback 解围，
+    /// 这一毫秒级的残包不能当真（否则刚改过去就被打回 Idle）。
+    retarget_guard: Arc<Mutex<Option<(usize, u64)>>>,
+    /// 上次改指向的时刻（热键重复、推边连击的节流基准）
+    hop_ms: Arc<AtomicU64>,
     log: Arc<dyn Fn(String) + Send + Sync>,
 }
 
@@ -635,11 +858,68 @@ impl Kvm {
     }
 
     fn link_alive(&self, index: usize) -> bool {
-        let Some(link) = self.links.get(index) else {
-            return false;
+        link_alive_at(&self.peer_rx, &self.links, index)
+    }
+
+    /// 把这三个 Arc 借成一份可执行"改指向"的视图。
+    fn linker(&self) -> Linker<'_> {
+        Linker {
+            state: &self.state,
+            out: &self.out,
+            links: &self.links,
+            active: &self.active,
+            root: &self.root,
+            capture: self.capture.as_ref(),
+            guard: &self.retarget_guard,
+            hop_ms: &self.hop_ms,
+            peer_rx: &self.peer_rx,
+            log: &*self.log,
+        }
+    }
+
+    /// 本次会话是从哪台开始的（多跳的回程目标）。没有会话 = None。
+    pub fn root_node(&self) -> Option<&str> {
+        self.root.get().and_then(|i| self.links.get(i)).map(|l| l.node.as_str())
+    }
+
+    /// 本次会话的起点是不是就是当前这台（单跳/单链路拓扑恒为 true）。
+    pub fn at_root(&self) -> bool {
+        match (self.root.get(), self.active.get()) {
+            (Some(r), Some(a)) => r == a,
+            _ => true,
+        }
+    }
+
+    /// **会话中把键鼠改指向另一台**（画面不动）。
+    ///
+    /// 与 `hand_over_to` 的分工：那个负责"从空闲开始建一场会话"，这个负责
+    /// "会话已经开着，只换收件人"。多跳的一切触发面（热键、推边、面板
+    /// 按钮）最终都落到这里。
+    pub fn retarget_to(&self, node: &str) -> Result<(), String> {
+        let Some(target) = self.links.iter().position(|l| l.node == node) else {
+            return Err(format!("没有叫 {node} 的链路"));
         };
-        let (idle, seen) = self.peer_rx.alive(link.ip);
-        seen && idle <= PEER_ALIVE_MS
+        self.linker().retarget(target, 0xFFFF, "手动改指向")
+    }
+
+    /// 把键鼠转给「下一条有门的链路」：热键和托盘菜单用。
+    ///
+    /// 多台并排时"下一条"没有唯一答案，这里按链路表顺序取第一条既不是
+    /// 当前目标、又活着的 Edge 链路 —— 两台并排（最常见的拓扑）下它
+    /// 就是另外那台。
+    pub fn retarget_next_edge(&self) -> Result<(), String> {
+        let cur = self.active.get();
+        let next = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(i, l)| l.mode == Mode::Edge && Some(*i) != cur)
+            .find(|(i, _)| self.link_alive(*i))
+            .map(|(i, _)| i);
+        match next {
+            Some(i) => self.linker().retarget(i, 0xFFFF, "托盘/热键改指向"),
+            None => Err("没有别的有门链路可转（先把它摆到摆位图的某个方向）".to_string()),
+        }
     }
 
     /// 距离上次收到**当前会话对端**消息多久了（毫秒）。没有会话 = u64::MAX。
@@ -747,6 +1027,8 @@ impl Kvm {
         // I2：先把会话目标写上，再改状态 —— 反过来会有一个窗口，
         // 状态已经是 Sending 而 active 还是空，转发流找不到收件人被丢掉。
         self.active.set(Some(target));
+        // 起点就是这里：之后从共用屏那台再转去并排那台时，回程要回这儿
+        self.root.set(Some(target));
         capture.set_grabbing(true);
         self.state.store(State::Sending as u8, Ordering::SeqCst);
         // 跟随画面模式下没有"门"的概念，出门位置未知（0xFFFF），
@@ -770,48 +1052,60 @@ impl Kvm {
         Ok(true)
     }
 
-    /// **手动把键鼠交给指定的那台。**
+    /// **把键鼠交给指定的那台。**
     ///
     /// 和 `follow()` 的差别只在"目标是哪台"：`follow` 是切屏成功之后跟画面走
     /// （靠 `follow_target()` 猜一条 Follow 链路），这个是人手指名道姓。
     /// 一机多台时不能再猜 —— 猜错的表现是"点了 A 结果键鼠跑到 B 去了"。
+    ///
+    /// v0.6.60 起两条路合成一条：**空闲时**建一场新会话；**已经在转发时**
+    /// 换成改指向（以前这里一律拒绝，于是"面板上看得到却点不动"，用户只能
+    /// 先收回再交出去 —— 而收回时画面还在对面，看不见面板）。
     pub fn hand_over_to(&self, node: &str) -> Result<(), String> {
-        if self.state() != State::Idle {
-            return Err("现在有会话在进行，先收回键鼠再交给别的机器".to_string());
-        }
         let Some(target) = self.links.iter().position(|l| l.node == node) else {
             return Err(format!("没有叫 {node} 的链路"));
         };
-        if !self.link_alive(target) {
-            return Err(format!(
-                "{node} 没有回应（对面没开程序、不在同一网段，或防火墙拦了）。\
-                 键鼠没有交出去，你还能操作本机"
-            ));
+        match self.state() {
+            // 被控时"交给别人"等于把别人的控制权转走，本机没这个权力：
+            // 得先请对端交还（Ctrl+Alt+Esc），再交出去
+            State::Receiving => {
+                Err("键鼠现在在对面手里，先按 Ctrl+Alt+Esc 收回来再交给别的机器".to_string())
+            }
+            State::Sending => self.linker().retarget(target, 0xFFFF, "手动改指向"),
+            State::Idle => {
+                if !self.link_alive(target) {
+                    return Err(format!(
+                        "{node} 没有回应（对面没开程序、不在同一网段，或防火墙拦了）。\
+                         键鼠没有交出去，你还能操作本机"
+                    ));
+                }
+                let Some(capture) = self.capture.as_ref() else {
+                    return Err("抓取模块没有启动".to_string());
+                };
+                // I2：先写会话目标再改状态，否则转发流有一瞬间找不到收件人
+                self.active.set(Some(target));
+                self.root.set(Some(target));
+                capture.set_grabbing(true);
+                self.state.store(State::Sending as u8, Ordering::SeqCst);
+                let (sw, sh) = capture.screen();
+                let link = &self.links[target];
+                // 有门的链路把门的方向告诉对端（拓扑决定了它一定在相反那侧）；
+                // Follow 链路没有门，交给对端沿用自己配置的方向。
+                let side = link.side.map(|s| s.code()).unwrap_or(Side::CODE_UNKNOWN);
+                self.out.to_link(
+                    target,
+                    &Event::Enter {
+                        width: sw.min(65535) as u16,
+                        height: sh.min(65535) as u16,
+                        along: 0xFFFF,
+                        flags: 0,
+                        side,
+                    },
+                );
+                (self.log)(format!("键鼠已交给 {}", link.node));
+                Ok(())
+            }
         }
-        let Some(capture) = self.capture.as_ref() else {
-            return Err("抓取模块没有启动".to_string());
-        };
-        // I2：先写会话目标再改状态，否则转发流有一瞬间找不到收件人
-        self.active.set(Some(target));
-        capture.set_grabbing(true);
-        self.state.store(State::Sending as u8, Ordering::SeqCst);
-        let (sw, sh) = capture.screen();
-        let link = &self.links[target];
-        // 有门的链路把门的方向告诉对端（拓扑决定了它一定在相反那侧）；
-        // Follow 链路没有门，交给对端沿用自己配置的方向。
-        let side = link.side.map(|s| s.code()).unwrap_or(Side::CODE_UNKNOWN);
-        self.out.to_link(
-            target,
-            &Event::Enter {
-                width: sw.min(65535) as u16,
-                height: sh.min(65535) as u16,
-                along: 0xFFFF,
-                flags: 0,
-                side,
-            },
-        );
-        (self.log)(format!("键鼠已交给 {}", link.node));
-        Ok(())
     }
 
     /// 第 `index` 条链路对端活不活。面板每行都要显示，所以公开出去。
@@ -870,6 +1164,8 @@ impl Kvm {
         self.out.to_link(target, &Event::Takeback);
         self.out.to_link(target, &Event::Takeback);
         self.active.set(None);
+        // 会话结束了，起点也一并忘了：下一场重新定
+        self.root.set(None);
         (self.log)(format!("{why}，已请对端交还键鼠"));
         true
     }
@@ -918,6 +1214,7 @@ impl Kvm {
         }
         // I2：拆场先改 state 再 clear active（上面 CAS 已改过 state）
         self.active.set(None);
+        self.root.set(None);
 
         match reason {
             Some(why) => (self.log)(format!("键鼠已收回：{why}")),
@@ -950,6 +1247,11 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     }
     let links = Arc::new(opts.links);
     let active = Active::new();
+    // 会话起点：多跳的回程目标（见 Kvm::root）
+    let root = Active::new();
+    // 改指向的残包闸与节流
+    let retarget_guard: Arc<Mutex<Option<(usize, u64)>>> = Arc::new(Mutex::new(None));
+    let hop_ms = Arc::new(AtomicU64::new(0));
     // 四向掩码：只有 Edge 链路占边。Follow 链路靠画面切换触发，
     // 不产生"撞边缘"事件 —— 混进掩码的话，用户朝那侧推一下就会
     // 在画面没切走的情况下被吞掉键鼠。
@@ -1060,6 +1362,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let on_paste = opts.on_paste.clone();
         let links_cap = links.clone();
         let active_cap = active.clone();
+        let root_cap = root.clone();
+        let guard_cap = retarget_guard.clone();
+        let hop_cap = hop_ms.clone();
         let recv_cap = last_recv_ms.clone();
         thread::spawn(move || {
             let mut pressed: Vec<Event> = Vec::new();
@@ -1102,9 +1407,30 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                 out.to_link(t, &Event::Takeback);
                 out.to_link(t, &Event::Takeback);
                 active_cap.set(None);
+                root_cap.set(None);
                 reclaim_cap.store(now_ms(), Ordering::SeqCst);
                 (log)(format!("{why}，已请对端交还键鼠"));
             };
+
+            // 改指向：撞边（Begin@Sending）与热键（Hop）共用同一份实现。
+            // 三处入口各自复制一遍的下场是其中一处忘了补 key-up / 忘了堵
+            // Takeback 残包，而症状永远是那句"改个方向键鼠全没了"。
+            macro_rules! linker {
+                () => {
+                    Linker {
+                        state: &state,
+                        out: &out,
+                        links: &links_cap[..],
+                        active: &active_cap,
+                        root: &root_cap,
+                        capture: Some(&capture_ref),
+                        guard: &guard_cap,
+                        hop_ms: &hop_cap,
+                        peer_rx: &rx_cap,
+                        log: &*log,
+                    }
+                };
+            }
             while !stop.load(Ordering::Relaxed) {
                 // 状态翻转检查放在收包之前，超时唤醒的空转也能看到翻转
                 let sending = state.load(Ordering::Relaxed) == State::Sending as u8;
@@ -1141,8 +1467,10 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         //               这是唯一不靠热键的夺回方式）。**目标必须是
                         //               当前那台**：按 side 查表会变成"一边被 A
                         //               控制、一边往 C 转发"，两台同时注入
-                        //   Sending   → 已经有一条会话在往外送，忽略（否则 A 还在
-                        //               收我们的键鼠，B 同时开始注入）
+                        //   Sending   → 已经有一条会话在往外送：**改指向**（见
+                        //               pick_retarget）。这条边查不到别的机器时
+                        //               保持老行为（忽略 + 限流日志）——
+                        //               两人单链路拓扑永远走这条，行为不变
                         //
                         // 刚收回的短暂冷却：收回时光标就放在门边 16pt，用户
                         // 的手多半还压着门口，不冷却的话 0.1 秒内就再次越界，
@@ -1151,20 +1479,40 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             continue;
                         }
                         let cur = state.load(Ordering::Relaxed);
-                        let target = if cur == State::Sending as u8 {
-                            if now_ms().saturating_sub(last_begin_warn_ms) > 3000 {
-                                last_begin_warn_ms = now_ms();
-                                let node = active_cap
-                                    .get()
-                                    .and_then(|i| links_cap.get(i))
-                                    .map(|l| l.node.as_str())
-                                    .unwrap_or("对端");
-                                (log)(format!(
-                                    "键鼠正交给 {node}，这次越界忽略（先交还再推别的边）"
-                                ));
+                        if cur == State::Sending as u8 {
+                            match pick_retarget(cur, active_cap.get(), &links_cap[..], side) {
+                                Some(t) => {
+                                    if let Err(err) = linker!().retarget(t, along, "推边改指向") {
+                                        if now_ms().saturating_sub(last_begin_warn_ms) > 3000 {
+                                            last_begin_warn_ms = now_ms();
+                                            (log)(err);
+                                        }
+                                    }
+                                }
+                                None => {
+                                    if now_ms().saturating_sub(last_begin_warn_ms) > 3000 {
+                                        last_begin_warn_ms = now_ms();
+                                        let node = active_cap
+                                            .get()
+                                            .and_then(|i| links_cap.get(i))
+                                            .map(|l| l.node.as_str())
+                                            .unwrap_or("对端");
+                                        (log)(format!(
+                                            "键鼠正交给 {node}，{}这条边没有可转的机器\
+                                             （要交还按 Ctrl+Alt+Esc）",
+                                            match side {
+                                                Side::Left => "左",
+                                                Side::Right => "右",
+                                                Side::Top => "上",
+                                                Side::Bottom => "下",
+                                            }
+                                        ));
+                                    }
+                                }
                             }
                             continue;
-                        } else if cur == State::Receiving as u8 {
+                        }
+                        let target = if cur == State::Receiving as u8 {
                             match active_cap.get() {
                                 Some(i) => Some(i),
                                 None => continue,
@@ -1208,6 +1556,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         }
                         // I2：先写会话目标，再改状态
                         active_cap.set(Some(t));
+                        // 正常越界建的会话：起点就是它（多跳的回程目标）
+                        root_cap.set(Some(t));
                         capture_ref.set_grabbing(true);
                         state.store(State::Sending as u8, Ordering::SeqCst);
                         // 把出门位置和本屏尺寸带给对端：它从对应高度进门，
@@ -1358,11 +1708,52 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                 out.to_link(t, &Event::Leave);
                             }
                             active_cap.set(None);
+                            root_cap.set(None);
                             (log)("键鼠已收回（Ctrl+Alt+Esc）".to_string());
                             // 屏幕还在对端的话，一起切回来
                             if let Some(cb) = on_panic.as_ref() {
                                 cb();
                             }
+                        }
+                    }
+                    Captured::Hop(side) => {
+                        // 会话中按 Ctrl+Alt+方向：把键鼠改指向那一侧的机器。
+                        //
+                        // 三态表态：Idle 时不抢系统的「Ctrl+方向」（那是
+                        // 切换桌面/翻页的常用键）；Receiving 时键鼠是别人的，
+                        // 本机没权力把它转走；只有 Sending 才认。
+                        let cur = state.load(Ordering::Relaxed);
+                        if cur != State::Sending as u8 {
+                            (log)(if cur == State::Receiving as u8 {
+                                "键鼠在对面手里，这个热键不生效（按 Ctrl+Alt+Esc 先收回）"
+                                    .to_string()
+                            } else {
+                                "Ctrl+Alt+方向 只在「键鼠已交给对端」时才生效".to_string()
+                            });
+                            continue;
+                        }
+                        // 按住不放会以键盘重复速率连发 keydown：没有这道闸
+                        // 就是每 30 毫秒跳一次，最后一台完全不可预料
+                        if now_ms().saturating_sub(hop_cap.load(Ordering::Relaxed))
+                            < HOP_THROTTLE_MS
+                        {
+                            continue;
+                        }
+                        match pick_retarget(cur, active_cap.get(), &links_cap[..], side) {
+                            Some(t) => {
+                                if let Err(err) = linker!().retarget(t, 0xFFFF, "热键改指向") {
+                                    (log)(err);
+                                }
+                            }
+                            None => (log)(format!(
+                                "{}边没有可以转过去的机器（摆位图里给它拖个方向先）",
+                                match side {
+                                    Side::Left => "左",
+                                    Side::Right => "右",
+                                    Side::Top => "上",
+                                    Side::Bottom => "下",
+                                }
+                            )),
                         }
                     }
                 }
@@ -1383,6 +1774,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let recv_rx = last_recv_ms.clone();
         let links_rx = links.clone();
         let active_rx = active.clone();
+        let root_rx = root.clone();
+        let guard_rx = retarget_guard.clone();
+        let hop_rx = hop_ms.clone();
 
         let reclaim_rx = last_reclaim_ms.clone();
         thread::spawn(move || {
@@ -1670,15 +2064,54 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     }
                     Event::Takeback => {
                         // 接收方主动交还（它的用户把光标推回门口，或它发现
-                        // 状态错乱）。必须真的收回：否则我们一直抓着键鼠往
-                        // 没人接收的方向转发，两台机器的键鼠全卡死 ——
+                        // 状态错乱）。必须真的把键鼠收回来：否则我们一直抓着
+                        // 键鼠往没人接收的方向转发，两台机器的键鼠全卡死 ——
                         // 这就是"键鼠突然都不能动了"的根源（v0.6.5 踩过）。
+                        //
+                        // v0.6.60 起多了一种结局：**回程**。会话是从"共用屏
+                        // 那台"跳过来的话，对面交还时不能收回本机 —— P275MV
+                        // 上显示的还是起点那台的画面，键鼠回到 Mac 等于用户
+                        // 看不见光标。这时改成"把会话改指向回起点"。
                         //
                         // **只认当前会话目标**：正在给 A 转发时收到 B 的
                         // Takeback（B 是上一场留下的残包）就收回键鼠，等于
                         // 被已结束的会话打断。
-                        if active_rx.get() != Some(from_link) {
-                            continue;
+                        let now = now_ms();
+                        let guard = guard_rx.lock().ok().and_then(|g| *g);
+                        match takeback_action(
+                            state.load(Ordering::Relaxed),
+                            active_rx.get(),
+                            from_link,
+                            guard,
+                            now,
+                            root_rx.get(),
+                        ) {
+                            TakebackAction::Ignore => continue,
+                            TakebackAction::ToRoot(to) => {
+                                // 改指向回起点。失败（起点那台不在线、链路
+                                // 表变了）就老实收回本机 —— 那种情况下用户
+                                // 至少能用 Mac 自己的键盘把人叫回来。
+                                let back = Linker {
+                                    state: &state,
+                                    out: &out,
+                                    links: &links_rx[..],
+                                    active: &active_rx,
+                                    root: &root_rx,
+                                    capture: capture_rx.as_ref(),
+                                    guard: &guard_rx,
+                                    hop_ms: &hop_rx,
+                                    peer_rx: &peer_rx_rx,
+                                    log: &*log,
+                                }
+                                .retarget(to, 0xFFFF, "对面交还，回到起点");
+                                match back {
+                                    Ok(()) => continue,
+                                    Err(err) => {
+                                        (log)(format!("{err}；改回本机"));
+                                    }
+                                }
+                            }
+                            TakebackAction::ToIdle => {}
                         }
                         if state.load(Ordering::Relaxed) == State::Sending as u8 {
                             // 先改状态再放抓取：心跳守卫每秒查一次不变式，
@@ -1691,6 +2124,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             }
                             // I2：拆场先改 state 再 clear active
                             active_rx.set(None);
+                            root_rx.set(None);
                             reclaim_rx.store(now_ms(), Ordering::SeqCst);
                             (log)(format!(
                                 "{} 把控制权还回来了，键鼠已收回本机",
@@ -1997,6 +2431,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let reclaim_gd = last_reclaim_ms.clone();
         let links_gd = links.clone();
         let active_gd = active.clone();
+        let root_gd = root.clone();
         // 链路表那张掩码一起带走：被控期间平台层会把它收窄成"抢回那条边"，
         // 会话结束后得铺回来（见下面的掩码恢复）
         let mask_gd = sides_mask;
@@ -2192,6 +2627,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         }
                         state.store(State::Idle as u8, Ordering::SeqCst);
                         active_gd.set(None);
+                        root_gd.set(None);
                         reclaim_gd.store(now_ms(), Ordering::SeqCst);
                         (log)(format!(
                             "键鼠交给 {node} 后状态对不上（交还消息丢了？），已自动收回"
@@ -2199,6 +2635,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     } else {
                         state.store(State::Idle as u8, Ordering::SeqCst);
                         active_gd.set(None);
+                        root_gd.set(None);
                         reclaim_gd.store(now_ms(), Ordering::SeqCst);
                         (log)(format!("{node} 已不在发送状态，本机退出被控"));
                     }
@@ -2256,6 +2693,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                     }
                     state.store(State::Idle as u8, Ordering::SeqCst);
                     active_gd.set(None);
+                    root_gd.set(None);
                     reclaim_gd.store(now_ms(), Ordering::SeqCst);
                     (log)(format!(
                         "{} 2.5 秒没有回应（{}），已自动回到空闲",
@@ -2321,6 +2759,9 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         peer_rx,
         links,
         active,
+        root,
+        retarget_guard,
+        hop_ms,
         log: opts.log,
     })
 }
@@ -2482,5 +2923,109 @@ mod tests {
         }
         a.set(None);
         assert_eq!(a.get(), None);
+    }
+
+    /// 三条链路的真实拓扑：0 = 共用屏（follow）、1 = 右侧并排（edge）。
+    fn three_way() -> Vec<Link> {
+        vec![
+            link("10.0.0.1", None, Mode::Follow),
+            link("10.0.0.2", Some(Side::Right), Mode::Edge),
+            link("10.0.0.3", Some(Side::Left), Mode::Edge),
+        ]
+    }
+
+    /// 撞到的那条边通向的就是当前那台：不改指向（两人单链路的回归判据）。
+    #[test]
+    fn pick_retarget_skips_self() {
+        let l = vec![
+            link("10.0.0.1", Some(Side::Right), Mode::Edge),
+            link("10.0.0.2", Some(Side::Left), Mode::Edge),
+        ];
+        let sending = State::Sending as u8;
+        assert_eq!(pick_retarget(sending, Some(0), &l, Side::Right), None);
+        assert_eq!(pick_retarget(sending, Some(1), &l, Side::Left), None);
+        assert_eq!(pick_retarget(sending, Some(0), &l, Side::Left), Some(1));
+    }
+
+    /// 共用屏那台（follow）上撞右边缘 → 转去右侧那台。
+    #[test]
+    fn pick_retarget_from_follow_link() {
+        let l = three_way();
+        assert_eq!(
+            pick_retarget(State::Sending as u8, Some(0), &l, Side::Right),
+            Some(1)
+        );
+        // 那条边没有机器：不动作
+        assert_eq!(
+            pick_retarget(State::Sending as u8, Some(0), &l, Side::Bottom),
+            None
+        );
+    }
+
+    /// 只有"键鼠正在外面"才有改指向可言：空闲是正常越界、被控是抢回。
+    #[test]
+    fn pick_retarget_only_when_sending() {
+        let l = three_way();
+        for cur in [State::Idle as u8, State::Receiving as u8] {
+            assert_eq!(pick_retarget(cur, Some(0), &l, Side::Right), None);
+        }
+    }
+
+    /// 回程的门：回到 Edge 链路按它自己的 side；回到共用屏那台没有门。
+    #[test]
+    fn return_side_follows_link() {
+        let l = three_way();
+        assert_eq!(return_side(&l, 1), Side::Right.code());
+        assert_eq!(return_side(&l, 0), Side::CODE_UNKNOWN);
+        // 越界的下标不能崩
+        assert_eq!(return_side(&l, 9), Side::CODE_UNKNOWN);
+    }
+
+    /// 对面交还：起点不是它 → 改指向回起点；起点就是它 → 常规收回。
+    #[test]
+    fn takeback_returns_to_root() {
+        let sending = State::Sending as u8;
+        let now = 10_000;
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, None, now, Some(0)),
+            TakebackAction::ToRoot(0)
+        ));
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, None, now, Some(1)),
+            TakebackAction::ToIdle
+        ));
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, None, now, None),
+            TakebackAction::ToIdle
+        ));
+        // 不是当前目标：一律不认
+        assert!(matches!(
+            takeback_action(sending, Some(0), 1, None, now, Some(0)),
+            TakebackAction::Ignore
+        ));
+    }
+
+    /// 刚改指向那一秒内，旧目标回来的 Takeback 是残包，不当真。
+    #[test]
+    fn takeback_guard_is_short_lived() {
+        let sending = State::Sending as u8;
+        let now = 10_000;
+        let guard = Some((1usize, now - 200));
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, guard, now, Some(0)),
+            TakebackAction::Ignore
+        ));
+        // 过了窗口就恢复正常
+        let old = Some((1usize, now - RETARGET_GUARD_MS - 1));
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, old, now, Some(0)),
+            TakebackAction::ToRoot(0)
+        ));
+        // 闸只对着登记的那台：别的机器不受影响
+        let other = Some((0usize, now));
+        assert!(matches!(
+            takeback_action(sending, Some(1), 1, other, now, Some(0)),
+            TakebackAction::ToRoot(0)
+        ));
     }
 }

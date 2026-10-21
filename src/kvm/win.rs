@@ -901,6 +901,14 @@ extern "system" fn key_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize 
                 let _ = shared.tx.send(Captured::End);
                 return;
             }
+            // Ctrl+Alt+方向：把键鼠改指向那一侧的机器（v0.6.60）。
+            // 抓取期间一律 swallow（上面已置 true），所以不用管抬起。
+            if down && ctrl_alt_down() {
+                if let Some(side) = hop_side(mac) {
+                    let _ = shared.tx.send(Captured::Hop(side));
+                    return;
+                }
+            }
             let _ = shared.tx.send(Captured::Input(Event::Key { code: mac, down }));
         }
     });
@@ -912,9 +920,22 @@ extern "system" fn key_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize 
     }
 }
 
+/// 方向键（Mac keycode）→ 那一侧。Ctrl+Alt+方向 = 把键鼠改指向那一侧的机器。
+///
+/// 用 Mac keycode 而不是 VK：`vk_to_mac` 之后两边是同一套编码，判据只写
+/// 一份（Mac 那边 `mac.rs::hop_side` 是同一张表）。
+fn hop_side(code: u16) -> Option<Side> {
+    match code {
+        0x7B => Some(Side::Left),
+        0x7C => Some(Side::Right),
+        0x7E => Some(Side::Top),
+        0x7D => Some(Side::Bottom),
+        _ => None,
+    }
+}
+
 /// 当前 Ctrl 和 Alt 是不是都按着。查键盘状态比追事件可靠。
-fn ctrl_alt_down() -> bool {
-    const VK_CONTROL: i32 = 0x11;
+fn ctrl_alt_down() -> bool {    const VK_CONTROL: i32 = 0x11;
     const VK_MENU: i32 = 0x12;
     unsafe {
         #[link(name = "user32")]
