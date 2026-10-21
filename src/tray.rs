@@ -266,6 +266,8 @@ fn kvm_boot(
         on_paste: Some(on_paste),
         // 推边自动改指向（v0.6.60）：误判时可从配置里关掉，只剩热键
         push_hop: config.kvm.push_hop,
+        // 接收位移倍率（v0.6.64）：两系统指针加速曲线不同，手感靠它微调
+        recv_scale: config.kvm.recv_scale,
     })?);
 
     let text = match (mode, role) {
@@ -1428,6 +1430,10 @@ fn update_snapshot(
                             && handle.alive_at(i),
                     })
                     .collect(),
+                // 手感旋钮的真实值：从配置读，不从实例读 —— 实例里的
+                // 是启动快照，用户改完还没重启时两者会不一样，界面该显示
+                // "即将生效"的那个值。
+                recv_scale: config.kvm.recv_scale,
             }
         }
         None => panel::KvmView {
@@ -1463,6 +1469,7 @@ fn update_snapshot(
                     can_retarget: false,
                 })
                 .collect(),
+            recv_scale: config.kvm.recv_scale,
         },
     };
     snap.port_note = PORT_NOTE
@@ -2671,7 +2678,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.63",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.64",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -3027,6 +3034,33 @@ pub fn run() -> ! {
                         status = "角色没变".to_string();
                     }
                     log_line(&status);
+                }
+                Action::KvmScale(v) => {
+                    // 手感旋钮：只影响**被控时**注入的位移，发送侧不动。
+                    // 倍率在 KVM 启动时被快照进接收循环，所以改完要重建实例
+                    // —— restart_kvm 会先把键鼠交还回去再停，不会留两头
+                    // 都以为自己在转发的僵尸会话。
+                    let v = v.clamp(0.5, 2.0);
+                    let changed = (config.kvm.recv_scale - v).abs() > 0.001;
+                    config.kvm.recv_scale = v;
+                    let _ = config.save();
+                    if changed && config.kvm.enabled {
+                        restart_kvm(
+                            &mut config,
+                            &mut kvm_handle,
+                            &mesh,
+                            &tx,
+                            &mut status,
+                            format!("接收位移倍率已改为 x{v:.2}"),
+                        );
+                    } else {
+                        status = if changed {
+                            format!("接收位移倍率 x{v:.2}（下次开启共用键鼠生效）")
+                        } else {
+                            format!("接收位移倍率本来就是 x{v:.2}")
+                        };
+                        log_line(&status);
+                    }
                 }
                 Action::KvmHandOver(node) => {
                     // 不带 node 就是面板上那个全局按钮。多机时它靠 follow_target() 猜，

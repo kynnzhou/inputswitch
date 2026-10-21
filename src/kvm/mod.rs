@@ -337,6 +337,12 @@ pub struct Options {
     /// 转出去的位移在本地复刻光标。误判（拖窗口到边、拉滚动条）时关掉它，
     /// 只剩 Ctrl+Alt+方向 热键。
     pub push_hop: bool,
+    /// 接收位移倍率（默认 1.0）：对端发来的位移在注入前额外乘一次。
+    ///
+    /// 分辨率比例那一步是"几何正确"，这一位是"手感微调" —— 两个系统的
+    /// 指针加速曲线不同，同一串位移流在两边速度不可能一样。见
+    /// `config::Kvm::recv_scale` 的注释。
+    pub recv_scale: f64,
 }
 
 /// 当前会话目标是哪条链路。
@@ -2023,6 +2029,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let root_rx = root.clone();
         let guard_rx = retarget_guard.clone();
         let hop_rx = hop_ms.clone();
+        // 手感倍率：接收线程自己算一份（发送线程那份在另一个块里）
+        let recv_scale = opts.recv_scale.clamp(0.5, 2.0);
 
         let reclaim_rx = last_reclaim_ms.clone();
         thread::spawn(move || {
@@ -2203,6 +2211,18 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         sess.last_seq = seq;
                         if width > 0 && height > 0 {
                             sess.sender_size = (width as f64, height as f64);
+                            // 把对端报的屏幕尺寸和算出来的位移倍率写进日志：
+                            // 「回到本机鼠标变慢/变快」只能靠这两个数定位 ——
+                            // 是分辨率比例算错了，还是两系统加速曲线不同。
+                            let (lw, lh) = inject.screen();
+                            (log)(format!(
+                                "对端屏幕 {}x{}，本机 {}x{} ⇒ 位移倍率 x{:.3}（接收侧微调 x{recv_scale:.2}）",
+                                width,
+                                height,
+                                lw as u32,
+                                lh as u32,
+                                (lw / width as f64) * recv_scale
+                            ));
                         }
                         // 对端带了自己的出门侧：本机门口 = 它的对面。
                         // 这一条同时兜住「两台配置里门口方向各配一半」的情况
@@ -2502,8 +2522,8 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             {
                                 let (lw, lh) = inject.screen();
                                 Event::Motion {
-                                    dx: rescale_delta(*dx, lw / sess.sender_size.0),
-                                    dy: rescale_delta(*dy, lh / sess.sender_size.1),
+                                    dx: rescale_delta(*dx, (lw / sess.sender_size.0) * recv_scale),
+                                    dy: rescale_delta(*dy, (lh / sess.sender_size.1) * recv_scale),
                                 }
                             }
                             _ => ev.clone(),

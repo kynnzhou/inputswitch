@@ -178,6 +178,20 @@ pub struct Kvm {
     #[serde(default = "default_true")]
     pub push_hop: bool,
 
+    /// 接收位移倍率：把对端发来的位移乘上它再注入（默认 1.0）。
+    ///
+    /// 为什么需要这个旋钮：两端位移是按**屏幕分辨率比例**换算的（对端
+    /// 2560px、本机 1920pt 时乘 0.75），这一步保证"跨过屏幕边界后继续
+    /// 移动，走过的屏幕比例不变"。但两只操作系统的指针加速曲线不一样
+    /// （macOS 的加速度、Windows 的「提高指针精确度」各算各的），同样的
+    /// 位移流在两边手感必然有差 —— 实测「0DFF1JU 回到 Mac 之后鼠标比
+    /// Windows 那边慢一点」。加速度曲线是用户级设置，程序没法猜，所以
+    /// 留一个人工微调位：觉得慢就调大，觉得飘就调小。
+    ///
+    /// 只在**接收侧**生效（被控那台），发送侧不受影响。
+    #[serde(default = "default_recv_scale")]
+    pub recv_scale: f64,
+
     // ---- 降级镜像 ----
     //
     // v3 起运行时不再读这三个字段（`peer_node` 除了"上次选的那台"这一
@@ -338,6 +352,11 @@ fn default_kvm_role() -> String {
     "console".to_string()
 }
 
+/// 接收位移倍率默认 1.0（不放大不缩小）。
+fn default_recv_scale() -> f64 {
+    1.0
+}
+
 impl Default for Kvm {
     fn default() -> Self {
         Self {
@@ -348,6 +367,7 @@ impl Default for Kvm {
             grid_y: 0,
             links: Vec::new(),
             push_hop: true,
+            recv_scale: 1.0,
             side: default_side(),
             peer_node: String::new(),
         }

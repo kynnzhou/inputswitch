@@ -280,6 +280,18 @@
       <button class="ghost" onclick="post('/api/kvm-takeback')">收回键鼠</button>
     </div>
     <div class="hint" id="kvmHandHint"></div>
+
+    <!-- 手感微调：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
+         两个系统的指针加速曲线不一样，同一串位移在两边速度必然有差 ——
+         觉得回到本机变慢就调大。 -->
+    <div class="hint" style="margin-top:10px">接收手感（键鼠在对端、你在用本机时生效）</div>
+    <div class="split" id="kvmScaleRow">
+      <button id="kvmScale09" class="ghost scalebtn" onclick="setKvmScale(0.9)">0.9 慢</button>
+      <button id="kvmScale10" class="ghost scalebtn" onclick="setKvmScale(1)">1.0 标准</button>
+      <button id="kvmScale11" class="ghost scalebtn" onclick="setKvmScale(1.1)">1.1</button>
+      <button id="kvmScale12" class="ghost scalebtn" onclick="setKvmScale(1.2)">1.2 快</button>
+    </div>
+    <div class="hint" id="kvmScaleHint"></div>
   </div>
 
   <div class="card">
@@ -567,8 +579,27 @@ function renderKvm() {
       : '本机只负责接收并注入，不抓取键鼠。';
   }
 
-  const state = k.state || '未启动';
-  el('kvmState').textContent = k.on
+  // 接收手感档位：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
+  // 两个系统的指针加速曲线不同，同一串位移在两边速度必然有差 ——
+  // 「回到本机变慢」就往上调一档。
+  const scale = Number(k.recv_scale || 1);
+  const scaleBtns = [
+    ['kvmScale09', 0.9],
+    ['kvmScale10', 1],
+    ['kvmScale11', 1.1],
+    ['kvmScale12', 1.2],
+  ];
+  scaleBtns.forEach(([id, v]) => {
+    const node = el(id);
+    if (!node) return;
+    node.className = Math.abs(v - scale) < 0.001 ? 'green scalebtn' : 'ghost scalebtn';
+  });
+  if (el('kvmScaleHint')) {
+    el('kvmScaleHint').textContent = '当前 x' + scale.toFixed(1)
+      + '。只影响"键鼠在对端、你在操作本机"时的速度；改了会重建共用键鼠（会话会断一下）。';
+  }
+
+  const state = k.state || '未启动';  el('kvmState').textContent = k.on
     ? (k.peer_alive ? state : state + '（对端没回应）')
     : '未启动';
   el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
@@ -950,6 +981,10 @@ function toggleKvm() {
 }
 // 模式已下沉到每台对端（由摆位决定），面板上不再有全局模式开关。
 function setKvmRole(role) { api('/api/kvm-role?role=' + role).then(pull); }
+
+// 接收位移倍率。后端会重建共用键鼠实例（先把键鼠交还再停），所以点完
+// 会话会断一下 —— 面板轮询会把新状态刷回来。
+function setKvmScale(v) { api('/api/kvm-scale?value=' + v).then(pull); }
 
 function toggleAutostart() { api('/api/autostart', { on: !snap.autostart }).then(pull); }
 function toggleClipboard() { api('/api/clipboard', { on: !snap.clipboard }).then(pull); }

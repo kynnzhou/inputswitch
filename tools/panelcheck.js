@@ -90,7 +90,7 @@ const snap = {
   node: 'Mac 本机',
   kvm: {
     on: true, state: '空闲', peer_alive: true, active: '',
-    follow_link: true, will_follow: true,
+    follow_link: true, will_follow: true, recv_scale: 1.1,
     links: [
       { node: 'CHINAMI-0DFF1JU', side: 'right', mode: 'edge', alive: true, active: false, addr: '192.168.0.41' },
       { node: 'CHINAMI-MC5K9SJ', side: '', mode: 'follow', alive: false, active: false, addr: '192.168.0.40' },
@@ -171,6 +171,10 @@ ok(/CHINAMI-MC5K9SJ[\s\S]*?转给它/.test(links2), '会话中点起点的按钮
 ok(/CHINAMI-ZZZZ[\s\S]*?交给它/.test(links2), '不能改指向的那台仍显示「交给它」');
 // 8. 摆位图上起点那台带「起点」标
 ok(/CHINAMI-MC5K9SJ[\s\S]*?起点/.test(loose2 + grid2), '起点那台标了「起点」');
+// 9. 接收手感档位：高亮当前那一档（fixture 里是 1.1），其余是 ghost
+ok(/green/.test(made['kvmScale11'].className), '倍率 1.1 那一档高亮');
+ok(/ghost/.test(made['kvmScale10'].className), '1.0 那一档没有高亮');
+ok(/x1\.1/.test(made['kvmScaleHint'].textContent), '提示里写清当前是 x1.1');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

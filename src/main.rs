@@ -1322,6 +1322,7 @@ fn cmd_kvm(peer: &str, mode: &str, role: &str, side: &str, seconds: u64) -> i32 
             log,
             on_paste: None,
             push_hop: config.kvm.push_hop,
+            recv_scale: config.kvm.recv_scale,
         };
         let kvm = match inputswitch::kvm::start(opts) {
             Ok(kvm) => kvm,

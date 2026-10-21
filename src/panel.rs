@@ -111,6 +111,16 @@ pub struct KvmView {
     /// （起点就是当前那台）。面板在摆位图上给这台标「起点」。
     #[serde(default)]
     pub root: String,
+    /// 接收位移倍率（1.0 = 只按分辨率比例换算）。
+    ///
+    /// 面板上给一排档位：两个系统的指针加速曲线不一样，同一串位移流
+    /// 在两边速度不可能一样 —— 这是给用户的手感旋钮，不是几何参数。
+    #[serde(default = "one")]
+    pub recv_scale: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// 一条对端链路在面板上的样子
@@ -198,6 +208,9 @@ pub enum Action {
     KvmMode(String),
     /// 换角色：`console` 或 `remote`（只在 follow 模式有用）
     KvmRole(String),
+    /// 接收位移倍率（手感微调）。改完要重建 KVM 实例才生效 ——
+    /// 倍率在启动时被快照进接收循环。
+    KvmScale(f64),
     /// 手动把键鼠交给对端（不用切屏，先试试通不通）。
     /// 多机时带上是哪一台；None 表示"随便挑一条 Follow 链路"（老接口的行为）。
     KvmHandOver(Option<String>),
@@ -439,6 +452,21 @@ fn handle(
                 respond_json(&mut stream, r#"{"ok":true}"#)
             }
             None => respond_json(&mut stream, r#"{"ok":false,"error":"缺 role"}"#),
+        },
+        // 接收位移倍率。入口就把范围挡掉：dispatch 是异步的，等不到结果，
+        // 回 ok:true 而实际没改，前端只会看见"点了没反应"。
+        ("POST", "/api/kvm-scale") => match param_str(&query, "value") {
+            Some(raw) => match raw.parse::<f64>() {
+                Ok(v) if (0.5..=2.0).contains(&v) => {
+                    dispatch(Action::KvmScale(v));
+                    respond_json(&mut stream, r#"{"ok":true}"#)
+                }
+                _ => respond_json(
+                    &mut stream,
+                    r#"{"ok":false,"error":"倍率要在 0.5 ~ 2.0 之间"}"#,
+                ),
+            },
+            None => respond_json(&mut stream, r#"{"ok":false,"error":"缺 value"}"#),
         },
         ("POST", "/api/kvm-handover") => {
             // 多机时点名交给某一台；不带 node 就是老行为（挑一条 Follow 链路）
