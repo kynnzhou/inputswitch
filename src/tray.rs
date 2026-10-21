@@ -262,6 +262,8 @@ fn kvm_boot(
         on_panic: Some(on_panic),
         log,
         on_paste: Some(on_paste),
+        // 推边自动改指向（v0.6.60）：误判时可从配置里关掉，只剩热键
+        push_hop: config.kvm.push_hop,
     })?);
 
     let text = match (mode, role) {

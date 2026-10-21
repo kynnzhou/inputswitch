@@ -170,6 +170,14 @@ pub struct Kvm {
     #[serde(default)]
     pub links: Vec<LinkConfig>,
 
+    /// 会话中把光标顶到邻居那侧的边，就自动把键鼠改指向过去（v0.6.60）。
+    ///
+    /// 默认开。关掉之后只剩 `Ctrl+Alt+方向` 那个热键 —— 手测时先关它验证
+    /// 热键、再打开验证推边，两件事分开排查。真正误判（拖窗口到边、
+    /// 拉滚动条）时也是这个开关兜底。
+    #[serde(default = "default_true")]
+    pub push_hop: bool,
+
     // ---- 降级镜像 ----
     //
     // v3 起运行时不再读这三个字段（`peer_node` 除了"上次选的那台"这一
@@ -339,6 +347,7 @@ impl Default for Kvm {
             grid_x: 0,
             grid_y: 0,
             links: Vec::new(),
+            push_hop: true,
             side: default_side(),
             peer_node: String::new(),
         }

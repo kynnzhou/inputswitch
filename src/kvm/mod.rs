@@ -318,6 +318,12 @@ pub struct Options {
     /// 转发期间用户按下 Ctrl+V 且手上有待传清单时的通知。
     /// 从抓取线程的接收循环里调，实现方自己做线程安全（通常只是往事件队列塞一条）。
     pub on_paste: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// 会话中"把光标顶到邻居那侧的边 → 把键鼠改指向过去"（v0.6.60，默认开）。
+    ///
+    /// 判据见 `EdgeSim`：没抓取时平台层才盯边缘，抓取期间只能拿我们自己
+    /// 转出去的位移在本地复刻光标。误判（拖窗口到边、拉滚动条）时关掉它，
+    /// 只剩 Ctrl+Alt+方向 热键。
+    pub push_hop: bool,
 }
 
 /// 当前会话目标是哪条链路。
@@ -699,9 +705,104 @@ impl Session {
     }
 }
 
+/// **发送侧的"门口"模拟器**：会话中判断"用户是不是把光标顶到邻居那侧了"。
+///
+/// 为什么非得自己算：`Sending` 一定处于 grabbing，而平台层把边缘判定写在
+/// `!grabbing` 分支里（`mac.rs:797` / `win.rs:761`），抓取期间连 `Begin`
+/// 都产生不出来；系统级热键在同一段代码里被吞掉。**唯一剩下的信号就是
+/// 我们自己转出去的那串位移** —— 共用一块屏意味着两块屏尺寸、比例一致，
+/// 本地按同一份位移推一遍"对端光标在哪"才有意义（这也是为什么只在
+/// `Follow` 会话里跑：两块屏并排时比例可能不同）。
+///
+/// 判据与接收侧（对端推门交还，见 `Session` 那段 `out_push`）逐条对齐：
+/// 先离边够远才武装 → 贴边 → 累计朝外推够 `RETURN_PUSH` → 节流。那边是
+/// "用户想把键鼠交回去"，这边是"用户想跨过去"，同一只手该有同一套手感。
+struct EdgeSim {
+    /// 复刻出来的光标位置（点）。`None` = 还没初始化，会话开始时居中。
+    pos: Option<(f64, f64)>,
+    /// 离边够远才武装：进门落点就在门口，不设这道闸一进门就被判"要出去"
+    armed: bool,
+    /// 朝门外累计推了多少点
+    out_push: i32,
+    /// 上次命中时刻（节流基准）
+    last_ms: u64,
+}
+
+impl EdgeSim {
+    fn new() -> Self {
+        Self {
+            pos: None,
+            armed: false,
+            out_push: 0,
+            last_ms: 0,
+        }
+    }
+
+    /// 换会话目标时复位：新的起点没有"上一趟推了多少"可言。
+    fn reset(&mut self) {
+        self.pos = None;
+        self.armed = false;
+        self.out_push = 0;
+    }
+
+    /// 喂一笔转发出去的位移。返回 `Some((边, 沿门轴比例))` = 用户顶到门口了。
+    fn feed(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        w: f64,
+        h: f64,
+        mask: u8,
+        now: u64,
+    ) -> Option<(Side, u16)> {
+        if w < 2.0 || h < 2.0 {
+            return None;
+        }
+        // Follow 会话的进门落点是**屏幕中心**（对端 `inject.center()`），
+        // 本机也从中心起算，两边才是同一个坐标系
+        let (mut x, mut y) = self.pos.unwrap_or((w / 2.0, h / 2.0));
+        x = (x + dx as f64).clamp(0.0, w - 1.0);
+        y = (y + dy as f64).clamp(0.0, h - 1.0);
+        self.pos = Some((x, y));
+
+        let scale = (w / 1920.0).max(1.0);
+        if !self.armed {
+            if !event::within_edge(mask, x, y, w, h, EDGE_REARM_DIST * scale) {
+                self.armed = true;
+            }
+            self.out_push = 0;
+            return None;
+        }
+        let Some(side) = event::hit_edge_in(mask, x, y, w, h) else {
+            // 离开门边：攒的是"这一顶"的量，不是历史总量
+            self.out_push = 0;
+            return None;
+        };
+        let outward = match side {
+            Side::Left => -dx,
+            Side::Right => dx,
+            Side::Top => -dy,
+            Side::Bottom => dy,
+        };
+        if outward > 0 {
+            self.out_push += outward;
+        }
+        if (self.out_push as f64) < RETURN_PUSH * scale
+            || now.saturating_sub(self.last_ms) < HOP_THROTTLE_MS
+        {
+            return None;
+        }
+        self.out_push = 0;
+        // 这一趟走完了，重新武装得先离开门边 —— 否则刚转过去那一瞬，
+        // 手的惯性还在继续朝同一侧推，会立刻再转一次
+        self.armed = false;
+        self.last_ms = now;
+        Some((side, side.along(x, y, w, h)))
+    }
+}
+
 /// 某个对端的心跳与存活信息
-struct PeerRx {
-    /// 最后一次收到合法包的时刻（毫秒）
+struct PeerRx {    /// 最后一次收到合法包的时刻（毫秒）
     last_rx: u64,
     /// 有没有真的收到过包。启动时 last_rx 就是当前时间，单看它会把
     /// "从没连上"误判成"刚刚连上"。
@@ -1366,8 +1467,13 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
         let guard_cap = retarget_guard.clone();
         let hop_cap = hop_ms.clone();
         let recv_cap = last_recv_ms.clone();
+        let push_hop = opts.push_hop;
         thread::spawn(move || {
             let mut pressed: Vec<Event> = Vec::new();
+            // 会话中"推边改指向"的影子光标（见 EdgeSim）。只在 Follow 会话
+            // 里喂它，换目标就复位。
+            let mut edge_sim = EdgeSim::new();
+            let mut sim_active: Option<usize> = None;
             // 转发统计：排障「键鼠到了对面却不动」时，需要知道 Mac 这边
             // 到底发出去多少笔、鼠标位移长什么样。Sending→Idle 翻转时打汇总。
             let mut was_sending = false;
@@ -1640,6 +1746,60 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     (log)(format!(
                                         "转发位移流（前 30 笔 dx,dy）：{fwd_sample}"
                                     ));
+                                }
+                            }
+                            // ---- 会话里"推边改指向"（v0.6.60）----
+                            //
+                            // 只在**共用屏那台**上跑：它的画面和本机是同一块
+                            // 屏，两块屏尺寸比例一致，本地复刻光标位置才有
+                            // 意义。Edge 会话（两块屏并排）比例可能不同，
+                            // 一律不跑 —— 那边推边本来就是"交还"的语义。
+                            if push_hop && sides_mask != 0 {
+                                let act = active_cap.get();
+                                let follow = act
+                                    .and_then(|i| links_cap.get(i))
+                                    .map(|l| l.mode == Mode::Follow)
+                                    .unwrap_or(false);
+                                // 换过目标（含刚改指向）就复位：新的起点没有
+                                // "上一趟推了多少"可言
+                                if act != sim_active {
+                                    sim_active = act;
+                                    edge_sim.reset();
+                                }
+                                // 刚收回来的 600ms 里不判：收回时光标就摆在
+                                // 门口，手的惯性还在，一判就再出去
+                                let ready = now_ms()
+                                    .saturating_sub(reclaim_cap.load(Ordering::Relaxed))
+                                    >= 600;
+                                if follow && ready {
+                                    let (w, h) = capture_ref.screen();
+                                    let hit = edge_sim.feed(
+                                        dx,
+                                        dy,
+                                        w as f64,
+                                        h as f64,
+                                        sides_mask,
+                                        now_ms(),
+                                    );
+                                    if let Some((side, along)) = hit {
+                                        match pick_retarget(
+                                            State::Sending as u8,
+                                            act,
+                                            &links_cap[..],
+                                            side,
+                                        ) {
+                                            Some(t) => {
+                                                if let Err(err) = linker!()
+                                                    .retarget(t, along, "推边改指向")
+                                                {
+                                                    (log)(err);
+                                                }
+                                            }
+                                            // 这条边没有别的机器：什么都不做，
+                                            // 手继续推也只是把对端光标顶在边上
+                                            None => {}
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2923,6 +3083,43 @@ mod tests {
         }
         a.set(None);
         assert_eq!(a.get(), None);
+    }
+
+    /// 影子光标：一路往右推，累计够了才认"到门口了"，方向必须是右边。
+    #[test]
+    fn edge_sim_needs_accumulated_push() {
+        let mut sim = EdgeSim::new();
+        let mask = Side::Right.bit();
+        let mut hit = None;
+        for _ in 0..400 {
+            hit = sim.feed(8, 0, 1920.0, 1080.0, mask, 10_000);
+            if hit.is_some() {
+                break;
+            }
+        }
+        let (side, _along) = hit.expect("推到边上应该触发一次");
+        assert_eq!(side, Side::Right);
+    }
+
+    /// 掩码里没有这条边 / 刚触发完还在门口 = 都不触发（防连跳）。
+    #[test]
+    fn edge_sim_respects_mask_and_throttle() {
+        // 右边没有邻居：推多久都不动
+        let mut sim = EdgeSim::new();
+        for _ in 0..400 {
+            assert!(sim.feed(8, 0, 1920.0, 1080.0, Side::Left.bit(), 10_000).is_none());
+        }
+        // 触发一次后手还在门口继续推（同一毫秒）= 不再触发，
+        // 必须先离开门边重新武装
+        let mut sim = EdgeSim::new();
+        let mask = Side::Right.bit();
+        let mut fired = 0;
+        for i in 0..600 {
+            if sim.feed(8, 0, 1920.0, 1080.0, mask, 10_000 + i).is_some() {
+                fired += 1;
+            }
+        }
+        assert_eq!(fired, 1, "一趟顶门只该跳一次");
     }
 
     /// 三条链路的真实拓扑：0 = 共用屏（follow）、1 = 右侧并排（edge）。
