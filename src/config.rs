@@ -192,6 +192,24 @@ pub struct Kvm {
     #[serde(default = "default_recv_scale")]
     pub recv_scale: f64,
 
+    /// 程序启动后，若上次共用键鼠是开着的（`enabled`），对端一上线就自动恢复。
+    ///
+    /// 默认**关**：键鼠端用户最怕"一开机键鼠就被接管"。副机（没有键鼠那台）
+    /// 必须打开，否则每次重启都要人去点一次 —— 而那台根本没有键鼠。
+    ///
+    /// 注意它不是"开机就抢"：判据是**对端上线**（`pick_peer` 找到人），
+    /// 开机瞬间网络/显示器都还没就绪，那时候硬起只会失败。
+    #[serde(default)]
+    pub auto_resume: bool,
+
+    /// 崩溃后自动重启（守护）。默认关。
+    ///
+    /// macOS = LaunchAgent 里的 `KeepAlive`（只在异常退出时拉起，用户主动
+    /// 退出不会复活）；Windows = 一条登录触发、失败重启的计划任务。
+    /// 调试时想让它安静死掉，就在面板上关掉这一条 —— 不要改代码。
+    #[serde(default)]
+    pub keep_alive: bool,
+
     // ---- 降级镜像 ----
     //
     // v3 起运行时不再读这三个字段（`peer_node` 除了"上次选的那台"这一
@@ -368,6 +386,8 @@ impl Default for Kvm {
             links: Vec::new(),
             push_hop: true,
             recv_scale: 1.0,
+            auto_resume: false,
+            keep_alive: false,
             side: default_side(),
             peer_node: String::new(),
         }

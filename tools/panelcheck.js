@@ -91,6 +91,7 @@ const snap = {
   kvm: {
     on: true, state: '空闲', peer_alive: true, active: '',
     follow_link: true, will_follow: true, recv_scale: 1.1,
+    auto_resume: true, keep_alive: true,
     links: [
       { node: 'CHINAMI-0DFF1JU', side: 'right', mode: 'edge', alive: true, active: false, addr: '192.168.0.41' },
       { node: 'CHINAMI-MC5K9SJ', side: '', mode: 'follow', alive: false, active: false, addr: '192.168.0.40' },
@@ -103,6 +104,7 @@ const snap = {
     { node: 'CHINAMI-YET', addr: '192.168.0.43', input: '', label: '', value: 0, paired: true, knows_port: false, needs_pair: false, kvm_on: true },
   ],
   inputs: [], inputs_hidden: [], perms: { capture: true, inject: true },
+  autostart: true, clipboard: true,
 };
 
 ctx.snap = snap;
@@ -187,6 +189,14 @@ ok(/Ctrl\+Alt\+Esc/.test(made['kvmHandHint'].textContent || '') ||
 // 11. 键鼠已经在别台手上时，交接按钮同样藏掉（点不到），提示改成「转给它」
 ok(made['kvmHandBtn'].style.display === 'none', '会话中（active 非空）也隐藏交接按钮');
 ok(/转给它/.test(made['kvmHandHint'].textContent), '会话中提示指向链路行的「转给它」');
+// 12. 启动/守护三连：三个开关各自表态，副机模式在三个都开时才显示"已开启"
+ok(/已开启/.test(made['resumeBtn'].textContent) && /green/.test(made['resumeBtn'].className),
+  '自动恢复开着时显示「已开启」');
+ok(/已开启/.test(made['guardBtn'].textContent) && /green/.test(made['guardBtn'].className),
+  '崩溃守护开着时显示「已开启」');
+ok(/已开启/.test(made['subBtn'].textContent), '三项都开时副机模式显示「已开启」');
+ok(/不会一开机就抢键鼠/.test(made['bootHint'].textContent),
+  '提示里说清"自动恢复不是开机就抢键鼠"');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

@@ -401,7 +401,9 @@ fn cmd_wizard(
 
 fn cmd_autostart(on: bool, off: bool) -> i32 {
     if on {
-        match inputswitch::autostart::enable() {
+        // CLI 里不单独给守护开关：按配置里那一份写，命令行和面板不会打架
+        let keep = inputswitch::config::Config::load().kvm.keep_alive;
+        match inputswitch::autostart::enable(keep) {
             Ok(()) => println!("已开启开机自启"),
             Err(err) => {
                 println!("开启失败: {}", err);

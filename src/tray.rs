@@ -1434,6 +1434,8 @@ fn update_snapshot(
                 // 是启动快照，用户改完还没重启时两者会不一样，界面该显示
                 // "即将生效"的那个值。
                 recv_scale: config.kvm.recv_scale,
+                auto_resume: config.kvm.auto_resume,
+                keep_alive: config.kvm.keep_alive,
             }
         }
         None => panel::KvmView {
@@ -1470,6 +1472,8 @@ fn update_snapshot(
                 })
                 .collect(),
             recv_scale: config.kvm.recv_scale,
+            auto_resume: config.kvm.auto_resume,
+            keep_alive: config.kvm.keep_alive,
         },
     };
     snap.port_note = PORT_NOTE
@@ -1895,6 +1899,21 @@ enum Keys {
 ///
 /// `follow = false` 是"只想换个画面"，比如自己接了两个显示口想切着看，
 /// 或者故意让键鼠留在本机操作。这时候不能顺手把键鼠也带走。
+/// 自动恢复失败后的等待时间（秒）：1 → 5 → 15 → 60 → 300，之后固定 300。
+///
+/// 为什么不是指数退避：副机开机时的失败几乎都是"网络还没起 / 对端还没上线"，
+/// 几十秒内就会好；指数退避会让它几分钟都不再试，用户看到的就是"自启没生效"。
+/// 也不能一秒一次：真失败（缺授权）会刷屏，还会反复弹系统设置页。
+fn resume_backoff(failures: u32) -> u64 {
+    match failures {
+        0 | 1 => 1,
+        2 => 5,
+        3 => 15,
+        4 => 60,
+        _ => 300,
+    }
+}
+
 fn do_switch(
     switcher: &mut Switcher,
     mesh: &Mesh,
@@ -2678,7 +2697,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.65",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.66",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2703,8 +2722,13 @@ pub fn run() -> ! {
     let mut panel_win: Option<Panel> = None;
     // 共用键鼠：开着的时候它会一直占着 CGEventTap / 低级钩子
     let mut kvm_handle: Option<Arc<kvm::Kvm>> = None;
-    // 上次退出时共用键鼠是开着的，这次启动要自动恢复一次
-    let mut kvm_restored = false;
+    // 自动恢复的重试状态（v0.6.66）。
+    //
+    // 以前这里是 `kvm_restored: bool`，一次失败就永久放弃 —— 对没有键鼠的
+    // 副机是死局：它开机比主机早、网络还没起、第一次授权没生效，任何一种
+    // 都会让它永远停在空闲，而人没法去那台机器上点菜单。
+    let mut resume_failures: u32 = 0;
+    let mut resume_next: Option<Instant> = None;
     // 用户点了面板窗口的关闭按钮：等这轮事件处理完再真正释放
     let mut panel_stale = false;
 
@@ -2783,32 +2807,50 @@ pub fn run() -> ! {
                 }
                 let peers = mesh.live_peers();
 
-                // 上次退出时共用键鼠开着 → 这次等对端一出现就自动恢复。
-                // 少了这一步，用户每重启一次程序都要手动点一次菜单，
-                // 而"键鼠交不出去"的表现又很像功能坏了，很容易误判。
-                if !kvm_restored && config.kvm.enabled {
-                    if pick_peer(&peers, &config.kvm.peer_node).is_some() {
-                        if kvm_handle.is_none() {
-                            kvm_restored = true;
-                            let log: Arc<dyn Fn(String) + Send + Sync> =
-                                Arc::new(|text| log_line(&text));
-                            match kvm_boot(&mut config, &peers, &tx, log) {
-                                Ok((handle, text)) => {
-                                    kvm_handle = Some(handle.clone());
-                                    if let Ok(mut slot) = KVM.lock() {
-                                        *slot = Some(handle);
-                                    }
-                                    log_line(&format!("{text}（自动恢复上次的设置）"));
-                                }
-                                Err(err) => {
-                                    // 这里不弹设置页：开机自启时弹窗会吓人
-                                    log_line(&format!("共用键鼠没能自动恢复：{err}"));
-                                }
+                // ---- 自动恢复（v0.6.66 改成可重试）----
+                //
+                // 语义只有一条：**自愈不改用户意图**。`config.kvm.enabled`
+                // 是"用户想不想开"，这里只负责"想开但没开着"时补上。
+                // 所以失败**绝不**写 enabled=false（v0.6.65 之前那条
+                // `config.kvm.enabled = false` 会把副机永久钉死在关闭状态）。
+                //
+                // 三个条件：用户要开 + 开关允许自动恢复 + 现在确实没开。
+                // 再加上"对端已上线"——开机瞬间网络/显示器都还没就绪，
+                // 那时候硬起只会失败，白白消耗重试次数。
+                let resume_due = resume_next.map(|t| Instant::now() >= t).unwrap_or(true);
+                if config.kvm.enabled
+                    && config.kvm.auto_resume
+                    && kvm_handle.is_none()
+                    && resume_due
+                    // 缺授权时重试一百次也不会成功（TCC 结论缓存在进程里，
+                    // 必须重启进程才认），别白刷日志、别把退避拉满。
+                    && perms_ok()
+                    && pick_peer(&peers, &config.kvm.peer_node).is_some()
+                {
+                    let log: Arc<dyn Fn(String) + Send + Sync> =
+                        Arc::new(|text| log_line(&text));
+                    match kvm_boot(&mut config, &peers, &tx, log) {
+                        Ok((handle, text)) => {
+                            kvm_handle = Some(handle.clone());
+                            if let Ok(mut slot) = KVM.lock() {
+                                *slot = Some(handle);
                             }
+                            resume_failures = 0;
+                            resume_next = None;
+                            log_line(&format!("{text}（自动恢复上次的设置）"));
+                        }
+                        Err(err) => {
+                            resume_failures = resume_failures.saturating_add(1);
+                            let delay = resume_backoff(resume_failures);
+                            resume_next = Some(Instant::now() + Duration::from_secs(delay));
+                            // 不弹设置页：开机自启时弹窗会吓人。
+                            // 但要写清"第几次、多久后重试"，否则用户以为它放弃了。
+                            log_line(&format!(
+                                "共用键鼠没能自动恢复（第 {} 次）：{err}；{delay} 秒后重试",
+                                resume_failures
+                            ));
                         }
                     }
-                } else if !config.kvm.enabled {
-                    kvm_restored = true;
                 }
 
                 refresh_menu(
@@ -2870,7 +2912,9 @@ pub fn run() -> ! {
                 }
                 Action::ToggleAutostart(on) => {
                     let result = if on {
-                        crate::autostart::enable()
+                        // 守护开关跟着一起写进 LaunchAgent / 计划任务：
+                        // 两件事在系统层是同一份配置，分开写必然不同步。
+                        crate::autostart::enable(config.kvm.keep_alive)
                     } else {
                         crate::autostart::disable()
                     };
@@ -2958,8 +3002,16 @@ pub fn run() -> ! {
                                                       —— 不重启这个进程不会认新授权"
                                                 .to_string();
                                         }
-                                        config.kvm.enabled = false;
+                                        // **不改用户意图**：他点了「开启」，那就是
+                                        // 想要开。以前这里写 enabled=false，等于
+                                        // "失败一次就永远不再尝试" —— 副机（没有
+                                        // 键鼠那台）碰上开机时网络没起就彻底废了，
+                                        // 而人根本没法去那台机器上再点一次。
+                                        config.kvm.enabled = true;
                                         let _ = config.save();
+                                        if config.kvm.auto_resume && perms_ok() {
+                                            status.push_str("；会自动重试");
+                                        }
                                     }
                                 }
                             }
@@ -3061,6 +3113,61 @@ pub fn run() -> ! {
                         };
                         log_line(&status);
                     }
+                }
+                Action::KvmAutoResume(on) => {
+                    config.kvm.auto_resume = on;
+                    let _ = config.save();
+                    status = if on {
+                        "已开启：下次启动后，对端一上线就自动恢复共用键鼠".to_string()
+                    } else {
+                        "已关闭自动恢复：启动后不会自己去开共用键鼠".to_string()
+                    };
+                    log_line(&status);
+                }
+                Action::KvmKeepAlive(on) => {
+                    config.kvm.keep_alive = on;
+                    let _ = config.save();
+                    // 守护是写在"开机自启"那份配置里的（plist / 计划任务），
+                    // 自启没开时它无处可挂 —— 顺手把自启带上并说清楚。
+                    let mut note = String::new();
+                    if on && !crate::autostart::is_enabled() {
+                        if crate::autostart::enable(true).is_ok() {
+                            note = "（同时打开了开机自启 —— 守护要靠它才生效）".to_string();
+                        }
+                    } else if crate::autostart::is_enabled() {
+                        // 自启已经开着：重写一次，把 KeepAlive / 计划任务加进去或去掉
+                        let _ = crate::autostart::enable(on);
+                    }
+                    status = if on {
+                        format!("已开启崩溃自动重启{note}")
+                    } else {
+                        "已关闭崩溃自动重启（下次退出后不会自己回来）".to_string()
+                    };
+                    log_line(&status);
+                }
+                Action::Submachine(on) => {
+                    // 一键把"没有键鼠那台"该有的配置全打开：自启 + 自动恢复 +
+                    // 守护 + 角色 remote + 共用键鼠开着。少一条它就是个哑终端。
+                    config.kvm.auto_resume = on;
+                    config.kvm.keep_alive = on;
+                    if on {
+                        config.kvm.role = "remote".to_string();
+                        config.kvm.enabled = true;
+                    }
+                    let _ = config.save();
+                    let auto = if on {
+                        crate::autostart::enable(true)
+                    } else {
+                        crate::autostart::disable()
+                    };
+                    status = match auto {
+                        Ok(()) if on => "副机模式已开启：开机自启 + 自动恢复 + 崩溃重启（角色=被控端）。\
+                             记得给这台配静态 IP —— 共用键鼠的白名单只认地址，不认机器名"
+                            .to_string(),
+                        Ok(()) => "副机模式已关闭：不再自启、不再自动恢复、不再守护".to_string(),
+                        Err(err) => format!("副机模式设置失败：{err}"),
+                    };
+                    log_line(&status);
                 }
                 Action::KvmHandOver(node) => {
                     // 不带 node 就是面板上那个全局按钮。多机时它靠 follow_target() 猜，
@@ -3829,5 +3936,32 @@ fn side_label(side: &str) -> &'static str {
         Some(kvm::event::Side::Top) => "上",
         Some(kvm::event::Side::Bottom) => "下",
         _ => "右",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 自动恢复的退避：1 → 5 → 15 → 60 → 300，之后一直 300。
+    ///
+    /// 这里锁的是"别让它放弃，也别让它刷屏"：第一档必须是 1 秒（开机时
+    /// 网络没起，几秒内就好），最后一档必须封顶（真失败别把日志刷爆）。
+    #[test]
+    fn resume_backoff_ramps_and_caps() {
+        assert_eq!(resume_backoff(0), 1);
+        assert_eq!(resume_backoff(1), 1);
+        assert_eq!(resume_backoff(2), 5);
+        assert_eq!(resume_backoff(3), 15);
+        assert_eq!(resume_backoff(4), 60);
+        assert_eq!(resume_backoff(5), 300);
+        assert_eq!(resume_backoff(1000), 300);
+        // 单调不减：任何一次失败都不该比上一次等得更短
+        let mut last = 0;
+        for n in 0..40 {
+            let d = resume_backoff(n);
+            assert!(d >= last, "第 {n} 次退避比上一次短：{d} < {last}");
+            last = d;
+        }
     }
 }

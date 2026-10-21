@@ -117,6 +117,12 @@ pub struct KvmView {
     /// 在两边速度不可能一样 —— 这是给用户的手感旋钮，不是几何参数。
     #[serde(default = "one")]
     pub recv_scale: f64,
+    /// 对端上线后自动恢复共用键鼠（用户意图见 `enabled`）
+    #[serde(default)]
+    pub auto_resume: bool,
+    /// 崩溃后自动重启（守护）
+    #[serde(default)]
+    pub keep_alive: bool,
 }
 
 fn one() -> f64 {
@@ -211,6 +217,13 @@ pub enum Action {
     /// 接收位移倍率（手感微调）。改完要重建 KVM 实例才生效 ——
     /// 倍率在启动时被快照进接收循环。
     KvmScale(f64),
+    /// 对端上线后自动恢复共用键鼠
+    KvmAutoResume(bool),
+    /// 崩溃后自动重启（macOS 写 LaunchAgent 的 KeepAlive；Windows 建计划任务）
+    KvmKeepAlive(bool),
+    /// 「副机模式」一键配置：自启 + 自动恢复 + 守护 + role=remote + 共用键鼠开着。
+    /// 给"那台没有键鼠"的机器用，省得一条条点还漏。
+    Submachine(bool),
     /// 手动把键鼠交给对端（不用切屏，先试试通不通）。
     /// 多机时带上是哪一台；None 表示"随便挑一条 Follow 链路"（老接口的行为）。
     KvmHandOver(Option<String>),
@@ -468,6 +481,20 @@ fn handle(
             },
             None => respond_json(&mut stream, r#"{"ok":false,"error":"缺 value"}"#),
         },
+        // 自动恢复 / 崩溃守护：开关本身就是意图，改完只写配置，不重启实例。
+        // 和 /api/autostart 一样认 JSON body（面板用），也认 `?on=1`（curl 方便）。
+        ("POST", "/api/kvm-autoresume") => {
+            dispatch(Action::KvmAutoResume(on_of(&body, &query)));
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        ("POST", "/api/kvm-keepalive") => {
+            dispatch(Action::KvmKeepAlive(on_of(&body, &query)));
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        ("POST", "/api/submachine") => {
+            dispatch(Action::Submachine(on_of(&body, &query)));
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
         ("POST", "/api/kvm-handover") => {
             // 多机时点名交给某一台；不带 node 就是老行为（挑一条 Follow 链路）
             dispatch(Action::KvmHandOver(param_str(&query, "node")));
@@ -569,6 +596,19 @@ fn param_bool(query: &str, key: &str) -> Option<bool> {
         "0" | "false" | "off" | "no" => Some(false),
         _ => None,
     }
+}
+
+/// 开关类请求的"开/关"判定：JSON body（面板用）优先，其次 `?on=1`（curl）。
+///
+/// 面板发的是 `{"on":true}`，老接口用的是 `body.contains("true")` —— 那招对
+/// `{"on":false}` 也返回 false，看着能用，但一旦 body 里出现别的 true（比如
+/// 以后加字段）就会误判。新接口统一走这个函数。
+fn on_of(body: &str, query: &str) -> bool {
+    if let Some(v) = param_bool(query, "on") {
+        return v;
+    }
+    let b = body.replace(' ', "");
+    b.contains("\"on\":true") || b == "true"
 }
 
 /// 极简 JSON 取值：面板只会发 `{"code":"123456"}` 这种一层结构。

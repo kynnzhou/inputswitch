@@ -334,6 +334,23 @@
       <span>开机自启</span>
       <button id="autoBtn" class="ghost" onclick="toggleAutostart()">—</button>
     </div>
+    <!-- 三件事必须分开：自启是"程序跑起来"，恢复是"键鼠自动接上"，
+         守护是"崩了自己回来"。想只自启、不想被接管键鼠的人占多数。 -->
+    <div class="switch">
+      <span>对端上线后自动恢复共用键鼠</span>
+      <button id="resumeBtn" class="ghost" onclick="toggleAutoResume()">—</button>
+    </div>
+    <div class="switch">
+      <span>崩溃后自动重启</span>
+      <button id="guardBtn" class="ghost" onclick="toggleKeepAlive()">—</button>
+    </div>
+    <div class="hint" id="bootHint"></div>
+    <div class="split" style="margin-top:8px">
+      <button id="subBtn" class="ghost" onclick="toggleSubmachine()">—</button>
+    </div>
+    <div class="hint">副机模式 = 上面三项全开 + 角色设为「被控端」+ 共用键鼠保持开启，
+      给<b>没有接键鼠</b>的那台机器用（一开机就等人推过来，不用过去点任何东西）。<br>
+      开启前请确认这台是<b>静态 IP</b>：共用键鼠的白名单只认地址、不认机器名。</div>
     <div class="switch">
       <span>同步剪贴板文本</span>
       <button id="clipBtn" class="ghost" onclick="toggleClipboard()">—</button>
@@ -548,6 +565,26 @@ function render() {
   const clip = document.getElementById('clipBtn');
   clip.textContent = snap.clipboard ? '已开启' : '已关闭';
   clip.className = snap.clipboard ? 'green' : 'ghost';
+
+  // 启动/守护三连。语义差别必须在界面上写清，否则"我明明关了它还起来"
+  // 和"它失败一次就再也不起来了"都会出现。
+  const kc = snap.kvm || {};
+  const paint = (id, on, onText, offText) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.textContent = on ? onText : offText;
+    node.className = on ? 'green' : 'ghost';
+  };
+  paint('resumeBtn', !!kc.auto_resume, '已开启', '已关闭');
+  paint('guardBtn', !!kc.keep_alive, '已开启', '已关闭');
+  const subOn = !!(kc.auto_resume && kc.keep_alive && snap.autostart);
+  paint('subBtn', subOn, '副机模式：已开启', '副机模式：一键开启');
+  const bh = document.getElementById('bootHint');
+  if (bh) {
+    bh.textContent = kc.auto_resume
+      ? '自动恢复不会一开机就抢键鼠：它等对端上线才接，失败会自动重试（1/5/15/60 秒）。'
+      : '自动恢复关着：每次启动都要自己点一次「开启」。没有键鼠的那台请打开它。';
+  }
 }
 
 function renderKvm() {
@@ -997,6 +1034,16 @@ function setKvmRole(role) { api('/api/kvm-role?role=' + role).then(pull); }
 function setKvmScale(v) { api('/api/kvm-scale?value=' + v).then(pull); }
 
 function toggleAutostart() { api('/api/autostart', { on: !snap.autostart }).then(pull); }
+function toggleAutoResume() {
+  api('/api/kvm-autoresume', { on: !((snap.kvm || {}).auto_resume) }).then(pull);
+}
+function toggleKeepAlive() {
+  api('/api/kvm-keepalive', { on: !((snap.kvm || {}).keep_alive) }).then(pull);
+}
+// 副机模式：三项一起开/关。判据用 auto_resume（它是这个组合里最"专有"的一项）。
+function toggleSubmachine() {
+  api('/api/submachine', { on: !((snap.kvm || {}).auto_resume) }).then(pull);
+}
 function toggleClipboard() { api('/api/clipboard', { on: !snap.clipboard }).then(pull); }
 // 改键：网页里只能收到"焦点在这个页面上"的按键，录不出全局热键，
 // 所以让主程序弹它自己的小窗口来收，录完这里轮询会自动刷新。
