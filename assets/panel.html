@@ -5,306 +5,423 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>InputSwitch · 切屏控制台</title>
 <style>
+  /* ── 柔光玻璃（v0.6.69）─────────────────────────────────────────
+     配方四层：背景光斑 / 模糊+提饱和 / 1px 高光内边 / 极淡偏蓝外阴影。
+     玻璃只用在**容器层**（卡片、顶栏）；链路行、摆位格这些密集信息用
+     不透明内衬，否则 12px 小字在玻璃上对比度会掉到不可读。 */
   :root {
-    --bg: #f5f5f7;
-    --card: #ffffff;
-    --text: #1d1d1f;
-    --muted: #6e6e73;
-    --line: #e5e5ea;
-    --blue: #007aff;
-    --green: #34c759;
-    --purple: #af52de;
-    --red: #ff3b30;
-    --orange: #ff9500;
-    --chip: #f2f2f7;
-    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+    --bg: #f5f7fb;
+    --bg2: #edf0fa;
+    --card: rgba(255,255,255,.55);       /* 玻璃 */
+    --card-solid: rgba(255,255,255,.82); /* 内衬：密集信息用 */
+    --edge: rgba(255,255,255,.75);
+    --edge-2: rgba(255,255,255,.55);
+    --text: #1b2333;
+    --muted: #5a6478;
+    --faint: #8b94a8;
+    --line: rgba(140,150,175,.20);
+    --blue: #3d6bff;
+    --blue-soft: rgba(61,107,255,.12);
+    --green: #2fb89a;
+    --purple: #7a5cff;
+    --red: #e5484d;
+    --orange: #e08a3c;
+    --chip: rgba(255,255,255,.66);
+    --shadow: 0 8px 32px rgba(31,38,135,.10), inset 0 1px 0 rgba(255,255,255,.55);
+    --shadow-hi: 0 14px 44px rgba(31,38,135,.16);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #1c1c1e;
-      --card: #2c2c2e;
-      --text: #f5f5f7;
-      --muted: #98989d;
-      --line: #3a3a3c;
-      --chip: #3a3a3c;
-      --shadow: 0 1px 3px rgba(0,0,0,.4);
+      --bg: #11141c;
+      --bg2: #0b0e15;
+      --card: rgba(28,32,44,.55);
+      --card-solid: rgba(34,39,53,.86);
+      --edge: rgba(255,255,255,.14);
+      --edge-2: rgba(255,255,255,.08);
+      --text: #eef1f8;
+      --muted: #a9b1c4;
+      --faint: #6f788c;
+      --line: rgba(255,255,255,.10);
+      --blue: #7f9dff;
+      --blue-soft: rgba(127,157,255,.18);
+      --green: #3ecfae;
+      --chip: rgba(255,255,255,.07);
+      --shadow: 0 10px 36px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.06);
+      --shadow-hi: 0 16px 50px rgba(0,0,0,.55);
     }
   }
   * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-    padding: 28px 16px 60px;
+    margin: 0; color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+          "Microsoft YaHei", system-ui, sans-serif;
+    padding: 24px 18px 56px;
+    background:
+      radial-gradient(1100px 620px at 10% -10%, var(--bg), transparent 70%),
+      radial-gradient(900px 560px at 100% 0%, var(--bg2), transparent 65%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 780px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 18px; display: flex; align-items: baseline; gap: 10px; }
-  h1 span { font-size: 12px; color: var(--muted); font-weight: 400; }
-  .card {
-    background: var(--card); border-radius: 14px; padding: 16px;
-    box-shadow: var(--shadow); margin-bottom: 14px;
+  /* 玻璃要有"东西可透"，否则是灰塑料 */
+  .glow { position: fixed; border-radius: 50%; filter: blur(70px); pointer-events: none; z-index: 0; }
+  .glow.a { width: 520px; height: 520px; left: -120px; top: -160px; background: rgba(138,168,255,.26); }
+  .glow.b { width: 440px; height: 440px; right: -140px; top: 110px; background: rgba(255,201,168,.20); }
+  .glow.c { width: 560px; height: 560px; left: 34%; bottom: -300px; background: rgba(160,255,236,.15); }
+  @media (prefers-color-scheme: dark) {
+    .glow.a { background: rgba(84,110,255,.20); }
+    .glow.b { background: rgba(255,150,90,.12); }
+    .glow.c { background: rgba(60,220,190,.09); }
   }
+  .wrap { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 15px; margin: 0; display: flex; align-items: baseline; gap: 8px; font-weight: 650; }
+  h1 span { font-size: 12px; color: var(--faint); font-weight: 400; }
+
+  /* 玻璃基类 */
+  .glass, .card, .topbar {
+    background: var(--card);
+    -webkit-backdrop-filter: blur(24px) saturate(165%);
+    backdrop-filter: blur(24px) saturate(165%);
+    border: 1px solid var(--edge);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+  }
+  .card { padding: 18px 20px; margin-bottom: 14px; }
   .card h2 {
-    font-size: 12px; font-weight: 600; color: var(--muted);
-    margin: 0 0 12px; letter-spacing: .04em; text-transform: uppercase;
+    font-size: 13px; font-weight: 650; color: var(--muted);
+    margin: 0 0 6px; letter-spacing: .03em;
+    display: flex; align-items: center; gap: 8px;
   }
+  .topbar { padding: 16px 18px 14px; margin-bottom: 14px; }
+  .statusline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; }
+  .stat { display: flex; align-items: baseline; gap: 7px; }
+  .stat .k { font-size: 12px; color: var(--faint); }
+  .stat .v { font-size: 14.5px; font-weight: 600; }
+  .stat .v .sub { font-weight: 400; color: var(--muted); font-size: 12.5px; margin-left: 4px; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .toast { margin-top: 10px; font-size: 12.5px; color: var(--muted); min-height: 17px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .grid2 > .card { margin-bottom: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
   .banner {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px; border-radius: 12px; margin-bottom: 14px;
-    background: var(--chip); font-size: 13px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 11px 14px; border-radius: 14px; margin-bottom: 14px;
+    background: var(--card-solid); border: 1px solid var(--edge-2);
+    font-size: 13px; color: var(--muted);
   }
-  .banner.ok { background: rgba(52,199,89,.14); color: var(--green); }
-  .banner.warn { background: rgba(255,149,0,.14); color: var(--orange); }
-  .banner b { font-weight: 600; }
+  .banner.ok { background: rgba(47,184,154,.12); border-color: rgba(47,184,154,.30); color: #1f8f78; }
+  .banner.warn { background: rgba(224,138,60,.13); border-color: rgba(224,138,60,.32); color: #b96f22; }
+  .banner b { font-weight: 650; }
   .banner .sub { color: var(--muted); font-weight: 400; }
+
   button {
-    font: inherit; border: 0; border-radius: 10px; padding: 9px 16px;
-    background: var(--chip); color: var(--text); cursor: pointer;
-    transition: transform .08s ease, filter .15s ease;
+    font: inherit; font-size: 13.5px; font-weight: 600; border-radius: 11px;
+    padding: 8px 15px; cursor: pointer; color: var(--text);
+    border: 1px solid var(--edge-2);
+    background: var(--card-solid);
+    box-shadow: 0 1px 2px rgba(24,32,60,.06), inset 0 1px 0 rgba(255,255,255,.5);
+    transition: transform .18s cubic-bezier(.2,.7,.3,1), box-shadow .18s, background .18s, filter .18s;
   }
-  button:active { transform: scale(.98); }
-  button:hover { filter: brightness(.96); }
+  button:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(31,38,135,.12), inset 0 1px 0 rgba(255,255,255,.6); }
+  button:active { transform: translateY(0) scale(.99); }
   button.primary {
-    width: 100%; background: var(--blue); color: #fff;
-    font-size: 16px; font-weight: 600; padding: 16px; border-radius: 12px;
-    margin-bottom: 14px; text-align: center;
+    color: #fff; border-color: transparent;
+    background: linear-gradient(180deg, #5b83ff, var(--blue));
+    box-shadow: 0 6px 18px rgba(61,107,255,.28), inset 0 1px 0 rgba(255,255,255,.35);
   }
-  button.green { background: var(--green); color: #fff; font-weight: 600; }
-  button.purple { background: var(--purple); color: #fff; font-weight: 600; }
-  button.ghost { background: transparent; border: 1px solid var(--line); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .grow { flex: 1; }
+  button.primary:hover { box-shadow: 0 10px 26px rgba(61,107,255,.36), inset 0 1px 0 rgba(255,255,255,.4); }
+  button.green { background: linear-gradient(180deg, #45cfae, var(--green)); color: #fff; border-color: transparent;
+    box-shadow: 0 5px 16px rgba(47,184,154,.26), inset 0 1px 0 rgba(255,255,255,.3); }
+  button.purple { background: linear-gradient(180deg, #8f75ff, var(--purple)); color: #fff; border-color: transparent; }
+  button.ghost { background: transparent; box-shadow: none; }
+  button.ghost:hover { background: var(--card-solid); }
+  button:disabled { opacity: .42; cursor: not-allowed; transform: none; box-shadow: none; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 120px; }
   input[type=text] {
-    font: inherit; padding: 10px 12px; border-radius: 10px;
-    border: 1px solid var(--line); background: var(--bg); color: var(--text);
-    letter-spacing: .3em; width: 140px; text-align: center;
+    font: inherit; padding: 9px 12px; border-radius: 11px;
+    border: 1px solid var(--edge-2); background: var(--card-solid); color: var(--text);
+    letter-spacing: .28em; width: 150px; text-align: center;
   }
-  .ports { display: flex; flex-direction: column; gap: 6px; }
+
+  .ports { display: flex; flex-direction: column; gap: 7px; }
   .port {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; border-radius: 10px; background: var(--chip);
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: 12px; background: var(--card-solid); border: 1px solid var(--edge-2);
+    transition: all .18s cubic-bezier(.2,.7,.3,1);
   }
-  .port.cur { outline: 2px solid var(--blue); background: rgba(0,122,255,.1); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-  .dot.on { background: var(--green); }
+  .port:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(31,38,135,.08); }
+  /* 当前输入源：内发光环，不用实心填充（玻璃里实心块很丑） */
+  .port.cur {
+    border-color: rgba(61,107,255,.45);
+    background: linear-gradient(180deg, rgba(61,107,255,.10), rgba(61,107,255,.04));
+    box-shadow: inset 0 0 0 1px rgba(61,107,255,.18), 0 0 0 4px rgba(61,107,255,.07);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.on { background: var(--green); box-shadow: 0 0 0 4px rgba(47,184,154,.14); }
   .dot.off { background: var(--line); }
   .dot.bad { background: var(--red); }
   .port .name { font-weight: 600; }
-  .port .meta { color: var(--muted); font-size: 12px; }
+  .port .meta { color: var(--faint); font-size: 12px; }
+
   .tag {
-    font-size: 11px; padding: 2px 7px; border-radius: 6px;
-    background: var(--card); color: var(--muted); border: 1px solid var(--line);
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    background: var(--blue-soft); color: var(--blue); border: 1px solid transparent;
   }
-  .tag.blue { color: var(--blue); border-color: rgba(0,122,255,.35); }
-  .tag.green { color: var(--green); border-color: rgba(52,199,89,.35); }
-  .kv { display: grid; grid-template-columns: 132px 1fr; gap: 8px 12px; font-size: 13px; }
-  .kv dt { color: var(--muted); }
+  .tag.blue { color: var(--blue); }
+  .tag.green { color: #1f8f78; background: rgba(47,184,154,.14); }
+
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px; font-size: 13px; }
+  .kv dt { color: var(--faint); }
   .kv dd { margin: 0; }
-  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
-  .split { display: flex; gap: 10px; flex-wrap: wrap; }
-  .split > * { flex: 1; min-width: 180px; }
-  .switch { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .split { display: flex; gap: 8px; flex-wrap: wrap; }
+  .split > * { flex: 1; min-width: 130px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; }
   .progress { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; margin-top: 10px; }
   .progress > i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .3s; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
-  /* 多机链路行：一台对端一行，方向 / 模式 / 存活 / 键鼠在谁手上 */
+  .empty { color: var(--faint); font-size: 13px; padding: 6px 0; }
+  .sub { color: var(--muted); font-weight: 400; }
+
+  /* 链路行：一台对端一行 */
   .linkrow {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 8px 0; border-top: 1px solid var(--line);
+    padding: 9px 12px; margin-top: 7px; border-radius: 12px;
+    background: var(--card-solid); border: 1px solid var(--edge-2);
+    transition: transform .18s, box-shadow .18s;
   }
-  .linkrow:first-child { border-top: 0; }
-  .linkrow .node { min-width: 150px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
-  .linkrow .dot { font-size: 10px; color: var(--muted); }
-  .linkrow .dot.on { color: var(--green); }
+  .linkrow:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(31,38,135,.08); }
+  .linkrow .node { min-width: 150px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .linkrow .dot { font-size: 10px; }
   .linkrow select {
-    font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px;
-    border: 1px solid var(--line); background: var(--chip); color: var(--text);
+    font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 9px;
+    border: 1px solid var(--edge-2); background: var(--card-solid); color: var(--text);
   }
-  .linkrow .held { color: var(--green); font-weight: 600; font-size: 13px; }
-  /* 3×3 摆位图：中心是本机，四边是对端，可以拖着换位置。
-     存在的理由不是"好看"，而是"配重了看不出来" —— 四台对端如果两台都填
-     右侧，下拉框上完全正常，推过去落到谁那儿是不确定的。摆位图里一个格子
-     只能放一台，从结构上就不可能出现重复。
-     四角仍然是"斜角不连"：协议里一条链路只有上下左右四个门之一，
-     越界判定是四向掩码，斜着没有可用的方向。 */
+  .linkrow .held { color: #1f8f78; font-weight: 650; font-size: 13px; }
+
+  /* 3×3 摆位图：中心本机、四边对端，可拖。四角仍然"斜角不连"：
+     协议里一条链路只有上下左右四个门之一，越界判定是四向掩码。 */
   .grid {
     display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 6px; margin: 12px auto 0; max-width: 560px;
+    gap: 7px; margin: 12px auto 0; max-width: 520px;
     user-select: none; -webkit-user-select: none;
   }
   .grid .cell {
-    border: 1px solid var(--line); border-radius: 10px;
-    padding: 7px 6px; min-height: 76px;
+    border: 1px dashed rgba(140,150,175,.26); border-radius: 13px;
+    padding: 7px 6px; min-height: 74px;
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 5px; font-size: 12px; text-align: center;
-    transition: border-color .12s, background .12s;
+    transition: border-color .14s, background .14s, transform .14s;
   }
-  .grid .cell.self { background: var(--chip); font-weight: 600; }
-  .grid .cell.self small { color: var(--muted); font-weight: 400; font-size: 11px; }
-  .grid .cell.corner { border-style: dashed; color: var(--muted); opacity: .45; }
-  .grid .cell.hit { border-color: var(--blue); background: rgba(0,122,255,.08); }
-  .grid .cell.bad { border-color: var(--red); background: rgba(255,59,48,.07); }
-  .sideslot { color: var(--muted); font-size: 11px; line-height: 1; }
+  .grid .cell.self {
+    background: var(--card-solid); border-style: solid; border-color: var(--edge-2);
+    font-weight: 650; box-shadow: inset 0 0 0 1px rgba(61,107,255,.16);
+  }
+  .grid .cell.self small { color: var(--faint); font-weight: 400; font-size: 11px; }
+  .grid .cell.corner { border-style: dashed; color: var(--faint); opacity: .45; }
+  .grid .cell.hit { border-color: var(--blue); border-style: solid; background: var(--blue-soft); }
+  .grid .cell.bad { border-color: var(--red); border-style: solid; background: rgba(229,72,77,.07); }
+  .sideslot { color: var(--faint); font-size: 11px; line-height: 1; }
   .dropzone {
-    color: var(--muted); font-size: 11px; width: 100%;
-    border: 1px dashed var(--line); border-radius: 8px; padding: 9px 4px;
+    color: var(--faint); font-size: 11px; width: 100%;
+    border: 1px dashed rgba(140,150,175,.32); border-radius: 9px; padding: 9px 4px;
   }
-  /* 对端 = 一块可拖的"屏幕"。光标 grip，touch-action:none 防止
-     触控板惯性滚动把拖拽事件抢走。 */
+  /* 对端 = 一块可拖的"屏幕" */
   .screen {
     display: flex; align-items: center; gap: 6px; width: 100%;
-    padding: 7px 8px; border-radius: 9px;
-    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    padding: 7px 9px; border-radius: 10px;
+    border: 1px solid var(--edge-2); background: var(--card-solid); color: var(--text);
     font: inherit; font-size: 12px; text-align: left;
     cursor: grab; touch-action: none;
     user-select: none; -webkit-user-select: none;
-    transition: transform .12s, box-shadow .12s, border-color .12s;
+    box-shadow: 0 1px 2px rgba(24,32,60,.06);
+    transition: transform .14s, box-shadow .14s, border-color .14s;
   }
-  .screen:hover { border-color: var(--blue); }
+  .screen:hover { border-color: rgba(61,107,255,.45); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(31,38,135,.10); }
   .screen:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
   /* 拖动中用 fixed 跟手；pointer-events:none 是必须的 ——
      否则 elementFromPoint 永远命中卡片自己，判不出落点。 */
   .screen.dragging {
     position: fixed; z-index: 999; pointer-events: none; cursor: grabbing;
-    transform: scale(1.04); box-shadow: 0 8px 24px rgba(0,0,0,.3);
+    transform: scale(1.04); box-shadow: 0 14px 34px rgba(20,26,60,.28);
   }
   .screen .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .screen .stag {
     margin-left: auto; flex: none; white-space: nowrap;
-    font-size: 10px; color: var(--green);
-    border: 1px solid rgba(52,199,89,.4); border-radius: 5px; padding: 0 4px;
+    font-size: 10px; color: #1f8f78;
+    border: 1px solid rgba(47,184,154,.42); border-radius: 6px; padding: 0 5px;
   }
-  .screen .stag.new { color: var(--muted); border-color: var(--line); }
-  .screen .stag.warn { color: var(--orange); border-color: rgba(255,149,0,.45); }
-  /* 「起点」：本次会话从这台开始，对面推回来会落回这里 */
-  .screen .stag.root { color: var(--blue, #4aa3ff); border-color: rgba(74,163,255,.45); }
+  .screen .stag.new { color: var(--faint); border-color: var(--edge-2); }
+  .screen .stag.warn { color: #b96f22; border-color: rgba(224,138,60,.45); }
+  .screen .stag.root { color: var(--blue); border-color: rgba(61,107,255,.45); }
   .screen .stag + .stag { margin-left: 4px; }
-  /* "没有门"的对端 + 已发现但还没配链路的对端都停在这里 */
   .loosetray {
-    margin: 8px auto 0; padding: 8px; max-width: 560px;
-    border: 1px dashed var(--line); border-radius: 10px;
-    transition: border-color .12s, background .12s;
+    margin: 10px auto 0; padding: 10px; max-width: 520px;
+    border: 1px dashed rgba(140,150,175,.30); border-radius: 13px;
+    transition: border-color .14s, background .14s;
   }
-  .loosetray.hit { border-color: var(--blue); background: rgba(0,122,255,.06); }
-  .loosehead { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+  .loosetray.hit { border-color: var(--blue); background: rgba(61,107,255,.06); }
+  .loosehead { color: var(--faint); font-size: 11px; margin-bottom: 6px; }
   .loosebox { display: flex; flex-wrap: wrap; gap: 6px; }
   .loosebox .screen { width: auto; max-width: 100%; }
-  .gridhint { color: var(--muted); font-size: 12px; margin: 8px auto 0; max-width: 560px; }
+  .gridhint { color: var(--faint); font-size: 12px; margin: 8px auto 0; max-width: 520px; }
+
+  /* 手感档位：分段控件（不是四个等宽大按钮） */
+  .rowlabel { font-size: 12px; color: var(--faint); margin: 16px 0 8px; }
+  #kvmScaleRow { gap: 4px; padding: 3px; border-radius: 12px;
+    background: rgba(120,130,150,.10); border: 1px solid var(--edge-2); display: inline-flex; }
+  #kvmScaleRow > * { flex: 0 1 auto; min-width: 0; border: 0; box-shadow: none; background: transparent;
+    font-size: 12.5px; padding: 6px 11px; border-radius: 9px; color: var(--muted); }
+  #kvmScaleRow > .green { background: var(--card-solid); color: var(--blue);
+    box-shadow: 0 1px 3px rgba(24,32,60,.10), inset 0 1px 0 rgba(255,255,255,.6); }
+  #kvmScaleRow > .ghost { background: transparent; }
+
+  /* 高级折叠 */
+  .adv { padding: 0; margin-bottom: 14px; overflow: hidden; }
+  .adv summary {
+    list-style: none; cursor: pointer; padding: 15px 20px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; font-weight: 650; color: var(--muted);
+  }
+  .adv summary::-webkit-details-marker { display: none; }
+  .adv summary .chev { margin-left: auto; color: var(--faint); transition: transform .18s; }
+  .adv[open] summary .chev { transform: rotate(90deg); }
+  .adv .body { padding: 0 20px 18px; display: grid; gap: 10px; }
+  .adv .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  @media (max-width: 760px) { .adv .cols { grid-template-columns: 1fr; } }
+  .adv .box { padding: 12px 14px; border-radius: 13px; background: var(--card-solid); border: 1px solid var(--edge-2); }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 </style>
 </head>
 <body>
+<div class="glow a"></div><div class="glow b"></div><div class="glow c"></div>
 <div class="wrap">
-  <h1>切屏控制台 <span id="node">…</span></h1>
+  <!-- 顶部常驻状态条：画面 / 键鼠 / 对端 三个事实 + 主操作。
+       最高频的动作（切换）以前埋在「输入源」卡片里，得往下找。 -->
+  <header class="topbar glass">
+    <div class="statusline">
+      <div class="stat"><span class="k">本机</span><span class="v" id="node">…</span></div>
+      <div class="stat"><span class="k">画面</span><span class="v" id="hdrScreen">—</span></div>
+      <div class="stat"><span class="k">键鼠</span><span class="v" id="hdrKeys">—</span></div>
+      <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
+    </div>
+    <div class="actions">
+      <button id="mainSwitch" class="primary" onclick="quickSwitch()">切换画面</button>
+    </div>
+    <div class="toast" id="status">—</div>
+  </header>
 
   <div id="pairBanner" class="banner warn">正在读取状态…</div>
 
-  <div class="card">
-    <h2>配对</h2>
-    <div class="row">
-      <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
-      <button class="ghost" onclick="genCode()">随机生成</button>
-      <button class="green" onclick="savePair()">保存并连接</button>
-      <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
-    </div>
-    <div class="hint">两台机器填同一个码。保存后双方的消息都会签名，陌生人发不动你的显示器。码越长越安全。<br>
-      想换码就直接改上面的输入框再保存；想彻底关掉校验就点「取消配对」。</div>
-  </div>
-
-  <button id="mainSwitch" class="primary" onclick="quickSwitch()">切换画面</button>
-
-  <div class="card">
-    <h2>输入源</h2>
-    <div id="ports" class="ports"><div class="empty">读取中…</div></div>
-    <div class="hint" id="portHint"></div>
-  </div>
-
-  <div class="card">
-    <h2>共用键鼠</h2>
-    <div class="hint">
-      每台对端的模式由<b>摆位</b>决定，没有全局开关：<br>
-      拖进格子 = 那台有它自己的一块屏，光标推过这条边就过去（多屏共享）；<br>
-      拖进「没有门」= 两台共用一块屏，切信号源时键鼠跟着画面走。
-    </div>
-
-    <!-- 原来这里是「键鼠插在本机 / 键鼠在对面」两个按钮，删掉了（v0.6.68）：
-         `role` 已经不参与任何行为决策 —— 只要链路表里有一条（edge 或 follow），
-         两端都会装钩子，谁抓到谁发（见 kvm/mod.rs 的 needs_capture）。它只影响
-         一句状态文案，却长得像全局开关，跟上面"没有全局开关"那句话自相矛盾。
-         位置换成只读事实：本机能不能抓，由权限 + 链路表算出来，不该问用户。 -->
-    <div class="hint" id="kvmRoleHint" style="margin-top:10px"></div>
-
-    <div class="switch" style="margin-top:12px">
-      <span>运行状态：<b id="kvmState">未启动</b></span>
-      <button id="kvmPower" class="green" onclick="toggleKvm()">开启</button>
-    </div>
-
-    <!-- 授权没生效：唯一能把人卡在这里的一条路。
-         macOS 把 TCC 结论缓存在进程里，刚在设置里勾上时，这个进程照样
-         报"没权限"，点「开启」只会再弹一次设置页 —— 看起来像勾选无效
-         或者装错了版本。唯一解法是重启进程，所以给一个按钮。 -->
-    <div class="banner warn" id="kvmPermWarn" style="display:none;margin-top:10px">
-      <b>系统授权没生效</b>
-      <div class="sub" id="kvmPermText" style="margin-top:4px"></div>
-      <div style="margin-top:8px">
-        <button class="green" onclick="post('/api/restart')">重启应用</button>
+  <div class="grid2">
+    <!-- ① 这台显示器 -->
+    <section class="card">
+      <h2>这台显示器</h2>
+      <div id="ports" class="ports"><div class="empty">读取中…</div></div>
+      <div class="hint" id="portHint"></div>
+      <div class="split" style="margin-top:12px">
+        <button class="ghost" onclick="post('/api/rescan')">重新检测</button>
+        <button class="ghost" onclick="post('/api/scan')">扫描哪个口有主机</button>
+        <button class="ghost" onclick="post('/api/check')">检测支持性</button>
       </div>
-    </div>
+      <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。每试一个口都得靠对面那台把画面切回来，
+        所以对面必须开着本程序、并且两边填同一个配对码；这两个条件不满足时只汇总已知信息，不会切屏。</div>
+    </section>
 
+    <!-- ② 单屏多主机（共用一块屏） -->
+    <section class="card">
+      <h2>单屏多主机 <span class="tag">共用一块屏</span></h2>
+      <div class="hint" id="kvmRoleHint"></div>
+
+      <div class="switch" style="margin-top:10px">
+        <span>运行状态：<b id="kvmState">未启动</b></span>
+        <button id="kvmPower" class="green" onclick="toggleKvm()">开启</button>
+      </div>
+
+      <!-- 授权没生效：唯一能把人卡在这里的一条路。macOS 把 TCC 结论缓存在
+           进程里，刚勾上时这个进程照样报"没权限"，点「开启」只会再弹设置页。 -->
+      <div class="banner warn" id="kvmPermWarn" style="display:none;margin-top:10px">
+        <b>系统授权没生效</b>
+        <div class="sub" id="kvmPermText" style="margin-top:4px"></div>
+        <div style="margin-top:8px"><button class="green" onclick="post('/api/restart')">重启应用</button></div>
+      </div>
+
+      <!-- 两种卡片停在这里，标签**必须分开**：
+           「没有门」= 已配成跟随画面（共用一块屏）；
+           「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
+      <div id="kvmLoose" class="loosetray" data-drop="loose">
+        <div class="loosehead">没有门 · 共用一块屏 —— 拖到这里：切信号源时键鼠跟着画面走</div>
+        <div id="kvmLooseBox" class="loosebox"></div>
+        <div class="loosehead" style="opacity:.7;font-weight:400">标「未配链路」的是刚发现、还没摆位的（不是共用一块屏）</div>
+      </div>
+
+      <div class="split" style="margin-top:10px">
+        <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，而画面
+             一走你面前就是另一台机器的桌面，这块面板根本看不见 —— 没有可点的
+             时机。按后端算好的 follow_link 藏掉（见 renderKvm）。键鼠已经在别台
+             手上（active 非空）时同样藏掉：那时光标被钉死、点击到不了这里。 -->
+        <button id="kvmHandBtn" class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
+      </div>
+      <div class="hint" id="kvmHandHint"></div>
+      <!-- 「收回键鼠」按钮删掉了（v0.6.65）：发送中光标被钉死、点击转发给对端，
+           按钮点不到；被控时按一下鼠标就已经触发物理抢回。两条真路写在这里。 -->
+      <div class="hint">收回键鼠：<b>画面在对面</b>时按 Ctrl+Alt+Esc（抓取期间也有效）；
+        <b>被对端控制</b>时按一下本机鼠标或任意键就抢回来。</div>
+
+      <div class="rowlabel">接收手感（键鼠在对端、你在操作本机时生效）</div>
+      <div class="split" id="kvmScaleRow">
+        <button id="kvmScale09" class="ghost scalebtn" onclick="setKvmScale(0.9)">0.9 慢</button>
+        <button id="kvmScale10" class="ghost scalebtn" onclick="setKvmScale(1)">1.0 标准</button>
+        <button id="kvmScale11" class="ghost scalebtn" onclick="setKvmScale(1.1)">1.1</button>
+        <button id="kvmScale12" class="ghost scalebtn" onclick="setKvmScale(1.2)">1.2 快</button>
+      </div>
+      <div class="hint" id="kvmScaleHint"></div>
+    </section>
+  </div>
+
+  <!-- ③ 多屏 KVM（各有一块屏） -->
+  <section class="card">
+    <h2>多屏 KVM <span class="tag">各有一块屏</span></h2>
+    <div class="hint">拖进格子 = 那台有它自己的一块屏，光标推过这条边就过去（多屏共享）；
+      拖进「没有门」= 两台共用一块屏，切信号源时键鼠跟着画面走。</div>
     <div id="kvmGrid" class="grid"></div>
-    <!-- 两种卡片停在这里，标签**必须分开**：
-         「没有门」= 已配成跟随画面（共用一块屏）；
-         「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。
-         混成一个标签会让人以为程序认定两台共用一块屏。 -->
-    <div id="kvmLoose" class="loosetray" data-drop="loose">
-      <div class="loosehead">没有门 · 共用一块屏 —— 拖到这里：切信号源时键鼠跟着画面走</div>
-      <div id="kvmLooseBox" class="loosebox"></div>
-      <div class="loosehead" style="opacity:.7;font-weight:400">标「未配链路」的是刚发现、还没摆位的（不是共用一块屏）</div>
-    </div>
     <div class="gridhint" id="kvmGridHint"></div>
     <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
          因为 #kvmGridHint 每次重绘都会被重写 -->
     <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
-
     <div id="kvmLinks"></div>
     <div class="hint" id="kvmLinkHint"></div>
+  </section>
 
-    <div class="split" style="margin-top:10px">
-      <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，
-           而画面一走你面前就是另一台机器的桌面，这块面板根本看不见 ——
-           没有可点的时机。按后端算好的 follow_link 藏掉（见 renderKvm）。
-           同理，键鼠已经在别台手上（active 非空）时它也没意义：
-           那时候光标被钉死、点击根本到不了这里，换收件人请点链路行。 -->
-      <button id="kvmHandBtn" class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
-    </div>
-    <div class="hint" id="kvmHandHint"></div>
-    <!-- 原来这里有个「收回键鼠」按钮，删掉了：发送中光标被钉死、点击转发给
-         对端，按钮点不到；被控时按一下鼠标就已经触发物理抢回，按钮也是多余。
-         两条真正可用的路写在这里。接口 /api/kvm-takeback 仍然保留（脚本用）。 -->
-    <div class="hint" style="margin-top:6px">收回键鼠：<b>画面在对面</b>时按 Ctrl+Alt+Esc（抓取期间也有效）；
-      <b>被对端控制</b>时按一下本机鼠标或任意键就抢回来。</div>
+  <div class="grid2">
+    <!-- ④ 局域网对端 -->
+    <section class="card">
+      <h2>局域网对端</h2>
+      <div id="peers"><div class="empty">还没发现同一局域网里的另一台机器</div></div>
+      <div class="hint">对端开着本程序就会自动出现。它报的是<b>它自己那块显示器</b>的输入口，
+        编号和你这台显示器的口不通用 —— 上面的「这台显示器」只反映本机这块屏。</div>
+    </section>
 
-    <!-- 手感微调：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
-         两个系统的指针加速曲线不一样，同一串位移在两边速度必然有差 ——
-         觉得回到本机变慢就调大。 -->
-    <div class="hint" style="margin-top:10px">接收手感（键鼠在对端、你在用本机时生效）</div>
-    <div class="split" id="kvmScaleRow">
-      <button id="kvmScale09" class="ghost scalebtn" onclick="setKvmScale(0.9)">0.9 慢</button>
-      <button id="kvmScale10" class="ghost scalebtn" onclick="setKvmScale(1)">1.0 标准</button>
-      <button id="kvmScale11" class="ghost scalebtn" onclick="setKvmScale(1.1)">1.1</button>
-      <button id="kvmScale12" class="ghost scalebtn" onclick="setKvmScale(1.2)">1.2 快</button>
-    </div>
-    <div class="hint" id="kvmScaleHint"></div>
+    <!-- ⑤ 配对 -->
+    <section class="card">
+      <h2>配对</h2>
+      <div class="row">
+        <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
+        <button class="ghost" onclick="genCode()">随机生成</button>
+        <button class="green" onclick="savePair()">保存并连接</button>
+        <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
+      </div>
+      <div class="hint">两台机器填同一个码。保存后双方的消息都会签名，陌生人发不动你的显示器。码越长越安全。<br>
+        想换码就直接改上面的输入框再保存；想彻底关掉校验就点「取消配对」。</div>
+    </section>
   </div>
 
-  <div class="card">
-    <h2>局域网对端</h2>
-    <div id="peers"><div class="empty">还没发现同一局域网里的另一台机器</div></div>
-    <div class="hint">对端开着本程序就会自动出现。它报的是<b>它自己那块显示器</b>的输入口，
-      编号和你这台显示器的口不通用 —— 上面的「输入源」只反映本机这块屏。</div>
-  </div>
-
-  <div class="card">
+  <!-- ⑥ 文件 -->
+  <section class="card">
     <h2>文件</h2>
     <div class="split">
       <button class="green" onclick="post('/api/send')">发送文件…</button>
@@ -313,60 +430,54 @@
     </div>
     <div class="hint" id="inbox">接收目录：—</div>
     <div id="transfer" class="hint"></div>
-  </div>
+  </section>
 
-  <div class="card">
-    <h2>设置</h2>
-    <dl class="kv">
-      <dt>显示器</dt><dd id="display">—</dd>
-      <dt>身份</dt><dd><code id="identity">—</code></dd>
-      <dt>支持性</dt><dd id="support">—</dd>
-      <dt>当前状态</dt><dd id="status">—</dd>
-      <dt>热键</dt><dd><span id="hotkey">—</span>
-        <button class="ghost" style="padding:2px 10px;font-size:12px;margin-left:10px" onclick="recHotkey()">改键</button>
-      </dd>
-      <dt>热键目标</dt><dd id="target">—</dd>
-    </dl>
-    <div class="switch">
-      <span>开机自启</span>
-      <button id="autoBtn" class="ghost" onclick="toggleAutostart()">—</button>
+  <!-- ⑦ 高级：跟"我现在要干什么"无关的东西全收在这里 -->
+  <details class="adv card glass">
+    <summary>高级 <span class="sub">热键 · 启动与守护 · 剪贴板</span><span class="chev">›</span></summary>
+    <div class="body">
+      <div class="box">
+        <dl class="kv">
+          <dt>显示器</dt><dd id="display">—</dd>
+          <dt>身份</dt><dd><code id="identity">—</code></dd>
+          <dt>支持性</dt><dd id="support">—</dd>
+          <dt>热键</dt><dd><span id="hotkey">—</span>
+            <button class="ghost" style="padding:2px 10px;font-size:12px;margin-left:10px" onclick="recHotkey()">改键</button>
+          </dd>
+          <dt>热键目标</dt><dd id="target">—</dd>
+        </dl>
+      </div>
+
+      <div class="cols">
+        <div class="box">
+          <div class="switch"><span>开机自启</span>
+            <button id="autoBtn" class="ghost" onclick="toggleAutostart()">—</button></div>
+          <!-- 三件事必须分开：自启是"程序跑起来"，恢复是"键鼠自动接上"，
+               守护是"崩了自己回来"。想只自启、不想被接管键鼠的人占多数。 -->
+          <div class="switch"><span>对端上线后自动恢复共用键鼠</span>
+            <button id="resumeBtn" class="ghost" onclick="toggleAutoResume()">—</button></div>
+          <div class="switch"><span>崩溃后自动重启</span>
+            <button id="guardBtn" class="ghost" onclick="toggleKeepAlive()">—</button></div>
+          <div class="hint" id="bootHint"></div>
+        </div>
+        <div class="box">
+          <div class="switch"><span>同步剪贴板文本</span>
+            <button id="clipBtn" class="ghost" onclick="toggleClipboard()">—</button></div>
+          <div class="split" style="margin-top:10px">
+            <button id="subBtn" class="ghost" onclick="toggleSubmachine()">—</button>
+          </div>
+          <div class="hint">副机模式 = 上面三项全开 + 共用键鼠保持开启，给<b>没有接键鼠</b>的那台机器用。
+            开启前请确认这台是<b>静态 IP</b>：共用键鼠的白名单只认地址、不认机器名。</div>
+        </div>
+      </div>
+
+      <div class="hint" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <span>配置文件和日志都在同一个目录里</span>
+        <button class="ghost" style="padding:4px 10px;font-size:12px;flex:none" onclick="post('/api/open-config')">打开配置文件夹</button>
+      </div>
     </div>
-    <!-- 三件事必须分开：自启是"程序跑起来"，恢复是"键鼠自动接上"，
-         守护是"崩了自己回来"。想只自启、不想被接管键鼠的人占多数。 -->
-    <div class="switch">
-      <span>对端上线后自动恢复共用键鼠</span>
-      <button id="resumeBtn" class="ghost" onclick="toggleAutoResume()">—</button>
-    </div>
-    <div class="switch">
-      <span>崩溃后自动重启</span>
-      <button id="guardBtn" class="ghost" onclick="toggleKeepAlive()">—</button>
-    </div>
-    <div class="hint" id="bootHint"></div>
-    <div class="split" style="margin-top:8px">
-      <button id="subBtn" class="ghost" onclick="toggleSubmachine()">—</button>
-    </div>
-    <div class="hint">副机模式 = 上面三项全开 + 共用键鼠保持开启，
-      给<b>没有接键鼠</b>的那台机器用（一开机就等人推过来，不用过去点任何东西）。<br>
-      开启前请确认这台是<b>静态 IP</b>：共用键鼠的白名单只认地址、不认机器名。</div>
-    <div class="switch">
-      <span>同步剪贴板文本</span>
-      <button id="clipBtn" class="ghost" onclick="toggleClipboard()">—</button>
-    </div>
-    <div class="split" style="margin-top:12px">
-      <button class="ghost" onclick="post('/api/rescan')">重新检测显示器</button>
-      <button class="ghost" onclick="post('/api/scan')">扫描哪个口有主机</button>
-      <button class="ghost" onclick="post('/api/check')">检测支持性</button>
-    </div>
-    <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。<br>
-      每试一个口都得靠对面那台把画面切回来，所以对面必须开着本程序、并且两边填同一个配对码。
-      这两个条件不满足时，扫描只汇总已知信息，不会切屏。</div>
-    <div class="hint" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-      <span>配置文件和日志都在同一个目录里</span>
-      <button class="ghost" style="padding:4px 10px;font-size:12px;flex:none" onclick="post('/api/open-config')">打开配置文件夹</button>
-    </div>
-  </div>
+  </details>
 </div>
-
 <script>
 let snap = null;
 let busy = false;
@@ -395,9 +506,28 @@ async function pull() {
   }
 }
 
+/// 顶部常驻状态条：画面 / 键鼠 / 对端。
+///
+/// 三个都是**事实**，不是设置项：画面 = 本机这块屏当前选中的输入口；
+/// 键鼠 = kvm.active（非空就是在别台手上）；对端 = 在线台数 + 会话对端活不活。
+/// 以前这些信息散在三张卡里，用户要先滚到对应卡片才知道"我现在在哪台"。
+function renderHeader() {
+  const el = (id) => document.getElementById(id);
+  const cur = (snap.inputs || []).find(i => i.current);
+  el('hdrScreen').innerHTML = cur
+    ? `${esc(cur.name || '输入源')}<span class="sub">${esc(cur.label || '')}</span>`
+    : '<span class="sub">读不到</span>';
+  const k = snap.kvm || {};
+  el('hdrKeys').textContent = k.active ? k.active : '本机';
+  const n = (snap.peers || []).length;
+  el('hdrPeer').innerHTML =
+    `<span class="dot${k.peer_alive ? ' on' : ' off'}"></span> ${n} 台在线`;
+}
+
 function render() {
   if (!snap) return;
   document.getElementById('node').textContent = snap.node || '';
+  renderHeader();
 
   const banner = document.getElementById('pairBanner');
   if (snap.paired && snap.peer_verified > 0) {

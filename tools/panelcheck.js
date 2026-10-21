@@ -202,6 +202,9 @@ ok(/不会一开机就抢键鼠/.test(made['bootHint'].textContent),
 ok(!/kvmConsole|kvmRemote/.test(html), '页面上不再有「键鼠插在本机 / 键鼠在对面」按钮');
 ok(/会抓取键鼠并转发/.test(made['kvmRoleHint'].textContent),
   '原位换成只读事实：本机会抓取并转发');
+// 14. 顶部状态条：画面 / 键鼠 / 对端 三个事实（v0.6.69）
+ok(/3 台在线/.test(made['hdrPeer'].innerHTML), '状态条显示在线台数');
+ok(made['hdrKeys'].textContent === 'CHINAMI-0DFF1JU', '状态条显示键鼠现在在谁手上');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);
