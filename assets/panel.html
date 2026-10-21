@@ -120,6 +120,9 @@
     padding: 8px 15px; cursor: pointer; color: var(--text);
     border: 1px solid var(--edge-2);
     background: var(--card-solid);
+    /* 按钮文字永远不许换行：卡片被挤窄时 flex 会把按钮压到几个像素宽，
+       文字就竖着排了（2026-10-22 实测，输入源那一列全变成竖排）。 */
+    white-space: nowrap; flex: none;
     box-shadow: 0 1px 2px rgba(24,32,60,.06), inset 0 1px 0 rgba(255,255,255,.5);
     transition: transform .18s cubic-bezier(.2,.7,.3,1), box-shadow .18s, background .18s, filter .18s;
   }
@@ -149,8 +152,12 @@
   .port {
     display: flex; align-items: center; gap: 10px; padding: 10px 12px;
     border-radius: 12px; background: var(--card-solid); border: 1px solid var(--edge-2);
+    /* 一行放不下就换行，**绝不压缩子项** —— 压窄的按钮会把中文竖排 */
+    flex-wrap: wrap;
     transition: all .18s cubic-bezier(.2,.7,.3,1);
   }
+  .port > .grow { flex: 1 1 180px; min-width: 0; }
+  .port > .tag, .port > button { flex: none; }
   .port:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(31,38,135,.08); }
   /* 当前输入源：内发光环，不用实心填充（玻璃里实心块很丑） */
   .port.cur {
@@ -168,6 +175,8 @@
   .tag {
     font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
     background: var(--blue-soft); color: var(--blue); border: 1px solid transparent;
+    /* 徽标同样不许被压窄/换行 */
+    white-space: nowrap; flex: none;
   }
   .tag.blue { color: var(--blue); }
   .tag.green { color: #1f8f78; background: rgba(47,184,154,.14); }
@@ -317,9 +326,9 @@
 
   <div id="pairBanner" class="banner warn">正在读取状态…</div>
 
-  <div class="grid2">
-    <!-- ① 这台显示器 -->
-    <section class="card">
+  <!-- ① 这台显示器：整行铺开 —— 每行有名称 + 徽标 + 两个按钮，
+       塞进半宽会换行成两层，反而更难扫 -->
+  <section class="card">
       <h2>这台显示器</h2>
       <div id="ports" class="ports"><div class="empty">读取中…</div></div>
       <div class="hint" id="portHint"></div>
@@ -330,8 +339,9 @@
       </div>
       <div class="hint">扫描会真的切屏几次，屏幕会黑一下，别在开会时点。每试一个口都得靠对面那台把画面切回来，
         所以对面必须开着本程序、并且两边填同一个配对码；这两个条件不满足时只汇总已知信息，不会切屏。</div>
-    </section>
+  </section>
 
+  <div class="grid2">
     <!-- ② 单屏多主机（共用一块屏） -->
     <section class="card">
       <h2>单屏多主机 <span class="tag">共用一块屏</span></h2>
@@ -381,10 +391,9 @@
       </div>
       <div class="hint" id="kvmScaleHint"></div>
     </section>
-  </div>
 
-  <!-- ③ 多屏 KVM（各有一块屏） -->
-  <section class="card">
+    <!-- ③ 多屏 KVM（各有一块屏） -->
+    <section class="card">
     <h2>多屏 KVM <span class="tag">各有一块屏</span></h2>
     <div class="hint">拖进格子 = 那台有它自己的一块屏，光标推过这条边就过去（多屏共享）；
       拖进「没有门」= 两台共用一块屏，切信号源时键鼠跟着画面走。</div>
@@ -394,8 +403,9 @@
          因为 #kvmGridHint 每次重绘都会被重写 -->
     <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
     <div id="kvmLinks"></div>
-    <div class="hint" id="kvmLinkHint"></div>
-  </section>
+      <div class="hint" id="kvmLinkHint"></div>
+    </section>
+  </div>
 
   <div class="grid2">
     <!-- ④ 局域网对端 -->
