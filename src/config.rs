@@ -492,9 +492,18 @@ impl Config {
             }
         };
         cfg.migrate();
-        // 每次都守一道，不只在版本迁移里（见 clear_unverified_occupancy 的注释）：
+        // 每次加载都守一道，不只在版本迁移里（见 clear_unverified_occupancy 的注释）：
         // 扫描/重新检测会把"对端自报占用"再写回来，一次性的迁移拦不住它。
+        let renamed = cfg.rename_anonymous_inputs();
         let ghost = cfg.clear_unverified_occupancy();
+        if renamed > 0 {
+            #[cfg(feature = "tray")]
+            crate::tray::log_line(&format!(
+                "已把 {renamed} 个匿名输入口按 MCCS 标准改名（0x12 → HDMI-2 这种）"
+            ));
+            #[cfg(not(feature = "tray"))]
+            eprintln!("已把 {renamed} 个匿名输入口按 MCCS 标准改名");
+        }
         if ghost > 0 {
             #[cfg(feature = "tray")]
             crate::tray::log_line(&format!(
@@ -503,6 +512,10 @@ impl Config {
             ));
             #[cfg(not(feature = "tray"))]
             eprintln!("已清掉 {ghost} 条没有本机验证的「有主机」记录");
+        }
+        // **改名也要落盘**：以前 save 只写在 ghost 分支里，改名只改了内存，
+        // 下次加载又从头改一遍（日志里能看见同一条改名消息刷两次）。
+        if renamed > 0 || ghost > 0 {
             let _ = cfg.save();
         }
         cfg
@@ -553,6 +566,33 @@ impl Config {
             }
         }
         cleared
+    }
+
+    /// 把 `输入源 0x12` 这种匿名口按 MCCS 标准改名（0x12 → hdmi2）。
+    ///
+    /// 只改"名字是程序自动起的匿名名"的条目，用户自己命名过的一律不动；
+    /// 顺手把 `labels` 里挂在旧名上的自定义标签搬到新名上，否则用户设的
+    /// 显示名会突然失效。
+    pub fn rename_anonymous_inputs(&mut self) -> usize {
+        let mut renames: Vec<(String, String)> = Vec::new();
+        for profile in self.monitors.values_mut() {
+            for src in profile.inputs.iter_mut() {
+                if !src.name.starts_with("输入源 0x") {
+                    continue;
+                }
+                let Some(short) = crate::models::mccs_input_name(src.value) else {
+                    continue; // 标准里没有的取值：留着 0x..，比乱猜强
+                };
+                renames.push((src.name.clone(), short.to_string()));
+                src.name = short.to_string();
+            }
+        }
+        for (old, new) in &renames {
+            if let Some(label) = self.labels.remove(old) {
+                self.labels.entry(new.clone()).or_insert(label);
+            }
+        }
+        renames.len()
     }
 
     fn migrate(&mut self) {
@@ -675,8 +715,13 @@ impl Config {
             if profile.inputs.iter().any(|i| i.value == *value) {
                 continue;
             }
+            // 能力表只给数值时按 MCCS 标准起名（0x12 → hdmi2）；
+            // 标准里没有的才退回 `输入源 0x..`。
+            let name = crate::models::mccs_input_name(*value)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("输入源 0x{:02X}", value));
             profile.inputs.push(crate::models::InputSource {
-                name: format!("输入源 0x{:02X}", value),
+                name,
                 value: *value,
                 verified: false,
                 presence: crate::models::Presence::Unknown,
@@ -730,7 +775,9 @@ impl Config {
         self.labels
             .get(input_name)
             .cloned()
-            .unwrap_or_else(|| input_name.to_string())
+            // 没自定义过就按 MCCS 短名渲染成 HDMI-2 / DP-1 这种，
+            // 而不是把 `hdmi2` 原样丢给用户看
+            .unwrap_or_else(|| crate::models::pretty_input_name(input_name))
     }
 
     /// 记住"本机接在哪个口"。只在真的读到值时调用 ——
@@ -1002,5 +1049,58 @@ mod ghost_input_tests {
 
         // 幂等：再跑一次不该有东西可清（否则每次加载都要写盘）
         assert_eq!(cfg.clear_unverified_occupancy(), 0);
+    }
+}
+
+#[cfg(test)]
+mod input_naming_tests {
+    use super::*;
+
+    /// MCCS 标准取值 → 短名；没把握的区间必须返回 None（宁可显示 0x..，别乱猜）
+    #[test]
+    fn mccs_names_cover_the_standard_range() {
+        assert_eq!(crate::models::mccs_input_name(0x0F), Some("dp1"));
+        assert_eq!(crate::models::mccs_input_name(0x10), Some("dp2"));
+        assert_eq!(crate::models::mccs_input_name(0x11), Some("hdmi1"));
+        assert_eq!(crate::models::mccs_input_name(0x12), Some("hdmi2"));
+        assert_eq!(crate::models::mccs_input_name(0x13), None);
+        assert_eq!(crate::models::mccs_input_name(0xFF), None);
+    }
+
+    /// 短名渲染：认识的按厂商写法，不认识的原样返回（用户起的名字不能改）
+    #[test]
+    fn pretty_names_read_like_a_monitor_osd() {
+        assert_eq!(crate::models::pretty_input_name("hdmi2"), "HDMI-2");
+        assert_eq!(crate::models::pretty_input_name("dp1"), "DP-1");
+        assert_eq!(crate::models::pretty_input_name("usbc"), "USB-C");
+        assert_eq!(crate::models::pretty_input_name("DP（Windows 那台）"), "DP（Windows 那台）");
+    }
+
+    /// 匿名口按 MCCS 改名，用户给它设过的显示标签要跟着搬到新名字上
+    #[test]
+    fn anonymous_inputs_are_renamed_and_labels_follow() {
+        let mut cfg: Config = serde_json::from_str(
+            r#"{
+              "labels": { "输入源 0x12": "客厅那台" },
+              "monitors": {
+                "X": {
+                  "uid": "X", "name": "P275MV", "capability": "read_write",
+                  "inputs": [
+                    {"name": "输入源 0x12", "value": 18, "verified": false, "presence": "unknown"},
+                    {"name": "hdmi1", "value": 17, "verified": true, "presence": "occupied"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.rename_anonymous_inputs(), 1);
+        let profile = cfg.monitors.get("X").unwrap();
+        assert_eq!(profile.inputs[0].name, "hdmi2", "0x12 应按 MCCS 叫 hdmi2");
+        assert_eq!(profile.inputs[1].name, "hdmi1", "有名字的口不许动");
+        assert_eq!(cfg.label_for("hdmi2"), "客厅那台", "自定义标签要跟着搬");
+        // 幂等
+        assert_eq!(cfg.rename_anonymous_inputs(), 0);
     }
 }

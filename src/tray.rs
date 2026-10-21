@@ -2201,6 +2201,35 @@ fn engine_loop(
                     *note = report.clone();
                 }
                 let _ = sync_own(&mut switcher, &mesh);
+                // ---- 重新检测的收尾：把画面切回本机口 ----
+                //
+                // 重新检测本身是只读的，但有些显示器被一串 DDC 读折腾之后会
+                // 掉到别的输入源上 —— 实测掉到一个**没接主机**的口，画面直接
+                // 黑了，而且再也不会自己回来（用户 2026-10-22 报的就是这个）。
+                //
+                // 判据要卡两道：①本机此刻接着显示器（`HAS_DISPLAY`）——
+                // 画面在对面那台时读到的 0x60 是**对端的口**，照它"切回本机"
+                // 会把对端的画面抢走；②读到的值和 own_value 不同才动手。
+                if HAS_DISPLAY.load(AtomicOrdering::SeqCst) {
+                    let own = switcher.config.own_value;
+                    if own > 0 {
+                        if let Some(display) = switcher.pick_display(None) {
+                            if let Some(now) = switcher.backend().get_vcp(&display, VCP_INPUT_SOURCE) {
+                                if now != own {
+                                    let name = switcher.config.label_for(&switcher.config.own_input.clone());
+                                    let ok = switcher.backend().set_vcp(&display, VCP_INPUT_SOURCE, own);
+                                    log_line(&format!(
+                                        "重新检测把画面留在了 0x{now:02X}（本机口是 0x{own:02X} {name}），{}",
+                                        if ok { "已切回" } else { "切回失败，请手动切一次" }
+                                    ));
+                                    if ok {
+                                        switcher.suppress_ddc(Duration::from_millis(1500));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 let target = switcher.config.hotkey_target.clone();
                 let mut text = status_text(&mut switcher);
                 if text.is_empty() {
@@ -2697,7 +2726,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.71",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.72",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

@@ -146,6 +146,65 @@ pub struct InputSource {
     pub checked_at: u64,
 }
 
+/// VCP 0x60（Input Source）的标准取值 → 短名。
+///
+/// 显示器自己的能力表经常**只给数值不给名字**（`vcp(60(0F 10 11 12))`），
+/// 以前就退化成 `输入源 0x12` —— 用户没法判断那到底是哪个口。MCCS 对这组
+/// 取值有标准定义，按标准起名比"0x12"有用得多（2026-10-22 用户要求）。
+///
+/// 只收录 0x01~0x12 这一段**没有歧义**的：0x13 往上各家实现不一致
+/// （有的当 DVI、有的当 USB-C），猜错比不猜更糟，留给调用方回退成 0x..。
+///
+/// 名字刻意用短名（`hdmi2` 而不是 `HDMI-2`）：它是配置里的稳定键，
+/// 显示用的漂亮格式由 `Config::label_for` 负责。
+pub fn mccs_input_name(value: u16) -> Option<&'static str> {
+    Some(match value {
+        0x01 => "analog1",
+        0x02 => "analog2",
+        0x03 => "dvi1",
+        0x04 => "dvi2",
+        0x05 => "composite1",
+        0x06 => "composite2",
+        0x07 => "svideo1",
+        0x08 => "svideo2",
+        0x09 => "tuner1",
+        0x0A => "tuner2",
+        0x0B => "tuner3",
+        0x0C => "component1",
+        0x0D => "component2",
+        0x0E => "component3",
+        0x0F => "dp1",
+        0x10 => "dp2",
+        0x11 => "hdmi1",
+        0x12 => "hdmi2",
+        _ => return None,
+    })
+}
+
+/// 把短名渲染成人看的样子：`hdmi2` → `HDMI-2`，`usbc` → `USB-C`。
+///
+/// 认不出来就原样返回（用户自己起的名字不该被改写）。
+pub fn pretty_input_name(name: &str) -> String {
+    let lower = name.trim().to_ascii_lowercase();
+    let with_dash = |prefix: &str| -> Option<String> {
+        let rest = lower.strip_prefix(prefix)?;
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        Some(format!("{}-{}", prefix.to_ascii_uppercase(), rest))
+    };
+    for prefix in ["dp", "hdmi", "dvi", "analog", "component", "composite", "svideo", "tuner"] {
+        if let Some(pretty) = with_dash(prefix) {
+            return pretty;
+        }
+    }
+    match lower.as_str() {
+        "usbc" | "usb-c" | "type-c" => "USB-C".to_string(),
+        "vga" => "VGA".to_string(),
+        _ => name.to_string(),
+    }
+}
+
 /// 一台显示器型号的输入源映射表。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DisplayProfile {
