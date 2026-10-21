@@ -487,6 +487,27 @@ fn return_side(links: &[Link], to: usize) -> u8 {
         .unwrap_or(Side::CODE_UNKNOWN)
 }
 
+/// 这场会话算不算"有门"。
+///
+/// 两条证据取或：本地配置说它是多屏共享，**或者**对端的 `Enter` 带了
+/// 真实出门侧。后者才是权威 —— 门是发送方拓扑的一部分，只有 Edge 链路
+/// 发得出 side（Follow 恒发 `CODE_UNKNOWN`）。
+///
+/// 这个"或"不是宽容，是**必需**：发送方改了摆位、接收方没改（用户很自然
+/// 地只在正在用的那台上面拖一下），按本地判就会把一条有门的链路当成
+/// 共用一块屏 —— 推门交还整段不跑，人从那台回不来。
+fn session_edge(local_edge: bool, peer_side: u8) -> bool {
+    local_edge || Side::from_code(peer_side).is_some()
+}
+
+/// 用户按的那个方向，是不是"来路"。
+///
+/// 当前这台是我朝 `link_side` 出门才到的 ⇒ 按它的反面就等于想回去。
+/// 反过来按同一个方向是"继续往外走"，那才该报"这一侧没有机器"。
+fn is_homeward(link_side: Option<Side>, pressed: Side) -> bool {
+    link_side.is_some_and(|s| s.opposite() == pressed)
+}
+
 /// 收到 Takeback 该怎么处理。
 ///
 /// 三种结局分开表态的意义：以前只有"收回本机"一条路，而键鼠进了多跳
@@ -1905,15 +1926,49 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                                     (log)(err);
                                 }
                             }
-                            None => (log)(format!(
-                                "{}边没有可以转过去的机器（摆位图里给它拖个方向先）",
-                                match side {
-                                    Side::Left => "左",
-                                    Side::Right => "右",
-                                    Side::Top => "上",
-                                    Side::Bottom => "下",
+                            None => {
+                                // 那一侧没有邻居 —— 但先分清"想再找一个邻居"和
+                                // "想回家"：当前这台正是我从 `side` 的反面出门
+                                // 才到的，用户朝着来路按，意思就是回去。
+                                //
+                                // 这一步是**唯一不依赖对端配合**的回程手段：
+                                // 对端没升级、或它不判门（把自己那边当成共用
+                                // 一块屏），推边交还就发不出来，人至少还能按
+                                // 这个键回来。回起点而不是回本机，是因为画面
+                                // 还在起点那台上（P275MV 显示的正是它）。
+                                let homeward = is_homeward(
+                                    active_cap
+                                        .get()
+                                        .and_then(|i| links_cap.get(i))
+                                        .and_then(|l| l.side),
+                                    side,
+                                );
+                                if !homeward {
+                                    (log)(format!(
+                                        "{}边没有可以转过去的机器（摆位图里给它拖个方向先）",
+                                        match side {
+                                            Side::Left => "左",
+                                            Side::Right => "右",
+                                            Side::Top => "上",
+                                            Side::Bottom => "下",
+                                        }
+                                    ));
+                                    continue;
                                 }
-                            )),
+                                match root_cap.get() {
+                                    Some(r) => {
+                                        if let Err(err) =
+                                            linker!().retarget(r, 0xFFFF, "热键回起点")
+                                        {
+                                            (log)(format!("{err}；改回本机"));
+                                            take_back_here("热键回家");
+                                        }
+                                    }
+                                    // 这一场不是从别台跳过来的（空闲时直接越界
+                                    // 出去），没有"起点"可言 —— 收回本机
+                                    None => take_back_here("热键回家"),
+                                }
+                            }
                         }
                     }
                 }
@@ -2124,6 +2179,27 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                         // 拓扑定理在这里也升级成四向版：它从右边出门 ⇒ 我在
                         // 它左边；它从上面出门 ⇒ 我在它下面。
                         if let Some(ps) = Side::from_code(peer_side) {
+                            // **有没有门，发送方比本地配置更有发言权。**
+                            //
+                            // 只有 Edge 链路发得出真实的出门侧（Follow 恒发
+                            // CODE_UNKNOWN，见 `follow()`）。所以"带了一个
+                            // 有效 side"这件事本身就是"那条链路有门"的证据。
+                            //
+                            // 反过来按本地配置判会出一个死局：用户往往只在
+                            // **发送方那台**摆过位（"把 0DFF1JU 拖到右侧"），
+                            // 接收方自己那份还是默认的"共用一块屏" → 这里
+                            // 判定 edge=false → 推门交还整段不跑 → 光标顶死
+                            // 在门口也不交还，症状就是"回不去上一台"
+                            //（v0.6.61 实测）。门是发送方拓扑的一部分，
+                            // 不该要求接收方把同一件事再配一遍。
+                            if session_edge(sess.edge, peer_side) && !sess.edge {
+                                sess.edge = true;
+                                (log)(format!(
+                                    "{} 从 {} 出门 ⇒ 这条链路按「有门」处理（本机配置里它没占边，已按对端为准）",
+                                    sess.node,
+                                    ps.as_str()
+                                ));
+                            }
                             let want = ps.opposite();
                             if want != sess.portal {
                                 sess.portal = want;
@@ -2172,14 +2248,23 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             sess.enter_ms = now_ms();
                             sess.edge_hold_ms = 0;
                             sess.motion_sample.clear();
+                            // 把"这场会话有没有门"写进日志。**排障全靠这一行**：
+                            // 「从这台推边推不回去」的第一个分叉就是它到底把
+                            // 这条链路当成有门还是共用一块屏 —— 以前这只能靠
+                            // 读代码推，用户贴不出证据来。
+                            let kind = if sess.edge {
+                                format!("有门，门口在{}", sess.portal.as_str())
+                            } else {
+                                "共用一块屏（不判门，交还只能靠对端叫回或热键）".to_string()
+                            };
                             if cur == State::Sending as u8 {
                                 (log)(format!(
-                                    "{} 过来接管了，键鼠已让给它",
+                                    "{} 过来接管了，键鼠已让给它（{kind}）",
                                     sess.node
                                 ));
                             } else {
                                 (log)(format!(
-                                    "{} 接管了键鼠（画面在你这边）",
+                                    "{} 接管了键鼠（画面在你这边；{kind}）",
                                     sess.node
                                 ));
                             }
@@ -3224,5 +3309,32 @@ mod tests {
             takeback_action(sending, Some(1), 1, other, now, Some(0)),
             TakebackAction::ToRoot(0)
         ));
+    }
+
+    /// 对端的 `Enter` 带了出门侧 ⇒ 这条链路一定有门，本地配错了也算有。
+    ///
+    /// 这是 v0.6.61 那个"回不去上一台"的修复点：用户只在发送方那台摆过位，
+    /// 接收方自己那份还是"共用一块屏"，按本地判会让推门交还整段不跑。
+    #[test]
+    fn peer_side_proves_there_is_a_door() {
+        // 本地说没有门，但对端从右边出门 ⇒ 有门，且门口在左
+        assert!(session_edge(false, Side::Right.code()));
+        // 对端没带（Follow 恒发 UNKNOWN）⇒ 只能听本地的
+        assert!(!session_edge(false, Side::CODE_UNKNOWN));
+        // 本地本来就有门：带不带都算
+        assert!(session_edge(true, Side::CODE_UNKNOWN));
+        assert!(session_edge(true, Side::Left.code()));
+    }
+
+    /// "按回头的方向"才算回家；继续往外推仍报"这一侧没有机器"。
+    #[test]
+    fn homeward_is_the_opposite_of_the_door_i_came_through() {
+        // 我是朝右侧出门到的这台 ⇒ 按左 = 回家，按右 = 继续往外
+        assert!(is_homeward(Some(Side::Right), Side::Left));
+        assert!(!is_homeward(Some(Side::Right), Side::Right));
+        // 上下同理
+        assert!(is_homeward(Some(Side::Top), Side::Bottom));
+        // 共用一块屏那台没有门：没有"来路"可言，不做回家判断
+        assert!(!is_homeward(None, Side::Left));
     }
 }
