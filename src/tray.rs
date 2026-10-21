@@ -1939,39 +1939,60 @@ fn do_switch(
             },
 
             // 切到对端，且配了"跟随画面"链路（共用一块屏的那台）
-            Some(handle) if handle.has_follow_link() => match handle.state() {
-                kvm::State::Idle => match handle.follow() {
-                    Ok(true) => keys = Keys::Sent,
-                    // 刚好被别的线程抢先建了会话：照实说键鼠在哪台
-                    Ok(false) => {
-                        keys = Keys::AtPeer(
-                            handle.active_node().unwrap_or("对端").to_string(),
+            Some(handle) if handle.has_follow_link() => {
+                // **对端不在网上时，画面一步都不许动。**
+                //
+                // 切画面是单行道：走完之后本机既读不到也写不了 DDC（实测
+                // 9/9 失败），画面又不在本机 —— 用户看不见光标、也没法操作
+                // 对端，只能伸手去按显示器按钮。以前这里"降级放行"，结果是
+                // 用户报「切过去键鼠用不了」（v0.6.62 实测：那台机器整机不在
+                // 网上，ping 100% 丢、445 连不上，键鼠根本没处可交）。
+                //
+                // 对端真离线时切过去也看不到东西（它没有信号输出），所以
+                // 硬拒不会挡住"我要看那台的屏幕"这种需求。
+                if let Some(node) = follow_link_node(&handle) {
+                    if handle.link_alive_by_node(&node) == Some(false) {
+                        return format!(
+                            "{node} 不在线，画面没有切 —— 切过去你就看不见本机了，\
+                             键鼠也没处可交。先确认那台机器开着、和本机同一网段、\
+                             防火墙没把程序拦了（Windows 网络位置若是「公用」会全拦）"
                         );
                     }
-                    Err(err) => {
-                        // 「没有回应」有两种截然不同的原因，说错就白查网线
-                        let target = follow_link_node(&handle);
-                        keys = Keys::Stranded(explain_silent_peer(
-                            mesh,
-                            target.as_deref(),
-                            &err,
-                        ));
+                }
+                match handle.state() {
+                    kvm::State::Idle => match handle.follow() {
+                        Ok(true) => keys = Keys::Sent,
+                        // 刚好被别的线程抢先建了会话：照实说键鼠在哪台
+                        Ok(false) => {
+                            keys = Keys::AtPeer(
+                                handle.active_node().unwrap_or("对端").to_string(),
+                            );
+                        }
+                        Err(err) => {
+                            // 「没有回应」有两种截然不同的原因，说错就白查网线
+                            let target = follow_link_node(&handle);
+                            keys = Keys::Stranded(explain_silent_peer(
+                                mesh,
+                                target.as_deref(),
+                                &err,
+                            ));
+                        }
+                    },
+                    // 已经在往外送：follow() 这时是空转，不能当"刚交过去"
+                    kvm::State::Sending => {
+                        keys = Keys::AtPeer(handle.active_node().unwrap_or("对端").to_string());
                     }
-                },
-                // 已经在往外送：follow() 这时是空转，不能当"刚交过去"
-                kvm::State::Sending => {
-                    keys = Keys::AtPeer(handle.active_node().unwrap_or("对端").to_string());
+                    // 键鼠在对端手上（它在控制本机）。画面要切到对面去，得先
+                    // 请它松手，否则它的按键还会继续打进本机。
+                    kvm::State::Receiving => {
+                        keys = if handle.take_back_from_peer("切到对端前先收回键鼠") {
+                            Keys::AskBack
+                        } else {
+                            Keys::AtPeer("对端".to_string())
+                        };
+                    }
                 }
-                // 键鼠在对端手上（它在控制本机）。画面要切到对面去，得先
-                // 请它松手，否则它的按键还会继续打进本机。
-                kvm::State::Receiving => {
-                    keys = if handle.take_back_from_peer("切到对端前先收回键鼠") {
-                        Keys::AskBack
-                    } else {
-                        Keys::AtPeer("对端".to_string())
-                    };
-                }
-            },
+            }
 
             // 没有"跟随画面"链路（多屏共享）：切画面跟键鼠无关，一律不动。
             // 但**不能**因此说"键鼠已跟过去" —— 原来是这里默认成的。
@@ -2650,7 +2671,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.62",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.63",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node

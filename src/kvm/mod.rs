@@ -1260,6 +1260,19 @@ impl Kvm {
         self.link_alive(index)
     }
 
+    /// 按节点名查对端活不活。`None` = 链路表里没有这台。
+    ///
+    /// 切画面之前要问这一句：**对端离线时切画面是条单行道** —— 画面走了、
+    /// 键鼠还在本机，DDC 又读不到（实测切走后 9/9 失败），用户既看不见
+    /// 本机也没法操作对端，只能去按显示器自己的按钮。v0.6.62 用户实测
+    /// "Mac 切 MC5K9SJ 键鼠用不了"就是这么来的（那台机器当时整机不在网）。
+    pub fn link_alive_by_node(&self, node: &str) -> Option<bool> {
+        self.links
+            .iter()
+            .position(|l| l.node == node)
+            .map(|i| self.link_alive(i))
+    }
+
     /// 现在握着键鼠的是第几条链路。没有会话就是 None。
     pub fn active_index(&self) -> Option<usize> {
         self.active.get()
@@ -2410,8 +2423,14 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
                             root_rx.set(None);
                             reclaim_rx.store(now_ms(), Ordering::SeqCst);
                             (log)(format!(
+                                // **必须用 from_link**，不能用 `sess.node`：那个
+                                // 是启动时按 `peer_node` 建好的默认会话，只要
+                                // 本机没收到过 Enter 就一直是同一个名字。用它
+                                // 的结果是 0DFF1JU 交还也写成"MC5K9SJ 把控制权
+                                // 还回来了"（v0.6.62 排查时被这条日志带偏：
+                                // 明明会话目标是 0DFF1JU，日志却咬定 MC5K9SJ）。
                                 "{} 把控制权还回来了，键鼠已收回本机",
-                                sess.node
+                                links_rx[from_link].node
                             ));
                         }
                     }
