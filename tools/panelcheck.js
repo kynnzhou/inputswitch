@@ -151,6 +151,10 @@ const snap2 = JSON.parse(JSON.stringify(snap));
 snap2.kvm.state = '键鼠已交给对端';
 snap2.kvm.active = 'CHINAMI-0DFF1JU';
 snap2.kvm.root = 'CHINAMI-MC5K9SJ';
+// 第二幕演多屏共享拓扑（没有 follow 链路）：这样才验得到"会话中隐藏交接
+// 按钮"这条新规则 —— 有 follow 链路时它本来就因为别的原因藏着。
+snap2.kvm.follow_link = false;
+snap2.kvm.will_follow = false;
 snap2.kvm.links = snap2.kvm.links.map(l => Object.assign({}, l, {
   active: l.node === 'CHINAMI-0DFF1JU',
   can_retarget: l.node === 'CHINAMI-MC5K9SJ',
@@ -175,6 +179,14 @@ ok(/CHINAMI-MC5K9SJ[\s\S]*?起点/.test(loose2 + grid2), '起点那台标了「�
 ok(/green/.test(made['kvmScale11'].className), '倍率 1.1 那一档高亮');
 ok(/ghost/.test(made['kvmScale10'].className), '1.0 那一档没有高亮');
 ok(/x1\.1/.test(made['kvmScaleHint'].textContent), '提示里写清当前是 x1.1');
+// 10. 「收回键鼠」按钮已删：发送中光标被钉死点不到，被控时按一下鼠标就已
+//     物理抢回 —— UI 上留着只会误导。接口 /api/kvm-takeback 仍保留给脚本。
+ok(!/onclick="post\('\/api\/kvm-takeback'\)"/.test(html), '页面上不再有「收回键鼠」按钮');
+ok(/Ctrl\+Alt\+Esc/.test(made['kvmHandHint'].textContent || '') ||
+   /Ctrl\+Alt\+Esc/.test(html), '页面上写清了真正能用的收回方式');
+// 11. 键鼠已经在别台手上时，交接按钮同样藏掉（点不到），提示改成「转给它」
+ok(made['kvmHandBtn'].style.display === 'none', '会话中（active 非空）也隐藏交接按钮');
+ok(/转给它/.test(made['kvmHandHint'].textContent), '会话中提示指向链路行的「转给它」');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

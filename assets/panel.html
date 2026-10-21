@@ -275,11 +275,17 @@
     <div class="split" style="margin-top:10px">
       <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，
            而画面一走你面前就是另一台机器的桌面，这块面板根本看不见 ——
-           没有可点的时机。按后端算好的 follow_link 藏掉（见 renderKvm）。 -->
+           没有可点的时机。按后端算好的 follow_link 藏掉（见 renderKvm）。
+           同理，键鼠已经在别台手上（active 非空）时它也没意义：
+           那时候光标被钉死、点击根本到不了这里，换收件人请点链路行。 -->
       <button id="kvmHandBtn" class="ghost" onclick="post('/api/kvm-handover')">现在就把键鼠交给对端</button>
-      <button class="ghost" onclick="post('/api/kvm-takeback')">收回键鼠</button>
     </div>
     <div class="hint" id="kvmHandHint"></div>
+    <!-- 原来这里有个「收回键鼠」按钮，删掉了：发送中光标被钉死、点击转发给
+         对端，按钮点不到；被控时按一下鼠标就已经触发物理抢回，按钮也是多余。
+         两条真正可用的路写在这里。接口 /api/kvm-takeback 仍然保留（脚本用）。 -->
+    <div class="hint" style="margin-top:6px">收回键鼠：<b>画面在对面</b>时按 Ctrl+Alt+Esc（抓取期间也有效）；
+      <b>被对端控制</b>时按一下本机鼠标或任意键就抢回来。</div>
 
     <!-- 手感微调：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
          两个系统的指针加速曲线不一样，同一串位移在两边速度必然有差 ——
@@ -553,19 +559,23 @@ function renderKvm() {
   const onFollowLink = !!k.follow_link;
   const el = (id) => document.getElementById(id);
 
-  // 键鼠交接栏：「现在就把键鼠交给对端」不碰画面。共用一块屏时画面一离开
-  // 就看不见这块面板，它没有可点的时机 —— 藏掉，改用上面的「切换」一步到位。
-  el('kvmHandBtn').style.display = onFollowLink ? 'none' : '';
+  // 键鼠交接栏：「现在就把键鼠交给对端」不碰画面。
+  // 两种情况它都没用，直接藏：
+  //   ① 共用一块屏：画面一离开就看不见这块面板，没有可点的时机；
+  //   ② 键鼠已经在别台手上（active 非空）：抓取期间光标被钉死、点击被
+  //      转发给对端，这个按钮物理上点不到 —— 换收件人请点链路行的「转给它」。
+  const handUseless = onFollowLink || !!k.active;
+  el('kvmHandBtn').style.display = handUseless ? 'none' : '';
   el('kvmHandHint').textContent = onFollowLink
     ? (k.on
       ? '共用一块屏：用上面的「切换」一步完成 —— 画面过去，键鼠跟着过去；'
-        + '切回本机时键鼠自动回来，不用在这里点任何东西。'
-        + '「收回键鼠」只在被对端控制、又够不到鼠标时用。紧急收回 Ctrl+Alt+Esc。'
+        + '切回本机时键鼠自动回来，不用在这里点任何东西。紧急收回 Ctrl+Alt+Esc。'
       : '这条链路是按「共用一块屏」配的，但共用键鼠还没开。'
         + '开启之后点上面的「切换」，键鼠才会跟着画面一起过去。')
-    : '多屏共享：光标推到屏幕边缘就过去，不用点按钮。'
-      + '这两个按钮只在"想先试试通不通"时用。键鼠已经在别的机器手上时也能点 —— '
-      + '那是直接换收件人（画面不动、键鼠不中断）。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
+    : k.active
+      ? '键鼠已经在 ' + k.active + ' 手上。要换收件人，点下面那一行的「转给它」（画面不动、键鼠不中断）。'
+      : '多屏共享：光标推到屏幕边缘就过去，不用点按钮。'
+        + '这个按钮只在"想先试试通不通"时用。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
 
   // 角色只在「共用一块屏」时有意义：多屏共享两边是对等的
   el('kvmRoleRow').style.display = onFollowLink ? '' : 'none';
