@@ -177,6 +177,9 @@
   }
   .screen .stag.new { color: var(--muted); border-color: var(--line); }
   .screen .stag.warn { color: var(--orange); border-color: rgba(255,149,0,.45); }
+  /* 「起点」：本次会话从这台开始，对面推回来会落回这里 */
+  .screen .stag.root { color: var(--blue, #4aa3ff); border-color: rgba(74,163,255,.45); }
+  .screen .stag + .stag { margin-left: 4px; }
   /* "没有门"的对端 + 已发现但还没配链路的对端都停在这里 */
   .loosetray {
     margin: 8px auto 0; padding: 8px; max-width: 560px;
@@ -549,7 +552,8 @@ function renderKvm() {
       : '这条链路是按「共用一块屏」配的，但共用键鼠还没开。'
         + '开启之后点上面的「切换」，键鼠才会跟着画面一起过去。')
     : '多屏共享：光标推到屏幕边缘就过去，不用点按钮。'
-      + '这两个按钮只在"想先试试通不通"时用。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
+      + '这两个按钮只在"想先试试通不通"时用。键鼠已经在别的机器手上时也能点 —— '
+      + '那是直接换收件人（画面不动、键鼠不中断）。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
 
   // 角色只在「共用一块屏」时有意义：多屏共享两边是对等的
   el('kvmRoleRow').style.display = onFollowLink ? '' : 'none';
@@ -614,7 +618,11 @@ function renderKvmLinks(k) {
     const dead = l.alive ? ''
       : (peer && !peer.kvm_on ? ' · 它的共用键鼠没开' : ' · 没回应');
     const held = l.active ? '<span class="held">键鼠在这台</span>'
-      : `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">交给它</button>`;
+      // 已经在转发时，点它是"改指向"（不重启、不重新抓取、画面不动）；
+      // 空闲时点它才是"建一场新会话"。文案分开，免得用户以为是同一件事
+      : (l.can_retarget
+        ? `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">转给它</button>`
+        : `<button class="ghost" onclick="handOverTo('${esc(l.node)}')">交给它</button>`);
     return `<div class="linkrow">
       <span class="node"><i class="dot${l.alive ? ' on' : ''}">●</i>${esc(l.node)}</span>
       <span class="tag">${where} · ${mode}${dead}</span>
@@ -622,7 +630,9 @@ function renderKvmLinks(k) {
     </div>`;
   }).join('');
   hint.textContent = '方向和模式都由上面的摆位图决定：拖进某个格子 = 多屏共享（朝那条边推出去），'
-    + '拖到"没有门"= 跟随画面（共用一块屏，切到哪台键鼠跟到哪台）。';
+    + '拖到"没有门"= 跟随画面（共用一块屏，切到哪台键鼠跟到哪台）。'
+    + '键鼠在别的机器手上时，「转给它」是**直接换收件人**：画面不动、键鼠不中断；'
+    + '从那边推回来会回到本次会话的起点（摆位图上标着「起点」那台）。';
 }
 
 function handOverTo(node) {
@@ -658,6 +668,9 @@ function screenCard(node, o) {
   const tag = o.active ? '<span class="stag">键鼠在这台</span>'
     : o.dup ? '<span class="stag warn">同侧冲突</span>'
     : o.fresh ? '<span class="stag new">未配链路</span>' : '';
+  // 「起点」= 本次会话是从这台开始的。键鼠转到别台之后，对面推回来会
+  // 落到这里（不是回到 Mac）—— 画面还在起点那台上，键鼠回去才看得见。
+  const rootTag = (o.root && !o.active) ? '<span class="stag root">起点</span>' : '';
   // 「没有门」只该用在**已经配成跟随画面**的链路上。
   //
   // 没配链路的对端（刚发现、还没摆位）以前也落在这栏、也印着「没有门」，
@@ -668,7 +681,7 @@ function screenCard(node, o) {
       tabindex="0" role="button" title="${esc(node)} · ${label}（可拖动，方向键也能移动）"
       aria-label="${esc(node)}，${label}">
     <span class="dot${o.alive ? ' on' : ''}"></span>
-    <span class="sname">${esc(node)}</span>${tag}</div>`;
+    <span class="sname">${esc(node)}</span>${tag}${rootTag}</div>`;
 }
 
 function renderKvmGrid(k) {
@@ -690,16 +703,23 @@ function renderKvmGrid(k) {
   const loose = [];
   const dup = [];
   const known = new Set();
+  // 本次会话从哪台开始（多跳的回程落点）。只有一台能是起点。
+  const rootNode = k.root || '';
   links.forEach(l => {
     known.add(l.node);
-    const item = { node: l.node, side: l.side || '', alive: !!l.alive, active: !!l.active };
+    const item = {
+      node: l.node, side: l.side || '', alive: !!l.alive, active: !!l.active,
+      root: rootNode === l.node,
+    };
     if (!l.side) loose.push(item);
     else if (bySide[l.side]) { dup.push(l.node); loose.push(Object.assign({ dup: true }, item)); }
     else bySide[l.side] = item;
   });
   // 已发现但还没配链路的对端：拖进格子就等于给它建一条（后端会新建）
   peers.forEach(p => {
-    if (!known.has(p.node)) loose.push({ node: p.node, side: '', alive: true, fresh: true });
+    if (!known.has(p.node)) {
+      loose.push({ node: p.node, side: '', alive: true, fresh: true, root: rootNode === p.node });
+    }
   });
 
   const cell = (slot) => {

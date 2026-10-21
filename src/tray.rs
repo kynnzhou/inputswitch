@@ -46,6 +46,8 @@ const MENU_QUIT: &str = "quit";
 const MENU_KVM: &str = "toggle-kvm";
 /// 在两种模式之间切换：跟随画面 ↔ 多屏共享
 const MENU_KVM_MODE: &str = "kvm-mode";
+/// 会话中把键鼠转给下一条有门的链路（画面不动）
+const MENU_KVM_HOP: &str = "kvm-hop";
 const MENU_KVM_SIDE: &str = "kvm-side:";
 /// `switch:<name>:<decimal value>`
 const ID_SWITCH: &str = "switch:";
@@ -909,6 +911,16 @@ fn build_menu(
         "  改用跟随画面（一套键鼠，跟屏幕走）"
     };
     let _ = menu.append(&MenuItem::with_id(MENU_KVM_MODE, other, true, None));
+    // 会话中"换收件人"：这是"共用屏那台 → 并排那台"唯一能在托盘上按的入口
+    // （画面一走就看不见面板）。只有一条链路时没意义，藏掉。
+    if config.kvm.enabled && config.kvm.links.len() > 1 {
+        let _ = menu.append(&MenuItem::with_id(
+            MENU_KVM_HOP,
+            "把键鼠转给下一条边（画面不动）",
+            true,
+            None,
+        ));
+    }
 
     // 权限没生效时给一条明路。macOS 把授权结论缓存在进程里，刚在设置里
     // 勾上时本进程照样报"没权限"，这时点上面的开关只会再弹一次设置页 ——
@@ -1387,6 +1399,13 @@ fn update_snapshot(
                 // has_follow_link()（任一链路）压根不是一回事
                 follow_link: handle.has_follow_link(),
                 will_follow: handle.has_follow_link() && handle.can_capture(),
+                // 起点只在"键鼠已经转到别台"时才有意义，单跳会话不标
+                // （否则每场会话都给当前那台挂个「起点」，纯噪音）
+                root: if handle.at_root() {
+                    String::new()
+                } else {
+                    handle.root_node().unwrap_or("").to_string()
+                },
                 links: handle
                     .links()
                     .iter()
@@ -1402,6 +1421,11 @@ fn update_snapshot(
                         mode: link.mode.as_str().to_string(),
                         alive: handle.alive_at(i),
                         active: active_idx == Some(i),
+                        // 键鼠已经在别台手上、这台又在线 ⇒ 点它是"改指向"
+                        // （画面不动），不是"建一场新会话"
+                        can_retarget: handle.state() == kvm::State::Sending
+                            && active_idx != Some(i)
+                            && handle.alive_at(i),
                     })
                     .collect(),
             }
@@ -1423,6 +1447,7 @@ fn update_snapshot(
                 .any(|l| l.mode_or(&config.kvm.mode) == "follow"),
             // 没开着就没有任何东西会跟
             will_follow: false,
+            root: String::new(),
             // 没启动时也要把配置里的链路画出来，否则用户看不到、也就改不了
             links: config
                 .kvm
@@ -1435,6 +1460,7 @@ fn update_snapshot(
                     mode: link.mode_or(&config.kvm.mode),
                     alive: false,
                     active: false,
+                    can_retarget: false,
                 })
                 .collect(),
         },
@@ -2624,7 +2650,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.59",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.60",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -3426,6 +3452,20 @@ pub fn run() -> ! {
                                     log_line(&status);
                                 }
                             }
+                        }
+                    } else if id == MENU_KVM_HOP {
+                        match kvm_now() {
+                            Some(handle) => {
+                                status = match handle.retarget_next_edge() {
+                                    Ok(()) => format!(
+                                        "键鼠已转到 {}（画面没动）",
+                                        handle.active_node().unwrap_or("对端")
+                                    ),
+                                    Err(err) => format!("转不过去：{err}"),
+                                };
+                                log_line(&status);
+                            }
+                            None => status = "共用键鼠没开".to_string(),
                         }
                     } else if id == MENU_KVM_MODE {
                         // 两种模式的物理前提不同，切换必须重启实例：

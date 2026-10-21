@@ -107,6 +107,10 @@ pub struct KvmView {
     /// 判据，两边必然打架。
     #[serde(default)]
     pub will_follow: bool,
+    /// 本次会话的起点（多跳的回程落点）。空串 = 没有会话，或单跳会话
+    /// （起点就是当前那台）。面板在摆位图上给这台标「起点」。
+    #[serde(default)]
+    pub root: String,
 }
 
 /// 一条对端链路在面板上的样子
@@ -122,6 +126,12 @@ pub struct LinkView {
     pub alive: bool,
     /// 键鼠现在是不是在这台手上
     pub active: bool,
+    /// 现在点它会不会是"改指向"（键鼠已经交给别的机器，且这台还在线）。
+    ///
+    /// 前端拿它把按钮文案分成「转给它 / 交给它」：两件事对用户完全不一样 ——
+    /// 前者画面不动、键鼠不中断，后者是从空闲开始建一场会话。
+    #[serde(default)]
+    pub can_retarget: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

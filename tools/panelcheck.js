@@ -144,5 +144,33 @@ ok(/CHINAMI-0DFF1JU[\s\S]*?共用键鼠已开/.test(peers), '开着的对端标�
 // 6. 有 follow 链路时，那个"交给对端"按钮必须藏掉（画面一走就点不到）
 ok(handBtn === 'none', '有 follow 链路时隐藏「现在就把键鼠交给对端」');
 
+// ---- 第二幕：会话中（键鼠已从共用屏那台转到并排那台）----
+// 这一段检查 v0.6.60 才有的两件事：链路行的按钮该说「转给它」而不是
+// 「交给它」，摆位图上起点那台要标「起点」（对面推回来会落到这里）。
+const snap2 = JSON.parse(JSON.stringify(snap));
+snap2.kvm.state = '键鼠已交给对端';
+snap2.kvm.active = 'CHINAMI-0DFF1JU';
+snap2.kvm.root = 'CHINAMI-MC5K9SJ';
+snap2.kvm.links = snap2.kvm.links.map(l => Object.assign({}, l, {
+  active: l.node === 'CHINAMI-0DFF1JU',
+  can_retarget: l.node === 'CHINAMI-MC5K9SJ',
+}));
+// 起点那台得在线，否则「转给它」不该出现 —— 这里它在线
+snap2.kvm.links.forEach(l => { if (l.node === 'CHINAMI-MC5K9SJ') l.alive = true; });
+ctx.__fixture = snap2;
+try { vm.runInContext('snap = __fixture; render(); renderKvm(snap);', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('第二幕 renderKvm 报错：', e.message); process.exit(1); }
+
+const links2 = made['kvmLinks'].innerHTML;
+const grid2 = made['kvmGrid'].innerHTML;
+const loose2 = made['kvmLooseBox'].innerHTML;
+
+// 7. 会话中：握着键鼠那行不显示按钮，别台显示「转给它」
+ok(/CHINAMI-0DFF1JU[\s\S]*?键鼠在这台/.test(links2), '握着键鼠那台显示「键鼠在这台」');
+ok(/CHINAMI-MC5K9SJ[\s\S]*?转给它/.test(links2), '会话中点起点的按钮是「转给它」（改指向，不是新建会话）');
+ok(/CHINAMI-ZZZZ[\s\S]*?交给它/.test(links2), '不能改指向的那台仍显示「交给它」');
+// 8. 摆位图上起点那台带「起点」标
+ok(/CHINAMI-MC5K9SJ[\s\S]*?起点/.test(loose2 + grid2), '起点那台标了「起点」');
+
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);
