@@ -224,6 +224,12 @@ pub enum Action {
     /// 「副机模式」一键配置：自启 + 自动恢复 + 守护 + role=remote + 共用键鼠开着。
     /// 给"那台没有键鼠"的机器用，省得一条条点还漏。
     Submachine(bool),
+    /// 给某个输入口起个别名（写进 `config.labels`）。
+    ///
+    /// `labels` 一直是"只读"的 —— 只有配置文件里手写过才生效，界面上没有任何
+    /// 入口。于是 `USB-C（这台 Mac）` 这种名字看起来像写死的，用户想改也无处
+    /// 可改（2026-10-22 用户提问）。这个动作补上入口，空 label = 恢复默认名。
+    SetLabel { name: String, label: String },
     /// 手动把键鼠交给对端（不用切屏，先试试通不通）。
     /// 多机时带上是哪一台；None 表示"随便挑一条 Follow 链路"（老接口的行为）。
     KvmHandOver(Option<String>),
@@ -494,6 +500,29 @@ fn handle(
         ("POST", "/api/submachine") => {
             dispatch(Action::Submachine(on_of(&body, &query)));
             respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        // 输入口改名。走 JSON body 而不是 query：名字里有中文，query 要额外
+        // 做百分号解码，body 直接 serde 解析更省事（也不容易出错）。
+        ("POST", "/api/label") => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+            let name = parsed
+                .as_ref()
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let label = parsed
+                .as_ref()
+                .and_then(|v| v.get("label"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                respond_json(&mut stream, r#"{"ok":false,"error":"缺 name"}"#)
+            } else {
+                dispatch(Action::SetLabel { name, label });
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
         }
         ("POST", "/api/kvm-handover") => {
             // 多机时点名交给某一台；不带 node 就是老行为（挑一条 Follow 链路）

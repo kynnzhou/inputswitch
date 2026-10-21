@@ -2726,7 +2726,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.72",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.73",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -3231,6 +3231,19 @@ pub fn run() -> ! {
                         Ok(()) => "副机模式已关闭：不再自启、不再自动恢复、不再守护".to_string(),
                         Err(err) => format!("副机模式设置失败：{err}"),
                     };
+                    log_line(&status);
+                }
+                Action::SetLabel { name, label } => {
+                    // 空串 = 恢复默认名（删掉别名，让 label_for 按 MCCS 渲染）
+                    let text = label.trim().to_string();
+                    if text.is_empty() {
+                        config.labels.remove(&name);
+                        status = format!("已恢复默认名：{}", config.label_for(&name));
+                    } else {
+                        config.labels.insert(name.clone(), text.clone());
+                        status = format!("已把这个口改名为「{text}」");
+                    }
+                    let _ = config.save();
                     log_line(&status);
                 }
                 Action::KvmHandOver(node) => {
