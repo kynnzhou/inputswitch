@@ -197,6 +197,11 @@ ok(/已开启/.test(made['guardBtn'].textContent) && /green/.test(made['guardBtn
 ok(/已开启/.test(made['subBtn'].textContent), '三项都开时副机模式显示「已开启」');
 ok(/不会一开机就抢键鼠/.test(made['bootHint'].textContent),
   '提示里说清"自动恢复不是开机就抢键鼠"');
+// 13. 角色开关已删（v0.6.68）：`role` 不参与行为决策，只影响一句文案；
+//     两个长得像"模式开关"的按钮跟上面"没有全局开关"那句话自相矛盾。
+ok(!/kvmConsole|kvmRemote/.test(html), '页面上不再有「键鼠插在本机 / 键鼠在对面」按钮');
+ok(/会抓取键鼠并转发/.test(made['kvmRoleHint'].textContent),
+  '原位换成只读事实：本机会抓取并转发');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

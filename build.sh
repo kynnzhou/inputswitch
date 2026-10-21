@@ -117,6 +117,21 @@ cp -R "$BUNDLE" "${INSTALL_DIR}/${APP_NAME}.app"
 "$LSR" -u "$(pwd)/${BUNDLE}" >/dev/null 2>&1 || true
 "$LSR" -u "$HOME/.Trash/${APP_NAME}.app" >/dev/null 2>&1 || true
 
+# 打 macOS 分发 zip —— **从 /Applications 那份打**，不要从 dist 打。
+#
+# 2026-10-21 实测：手工 `ditto` 去读 dist/InputSwitch.app 打 zip，这个"读"
+# 动作本身会把它重新注册给 LaunchServices，Launchpad 里于是出现 4 个同名
+# InputSwitch（磁盘上只有 3 份）。打完就把 dist 那份删掉，从根上断掉这个副本。
+REPO=$(pwd)
+mkdir -p "${REPO}/dist"
+rm -f "${REPO}/dist/InputSwitch-macOS-arm64.zip"
+(
+  cd "${INSTALL_DIR}" && ditto -c -k --sequesterRsrc --keepParent \
+    "${APP_NAME}.app" "${REPO}/dist/InputSwitch-macOS-arm64.zip"
+) && echo "分发包: ${REPO}/dist/InputSwitch-macOS-arm64.zip"
+rm -rf "$BUNDLE"
+"$LSR" -u "${REPO}/${BUNDLE}" >/dev/null 2>&1 || true
+
 echo
 echo "完成: ${INSTALL_DIR}/${APP_NAME}.app  (v${VERSION})"
 echo "已在 /Applications，双击或：open -a ${APP_NAME}"

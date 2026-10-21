@@ -227,15 +227,12 @@
       拖进「没有门」= 两台共用一块屏，切信号源时键鼠跟着画面走。
     </div>
 
-    <div class="split" style="margin-top:10px" id="kvmRoleRow">
-      <button id="kvmConsole" class="ghost" onclick="setKvmRole('console')">
-        键鼠插在本机
-      </button>
-      <button id="kvmRemote" class="ghost" onclick="setKvmRole('remote')">
-        键鼠在对面
-      </button>
-    </div>
-    <div class="hint" id="kvmRoleHint"></div>
+    <!-- 原来这里是「键鼠插在本机 / 键鼠在对面」两个按钮，删掉了（v0.6.68）：
+         `role` 已经不参与任何行为决策 —— 只要链路表里有一条（edge 或 follow），
+         两端都会装钩子，谁抓到谁发（见 kvm/mod.rs 的 needs_capture）。它只影响
+         一句状态文案，却长得像全局开关，跟上面"没有全局开关"那句话自相矛盾。
+         位置换成只读事实：本机能不能抓，由权限 + 链路表算出来，不该问用户。 -->
+    <div class="hint" id="kvmRoleHint" style="margin-top:10px"></div>
 
     <div class="switch" style="margin-top:12px">
       <span>运行状态：<b id="kvmState">未启动</b></span>
@@ -348,7 +345,7 @@
     <div class="split" style="margin-top:8px">
       <button id="subBtn" class="ghost" onclick="toggleSubmachine()">—</button>
     </div>
-    <div class="hint">副机模式 = 上面三项全开 + 角色设为「被控端」+ 共用键鼠保持开启，
+    <div class="hint">副机模式 = 上面三项全开 + 共用键鼠保持开启，
       给<b>没有接键鼠</b>的那台机器用（一开机就等人推过来，不用过去点任何东西）。<br>
       开启前请确认这台是<b>静态 IP</b>：共用键鼠的白名单只认地址、不认机器名。</div>
     <div class="switch">
@@ -614,17 +611,15 @@ function renderKvm() {
       : '多屏共享：光标推到屏幕边缘就过去，不用点按钮。'
         + '这个按钮只在"想先试试通不通"时用。紧急收回 Ctrl+Alt+Esc，会连画面一起切回本机。';
 
-  // 角色只在「共用一块屏」时有意义：多屏共享两边是对等的
-  el('kvmRoleRow').style.display = onFollowLink ? '' : 'none';
-  el('kvmRoleHint').style.display = onFollowLink ? '' : 'none';
-  if (onFollowLink) {
-    const localConsole = (k.role || 'console') !== 'remote';
-    el('kvmConsole').className = localConsole ? 'green' : 'ghost';
-    el('kvmRemote').className = localConsole ? 'ghost' : 'green';
-    el('kvmRoleHint').textContent = localConsole
-      ? '本机抓取键鼠并转发，画面切走时生效。'
-      : '本机只负责接收并注入，不抓取键鼠。';
-  }
+  // 只读事实：本机到底会不会抓取键鼠。
+  // 判据和后端启动时用的那一套一致（有抓取权限 + 链路表里至少有一条），
+  // 不再让人手选一个不影响行为的开关（v0.6.68 删掉了那两个按钮）。
+  const canGrab = !!(snap.perms && snap.perms.capture) && (k.links || []).length > 0;
+  el('kvmRoleHint').textContent = canGrab
+    ? '本机会抓取键鼠并转发；画面切到对端时，键鼠跟着过去。'
+    : (snap.perms && snap.perms.capture)
+      ? '链路表里还没有对端，本机暂时不会抓取键鼠。'
+      : '本机缺「辅助功能」授权，只能被对端控制，键鼠推不出去。';
 
   // 接收手感档位：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
   // 两个系统的指针加速曲线不同，同一串位移在两边速度必然有差 ——
@@ -1027,7 +1022,8 @@ function toggleKvm() {
   api('/api/kvm?on=' + (on ? 'false' : 'true')).then(pull);
 }
 // 模式已下沉到每台对端（由摆位决定），面板上不再有全局模式开关。
-function setKvmRole(role) { api('/api/kvm-role?role=' + role).then(pull); }
+// 角色（键鼠插在哪台）已经没有 UI 入口了：role 不参与行为决策，
+// 只影响一句状态文案（v0.6.68）。/api/kvm-role 保留给 CLI 与老调用方。
 
 // 接收位移倍率。后端会重建共用键鼠实例（先把键鼠交还再停），所以点完
 // 会话会断一下 —— 面板轮询会把新状态刷回来。

@@ -2697,7 +2697,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.67",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.68",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -3196,7 +3196,7 @@ pub fn run() -> ! {
                         crate::autostart::disable()
                     };
                     status = match auto {
-                        Ok(()) if on => "副机模式已开启：开机自启 + 自动恢复 + 崩溃重启（角色=被控端）。\
+                        Ok(()) if on => "副机模式已开启：开机自启 + 自动恢复 + 崩溃重启。\
                              记得给这台配静态 IP —— 共用键鼠的白名单只认地址，不认机器名"
                             .to_string(),
                         Ok(()) => "副机模式已关闭：不再自启、不再自动恢复、不再守护".to_string(),
