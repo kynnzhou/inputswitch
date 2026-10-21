@@ -205,11 +205,11 @@ ok(/会抓取键鼠并转发/.test(made['kvmRoleHint'].textContent),
 // 14. 顶部状态条：画面 / 键鼠 / 对端 三个事实（v0.6.69）
 ok(/3 台在线/.test(made['hdrPeer'].innerHTML), '状态条显示在线台数');
 ok(made['hdrKeys'].textContent === 'CHINAMI-0DFF1JU', '状态条显示键鼠现在在谁手上');
-// 15. 对端报了端口、但本机没有任何证据 → 不拿它的编号当目标（编号各算各的，
-//     切错就是黑屏）。v0.6.71 起"只凭对端自报"的口不会进 inputs。
-ok(/扫描哪个口有主机/.test(made['mainSwitch'].textContent) && !made['mainSwitch'].disabled,
-  '对端口未经验证时，主按钮直接就是"去扫一次"（可点，不是叫人去点别的按钮）');
-ok(made['mainSwitch'].dataset.action === 'scan', '主按钮此时的动作是扫描');
+// 15. 对端报了端口、但本机没有证据 → 主按钮整个藏起来，只留一行说明。
+//     以前是"变灰 + 一句叫你去点别的按钮"，既点不了又和卡片里的「扫描」
+//     重复（v0.6.73 先改成可点，v0.6.74 按用户意见彻底去掉重复）。
+ok(made['mainSwitch'].style.display === 'none', '没有可切目标时主按钮藏起来');
+ok(/还没验证/.test(made['hdrNote'].textContent), '改由状态条的一行说明指出下一步');
 // 16. 输入口可以就地改名（labels 以前只能手改配置文件，看着像写死的）。
 //     行是 JS 拼的，桩里的 appendChild 不聚合 innerHTML，只能查源码。
 ok(/function saveLabel/.test(html) && /\/api\/label/.test(html) && /contenteditable/.test(html),
