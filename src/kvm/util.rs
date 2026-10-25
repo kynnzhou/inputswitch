@@ -1,4 +1,4 @@
-//! 零散辅助函数：时间戳、按键栈清理、位移缩放、落点与锚点计算。
+//! 零散辅助函数：时间戳、按键栈清理、位移缩放、落点与锚点计算、平台尺寸收窄。
 //!
 //! 从 `mod.rs` 拆出来。共同点：**无状态、无依赖**（除了 `plat::Inject`
 //! 的平台能力），被三个线程体和测试共用。放一起是为了让「改缩放公式」
@@ -117,4 +117,15 @@ pub(super) fn anchor_target(
     } else {
         None
     }
+}
+
+/// 收窄成 u32。平台层两份 `screen_size` 的返回类型**故意**不一样：macOS
+/// 那边 CGDisplayBounds 给的就是 f64 的点（与事件坐标同一套），Windows
+/// 那边 GetSystemMetrics 给整数像素。调用处不想为此分平台写两遍。
+///
+/// 用 `impl Into<f64>` 同时接住两种类型，而不是在调用处直接 `as u32`：
+/// 后者在 Windows 上会踩 clippy::unnecessary_cast（那边本来就是 u32）。
+/// 屏幕尺寸远小于 2^24，f64 表示整数无损，round-trip 不掉精度。
+pub(super) fn narrow(v: impl Into<f64>) -> u32 {
+    v.into() as u32
 }
