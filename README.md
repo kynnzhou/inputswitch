@@ -1,9 +1,8 @@
 # InputSwitch <img src="assets/badge-kvm.svg" alt="键鼠 · 单屏多主机共用 · 多屏多主机 KVM" height="26">
 
-[![CI](https://github.com/kynnzhou/inputswitch/actions/workflows/ci.yml/badge.svg)](https://github.com/kynnzhou/inputswitch/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/kynnzhou/inputswitch)](https://github.com/kynnzhou/inputswitch/releases/latest)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![platform](assets/badge-platform.svg)](#下载安装)
+[![release](assets/badge-release.svg)](https://github.com/kynnzhou/inputswitch/releases/latest)
+[![license](assets/badge-license.svg)](LICENSE)
 
 一台显示器接两台主机，**点一下或按一个热键**就把屏幕切过去，不用伸手去按显示器上的按钮。两台都装上，还能**共用一套键盘鼠标**、互传文件、同步剪贴板。
 

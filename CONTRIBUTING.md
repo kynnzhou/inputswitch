@@ -42,7 +42,7 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同样的检查（Li
 ## 发版
 
 ```bash
-# 1. 改 src/tray.rs 里的 构建=vX.Y.Z
+# 1. 改 src/tray.rs 里的 构建=vX.Y.Z；assets/badge-release.svg 里的版本号一起改
 # 2. 双端打包
 ./build.sh                 # macOS：编译 → .app → ad-hoc 签名 → 装进 /Applications → zip
 ./cross-build-windows.sh   # Windows：交叉编译 → dist/windows/

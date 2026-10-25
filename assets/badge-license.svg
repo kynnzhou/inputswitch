@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="116" height="20" role="img" aria-label="license: MIT">
+  <rect width="60" height="20" rx="4" fill="#6b7488" fill-opacity="0.14"/>
+  <rect x="60" width="56" height="20" rx="4" fill="#1f9d84" fill-opacity="0.13"/>
+  <rect x="56" width="8" height="20" fill="#6b7488" fill-opacity="0.14"/>
+  <text x="30" y="14" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#6b7488" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">license</text>
+  <text x="88" y="14" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#157a66" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">MIT</text>
+</svg>

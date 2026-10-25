@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="176" height="20" role="img" aria-label="platform: macOS, Windows">
+  <!-- 状态徽章自绘（不走 shields.io/camo）：那些代理在部分网络环境下打不开，
+     仓库内图片走 /raw/ 直链，任何环境都能显示。配色取面板令牌。 -->
+  <rect width="66" height="20" rx="4" fill="#6b7488" fill-opacity="0.14"/>
+  <rect x="66" width="110" height="20" rx="4" fill="#3d6bff" fill-opacity="0.12"/>
+  <rect x="62" width="8" height="20" fill="#6b7488" fill-opacity="0.14"/>
+  <text x="33" y="14" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#6b7488" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">platform</text>
+  <text x="121" y="14" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#3d6bff" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">macOS · Windows</text>
+</svg>
