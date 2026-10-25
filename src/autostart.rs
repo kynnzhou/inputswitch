@@ -3,7 +3,7 @@
 //! macOS 写一个 LaunchAgent plist（用户级，不需要管理员权限）；
 //! Windows 写 HKCU 的 Run 键。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::Mutex;
 
@@ -66,7 +66,7 @@ fn query_run_key() -> bool {    let mut cmd = std::process::Command::new(reg_exe
 /// 一个实例。Task Scheduler 的 `RestartOnFailure` + `IgnoreNew` 正好对上：
 /// 只在"上一次运行异常结束"时重启，正常在跑时新的触发被忽略。
 #[cfg(windows)]
-fn guard_task(exe: &PathBuf, create: bool) -> Result<(), String> {
+fn guard_task(exe: &Path, create: bool) -> Result<(), String> {
     const TASK: &str = "InputSwitchGuard";
     if !create {
         let mut cmd = std::process::Command::new(task_exe());

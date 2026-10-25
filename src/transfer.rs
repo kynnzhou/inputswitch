@@ -434,7 +434,7 @@ mod tests {
             IpAddr::from([127, 0, 0, 1]),
             port,
             node,
-            &[src.clone()],
+            std::slice::from_ref(&src),
             None,
             false,
             |_, _| {},

@@ -166,7 +166,7 @@ fn coff_with_icon(ico: &[u8], machine: u16, reloc_type: u16) -> Result<Vec<u8>, 
     for i in &ordered {
         blob_at[*i] = cur;
         cur += leaves[*i].2.len();
-        while cur % 4 != 0 {
+        while !cur.is_multiple_of(4) {
             cur += 1;
         }
     }
@@ -227,7 +227,7 @@ fn coff_with_icon(ico: &[u8], machine: u16, reloc_type: u16) -> Result<Vec<u8>, 
     let header_end = 20 + 40;
     let raw_len = {
         let mut n = section_size;
-        while (header_end + n) % 4 != 0 {
+        while !(header_end + n).is_multiple_of(4) {
             n += 1;
         }
         n

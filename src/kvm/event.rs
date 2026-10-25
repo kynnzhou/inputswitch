@@ -399,7 +399,7 @@ pub fn hit_edge_in(mask: u8, x: f64, y: f64, w: f64, h: f64) -> Option<Side> {
         if d > MARGIN {
             continue;
         }
-        if best.map_or(true, |(bd, _)| d < bd) {
+        if best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, side));
         }
     }

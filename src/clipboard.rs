@@ -504,7 +504,7 @@ mod imp {
             if handle == 0 {
                 return false;
             }
-            let base = GlobalLock(handle) as *mut u8;
+            let base = GlobalLock(handle);
             if base.is_null() {
                 GlobalFree(handle);
                 return false;

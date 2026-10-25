@@ -1137,7 +1137,13 @@ fn cmd_send(paths: &[String], wait_secs: u64) -> i32 {
     let key = inputswitch::pair::link_key(&config.pair.code);
     let mut last = 0u64;
     let result = inputswitch::transfer::send(peer.addr.ip(), config.transfer.port, &config.node, &files, key, false, |sent, total| {
-        let pct = if total == 0 { 100 } else { sent * 100 / total };
+        // total 为 0（空目录）算作 100%。用 checked_div 而不是
+        // `if total == 0 { .. } else { .. / total }` —— 后者是
+        // clippy::manual_checked_ops 盯的写法，除零与溢出一起防。
+        let pct = sent
+            .checked_mul(100)
+            .and_then(|num| num.checked_div(total))
+            .unwrap_or(100);
         if pct / 10 != last / 10 {
             last = pct;
             print!("\r{pct}%");

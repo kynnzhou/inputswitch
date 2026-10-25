@@ -13,6 +13,12 @@
 //! 键码：网络上统一走 macOS virtual keycode，这里维护一张双向映射表
 //! （见 `mac_to_vk` / `vk_to_mac`）。修饰键在 Windows 上必须用
 //! 扩展键标志发送，不然 AltGr、右侧 Ctrl 会错。
+//!
+//! 本文件里的 Win32 结构体与常量**刻意沿用微软官方拼写**（POINT / INPUT /
+//! MSLLHOOKSTRUCT / WM_* / MOUSEEVENTF_*）：照着文档和 Spy++ 对得上，
+//! 改成 Rust 风格的大小写在查 Win32 问题时反而是噪音。故豁免
+//! clippy::upper_case_acronyms。
+#![allow(clippy::upper_case_acronyms)]
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -29,6 +35,14 @@ type Hwnd = isize;
 type Hmonitor = *mut c_void;
 type Lparam = isize;
 type Wparam = usize;
+
+/// Win32 钩子回调（WH_MOUSE_LL / WH_KEYBOARD_LL）。API 收的就是函数指针，
+/// 直接按指针类型声明就不用在调用点把 `mouse_proc as isize` ——
+/// 那样会同时踩 clippy::fn_to_numeric_cast 与 rustc 的
+/// function_casts_as_integer（后者以后会变成硬错误）。
+type HookProc = unsafe extern "system" fn(i32, Wparam, Lparam) -> isize;
+/// 窗口过程（RegisterClassW 的 lpfnWndProc）。
+type WndProc = unsafe extern "system" fn(Hwnd, u32, Wparam, Lparam) -> isize;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -64,9 +78,7 @@ const WM_MOUSEWHEEL: usize = 0x020A;
 const WM_XBUTTONDOWN: usize = 0x020B;
 const WM_XBUTTONUP: usize = 0x020C;
 const WM_KEYDOWN: usize = 0x0100;
-const WM_KEYUP: usize = 0x0101;
 const WM_SYSKEYDOWN: usize = 0x0104;
-const WM_SYSKEYUP: usize = 0x0105;
 const WM_QUIT: u32 = 0x0012;
 const WM_INPUT: u32 = 0x00FF;
 
@@ -158,7 +170,7 @@ struct RawInputDevice {
 #[repr(C)]
 struct WndClassW {
     style: u32,
-    lpfn_wnd_proc: isize,
+    lpfn_wnd_proc: WndProc,
     cb_cls_extra: i32,
     cb_wnd_extra: i32,
     h_instance: Hinstance,
@@ -246,9 +258,20 @@ impl Default for KEYBDINPUT {
     }
 }
 
+// `EnumDisplayMonitors` / `GetMonitorInfoW` 在 `crate::ddc::win` 里另有一份声明，
+// 签名不同是**故意的**，这里显式豁免 rustc 的 clashing_extern_declarations：
+//   - ddc 那边句柄用 `isize`，本文件用 `*mut c_void`（ABI 上同为指针宽度）
+//   - ddc 那边缓冲是 `MonitorInfoExW`（要设备名），这里只要基础 `MonitorInfoW`
+//   - ddc 那边回调是 `MonitorEnumProc`，这里的内联 fn 指针参数类型不同
+// 两处调的是同一个 user32 符号，声明不一致不会让程序出错，只是 rustc 在
+// 声明层面比对时会告警。
+// **不要为了消警而合并两份声明**：那要统一 Hmonitor 的表示并改两处调用方，
+// 直接影响 KVM 的显示器枚举（跨屏判边、工作屏兜底），必须双机真机验证 ——
+// 不能靠"看着对"（见 CLAUDE.md 第 10 条）。
+#[allow(clashing_extern_declarations)]
 #[link(name = "user32")]
 extern "system" {
-    fn SetWindowsHookExW(id: i32, proc_: isize, module: Hinstance, thread: u32) -> Hhook;
+    fn SetWindowsHookExW(id: i32, proc_: HookProc, module: Hinstance, thread: u32) -> Hhook;
     fn UnhookWindowsHookEx(hook: Hhook) -> i32;
     fn CallNextHookEx(hook: Hhook, code: i32, wparam: Wparam, lparam: Lparam) -> isize;
     fn GetMessageW(msg: *mut c_void, hwnd: Hwnd, min: u32, max: u32) -> i32;
@@ -259,7 +282,6 @@ extern "system" {
     fn SetCursorPos(x: i32, y: i32) -> i32;
     fn GetSystemMetrics(index: i32) -> i32;
     fn SendInput(count: u32, inputs: *const INPUT, size: i32) -> u32;
-    fn GetForegroundWindow() -> Hwnd;
     fn EnumDisplayMonitors(
         dc: *mut c_void,
         clip: *mut c_void,
@@ -413,8 +435,8 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         tid.store(id, Ordering::SeqCst);
 
         let module = GetModuleHandleW(std::ptr::null());
-        let mouse = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc as isize, module, 0);
-        let key = SetWindowsHookExW(WH_KEYBOARD_LL, key_proc as isize, module, 0);
+        let mouse = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, module, 0);
+        let key = SetWindowsHookExW(WH_KEYBOARD_LL, key_proc, module, 0);
         if mouse == 0 || key == 0 {
             let _ = ready_tx.send(Err("SetWindowsHookEx 失败（可能被安全软件拦了）".to_string()));
             return;
@@ -430,7 +452,7 @@ pub fn start_capture(opts: super::CaptureOpts, tx: Sender<Captured>) -> Result<C
         let class_name: Vec<u16> = "InputSwitchRaw\0".encode_utf16().collect();
         let wc = WndClassW {
             style: 0,
-            lpfn_wnd_proc: raw_wnd_proc as isize,
+            lpfn_wnd_proc: raw_wnd_proc,
             cb_cls_extra: 0,
             cb_wnd_extra: 0,
             h_instance: module,
@@ -511,6 +533,10 @@ impl Capture {
         }
     }
 
+    /// 只放开键鼠、不结束钩子线程。与 mac 端 `Capture::release` 对称
+    /// （两端接口保持一致，见 `set_paste_ready` 的说明），当前没有调用方，
+    /// 真机联调"切走画面但不回收键鼠"时要用。
+    #[allow(dead_code)]
     pub fn release(&self) {
         self.set_grabbing(false);
     }
@@ -675,7 +701,7 @@ fn read_raw_motion(lparam: Lparam) {
     let mut size: u32 = 0;
     unsafe {
         if GetRawInputData(
-            lparam as isize,
+            lparam,
             RID_INPUT,
             std::ptr::null_mut(),
             &mut size,
@@ -694,7 +720,7 @@ fn read_raw_motion(lparam: Lparam) {
     let mut got = size;
     let ret = unsafe {
         GetRawInputData(
-            lparam as isize,
+            lparam,
             RID_INPUT,
             buf.as_mut_ptr() as *mut c_void,
             &mut got,
@@ -870,7 +896,6 @@ extern "system" fn mouse_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isiz
 /// 不动 → pt 恒定 → 差分为 0 → 手推多久都没东西可发。
 /// 所以位移改从 `read_raw_motion`（WM_INPUT / Raw Input）取，那是设备
 /// 上报的增量，与光标位置、钳位、SetCursorPos 全部无关。
-
 extern "system" fn key_proc(code: i32, wparam: Wparam, lparam: Lparam) -> isize {
     if code < 0 {
         return unsafe { CallNextHookEx(0, code, wparam, lparam) };
@@ -1009,6 +1034,10 @@ unsafe extern "system" fn collect_monitors(
     1
 }
 
+/// 屏幕矩形：left, top, right, bottom（右/下是含边界的最后一个像素，
+/// 与 `GetSystemMetrics(SM_XVIRTUALSCREEN)` 那套同向）
+type ScreenRect = (i32, i32, i32, i32);
+
 /// 物理用户最近一次活动所在的显示器 —— "本机工作屏"的权威信号。
 ///
 /// 对端那块 4K 从不下机（EDID 一直挂着），纯几何规则（最左/最右）
@@ -1019,7 +1048,7 @@ unsafe extern "system" fn collect_monitors(
 /// **必须带时间戳**：用户可能一直待在对端（Mac）侧操作，本机物理鼠标
 /// 几十分钟不动 —— 陈旧的 LAST_WORK 一样会指向黑屏（v0.6.12 首日实测：
 /// 事件全发到了 Windows、注入全进黑屏，屏幕毫无反应）。过期就回退主屏。
-static LAST_WORK: Mutex<Option<((i32, i32, i32, i32), u64)>> = Mutex::new(None);
+static LAST_WORK: Mutex<Option<(ScreenRect, u64)>> = Mutex::new(None);
 
 /// LAST_WORK 超过这么久没刷新（本机物理鼠标没动过）就视为不可信
 const LAST_WORK_FRESH_MS: u64 = 60_000;
@@ -1028,7 +1057,7 @@ const LAST_WORK_FRESH_MS: u64 = 60_000;
 /// 工作屏兜底链里排在过期 LAST_WORK 之后：主屏通常是用户看着的那块，
 /// 比几何规则可靠（v0.6.9 教训）也比光标位置可靠（光标可能被上次注入
 /// 停在黑屏里）。
-static PRIMARY_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+static PRIMARY_RECT: Mutex<Option<ScreenRect>> = Mutex::new(None);
 
 /// 工作屏兜底链最后一步的判定来源，排障日志用。
 /// 1=物理活动屏 2=主屏 3=光标所在屏 4=几何规则
@@ -1573,7 +1602,7 @@ impl Inject {
             }
             // 绝对坐标要归一化到 0..65535。分母必须保证 >= 1，
             // 否则尺寸异常时这里会直接除零。
-            let (ax, ay, flags) = if let Some((_, _, w, h)) = own {
+            let (ax, ay, flags) = if own.is_some() {
                 let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
                 let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
                 let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2);

@@ -10,9 +10,10 @@ INSTALL_DIR="/Applications"
 
 # 版本号只有一个来源：托盘启动日志里那句「构建=vX.Y.Z」。
 # 以前 Info.plist 固定写 0.1.0，用户查版本只能看到 0.1.0，误以为装的还是老版本。
-VERSION="$(sed -n 's/.*构建=v\([0-9][0-9.]*\).*/\1/p' src/tray.rs | head -1)"
+# tray.rs 拆成 src/tray/ 目录后真源在 mod.rs，这里跟着改。
+VERSION="$(sed -n 's/.*构建=v\([0-9][0-9.]*\).*/\1/p' src/tray/mod.rs | head -1)"
 if [ -z "$VERSION" ]; then
-  echo "读不到版本号（src/tray.rs 里应该有一句 构建=vX.Y.Z）" >&2
+  echo "读不到版本号（src/tray/mod.rs 里应该有一句 构建=vX.Y.Z）" >&2
   exit 1
 fi
 

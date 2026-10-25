@@ -37,12 +37,12 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同样的检查（Li
 
 **3. 失败要说清楚，不猜、不谎报。** 异步动作回执只能承诺已发出的事（“已请对端交还”不能写成“已收回”）；多处判据必须同源（后端算好的字段，前端不要自己再推一遍）。
 
-**4. 版本号只有一个来源**：`src/tray.rs` 启动日志里那句 `构建=vX.Y.Z`，`build.sh` 从这里提取写进 Info.plist。发版流程见下。
+**4. 版本号只有一个来源**：`src/tray/mod.rs` 启动日志里那句 `构建=vX.Y.Z`，`build.sh` 从这里提取写进 Info.plist。发版流程见下。
 
 ## 发版
 
 ```bash
-# 1. 改 src/tray.rs 里的 构建=vX.Y.Z；assets/badge-release.svg 里的版本号一起改
+# 1. 改 src/tray/mod.rs 里的 构建=vX.Y.Z；assets/badge-release.svg 里的版本号一起改
 # 2. 双端打包
 ./build.sh                 # macOS：编译 → .app → ad-hoc 签名 → 装进 /Applications → zip
 ./cross-build-windows.sh   # Windows：交叉编译 → dist/windows/
@@ -54,4 +54,4 @@ cd dist/windows && zip -q -X ../InputSwitch-windows-x64.zip \
 
 ## 代码地图
 
-[docs/manual.md](docs/manual.md)（完整手册与设计文档）讲了为什么这样设计；模块职责见 `src/lib.rs`。几个体积最大的文件：`tray.rs`（托盘/热键/事件循环/切屏编排）、`kvm/`（软件 KVM：协议、状态机、平台钩子）、`panel.rs`（面板 HTTP 服务）。控制面板前端在 `assets/panel/`（骨架/样式/四段 JS，由 `panel.rs` 内嵌并按路由分发）。
+[docs/manual.md](docs/manual.md)（完整手册与设计文档）讲了为什么这样设计；模块职责见 `src/lib.rs`。几个体积最大的模块：`tray/`（托盘/热键/事件循环/切屏编排，已拆成 13 个文件）、`kvm/`（软件 KVM：协议、状态机、平台钩子，已拆成 17 个文件）、`panel.rs`（面板 HTTP 服务）。控制面板前端在 `assets/panel/`（骨架/样式/四段 JS，由 `panel.rs` 内嵌并按路由分发）。两处的体量红线见 `tools/check-size.js` 的基线棘轮。

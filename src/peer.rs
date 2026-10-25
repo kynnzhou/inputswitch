@@ -375,7 +375,8 @@ impl Mesh {
         // 写字。留 10 倍超时再清，避免 DHCP 换 IP / 短暂掉线反复进表。
         table.retain(|_, p| p.last_seen.elapsed() < PEER_TIMEOUT * 10);
         let mut list: Vec<Peer> = table.values().filter(|p| p.alive()).cloned().collect();
-        list.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        // 最近说话的排前面（对端列表按新鲜度倒序）
+        list.sort_by_key(|p| std::cmp::Reverse(p.last_seen));
         list
     }
 

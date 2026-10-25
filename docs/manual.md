@@ -784,7 +784,14 @@ src/
 ├── switcher.rs   切换编排、拓扑验证、输入源发现
 ├── peer.rs       UDP 广播发现 + 中继指令
 ├── autostart.rs  开机自启（LaunchAgent / 注册表 Run）
-├── tray.rs       托盘 + 全局热键（tao 事件循环 + 工作线程跑 DDC）
+├── tray/         托盘 + 全局热键（tao 事件循环 + 工作线程跑 DDC）
+│   ├── mod.rs    run() 装配 + Event 分发到 Ui
+│   ├── ui.rs     Ui：主线程全部可变状态，每个 Event 一个方法
+│   ├── actions.rs   控制面板转发来的动作
+│   ├── events.rs    托盘菜单 / 全局热键 / 400ms tick 轮询
+│   ├── engine.rs    工作线程：独占一个 Switcher，吃 Command 队列
+│   └── 其余      menu / snapshot / kvmctl / hotkey / send / switch / sys / log
+├── kvm/          软件 KVM（协议、状态机、平台钩子）
 ├── gui.rs        托盘入口（windows 子系统）
 ├── main.rs       CLI 入口（console 子系统）
 └── ddc/
