@@ -147,8 +147,8 @@ Linux 同理：只有 `src/ddc/linux.rs` + xclip 兜底，CI 只做 `--no-defaul
 
 ## 14. Git push 排查
 
-- remote 是 HTTPS `https://github.com/kynnzhou/inputswitch.git`；gh 已认证 `lzlkyb`，`permissions.push = true`（协作者权限，可直接推分支）。
-- 仓库级代理 `127.0.0.1:7897`。代理下 HTTPS 可能报 `curl 16 HTTP2 framing layer`，且**失败输出末尾仍会跟 `Everything up-to-date`**（极具欺骗性）⇒ 用 `PUSH_EXIT=$?` 定性，重试加 `-c http.version=HTTP/1.1 -c http.postBuffer=524288000`。
+- remote 是 HTTPS `https://github.com/kynnzhou/inputswitch.git`；gh 已认证、对本仓库有 push 权限（协作者）。**账号名不写进文档**——换人或换 token 时写死的就成了假信息，每次以 `gh auth status` 为准。
+- 本机若走了 HTTP 代理（`http.proxy` / `HTTP_PROXY`），HTTPS 可能报 `curl 16 HTTP2 framing layer`，且**失败输出末尾仍会跟 `Everything up-to-date`**（极具欺骗性）⇒ 用 `PUSH_EXIT=$?` 定性，重试加 `-c http.version=HTTP/1.1 -c http.postBuffer=524288000`。代理地址同样因人而异，以 `git config --get http.proxy` 为准，不写死。
 - **判定是否真推上去，不看 push 输出**：`git ls-remote https://github.com/kynnzhou/inputswitch.git refs/heads/main` 取远端真值，与本地 HEAD 比对。别信本地陈旧的 `origin/main`。
 - push 前确认没有 `InputSwitch.exe` / `cargo.exe` 在跑（抢 `target/` 锁会让门禁失败）。
 - `403 Bad credentials` / `Repository not found`：`gh auth status` 看账号与 scope（需 `repo`）。
