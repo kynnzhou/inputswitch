@@ -22,6 +22,7 @@
 ## 2. 版本号只有一个真源：`src/tray/mod.rs` 的 `构建=vX.Y.Z`
 
 - **真源**：`src/tray/mod.rs` 启动日志里那句 `构建=vX.Y.Z`。`build.sh` 用 `sed` 从这里提取写进 Info.plist。
+- **展示副本要跟着改**：`assets/badge-release.svg` 里的 `vX.Y.Z` 是静态文本（README 的 release 徽章），发版时与真源一起改。漏改 = 徽章版本和真实版本不符。
 - `Cargo.toml` 的 `version = "0.1.0"` 是占位、**不参与发版**，别以为改它就"发版了"。
 - **不发版就不动版本号**。日常改动只体现在 commit message 里，发版时再归到 Release notes。
 - 只有用户明确说 **"发版" / "tag"** 才递增，并走「发版流程」。
@@ -177,7 +178,7 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 
 ## 发版流程（以 `CONTRIBUTING.md` 为准，此处只补执行顺序）
 
-1. 改 `src/tray/mod.rs` 的 `构建=vX.Y.Z`（**唯一要改的地方**）
+1. 改 `src/tray/mod.rs` 的 `构建=vX.Y.Z` + `assets/badge-release.svg` 里的版本号（**两处都要改**，徽章是静态 SVG，不会自动同步）
 2. 双端打包：`./build.sh`（macOS，出 .app + zip）/ `.\build.ps1`（Windows）/ `./cross-build-windows.sh`（mac 交叉编 Windows）
 3. `dist/windows` 打 zip（`InputSwitch.exe` + `inputswitch-cli.exe` + `WebView2Loader.dll` + `README.txt`）
 4. 提交 + 打 tag + push + `gh release create vX.Y.Z dist/*.zip`
