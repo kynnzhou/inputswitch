@@ -54,4 +54,4 @@ cd dist/windows && zip -q -X ../InputSwitch-windows-x64.zip \
 
 ## 代码地图
 
-`README.md` 的设计章节讲了为什么这样设计；模块职责见 `src/lib.rs`。几个体积最大的文件：`tray.rs`（托盘/热键/事件循环/切屏编排）、`kvm/`（软件 KVM：协议、状态机、平台钩子）、`panel.rs`（面板 HTTP 服务）。控制面板前端在 `assets/panel/`（骨架/样式/四段 JS，由 `panel.rs` 内嵌并按路由分发）。
+[docs/manual.md](docs/manual.md)（完整手册与设计文档）讲了为什么这样设计；模块职责见 `src/lib.rs`。几个体积最大的文件：`tray.rs`（托盘/热键/事件循环/切屏编排）、`kvm/`（软件 KVM：协议、状态机、平台钩子）、`panel.rs`（面板 HTTP 服务）。控制面板前端在 `assets/panel/`（骨架/样式/四段 JS，由 `panel.rs` 内嵌并按路由分发）。
