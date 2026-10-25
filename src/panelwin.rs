@@ -49,7 +49,7 @@ mod imp {
                 size: Size::Logical(WrySize::new(width, height)),
             };
             let webview = wry::WebViewBuilder::new()
-                .with_url(&format!("http://127.0.0.1:{port}/"))
+                .with_url(format!("http://127.0.0.1:{port}/"))
                 .with_bounds(rect)
                 .with_background_color((244, 245, 247, 255))
                 .build_as_child(&window)
@@ -151,7 +151,6 @@ mod imp {
         let Some(monitor) = window.current_monitor().or_else(|| {
             window
                 .available_monitors()
-                .into_iter()
                 .next()
         }) else {
             return;

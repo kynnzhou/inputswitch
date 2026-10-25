@@ -485,11 +485,10 @@ impl Config {
         let path = Self::path();
         let mut cfg = match fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-            Err(_) => {
-                let mut cfg = Config::default();
-                cfg.node = default_node();
-                cfg
-            }
+            Err(_) => Config {
+                node: default_node(),
+                ..Default::default()
+            },
         };
         cfg.migrate();
         // 每次加载都守一道，不只在版本迁移里（见 clear_unverified_occupancy 的注释）：
@@ -903,10 +902,12 @@ mod tests {
     /// 老配置（只有降级镜像）必须能升出链路表，方向不能丢。
     #[test]
     fn legacy_kvm_upgrades_to_one_link() {
-        let mut kvm = Kvm::default();
-        kvm.mode = "edge".into();
-        kvm.side = "left".into();
-        kvm.peer_node = "WIN-A".into();
+        let mut kvm = Kvm {
+            mode: "edge".into(),
+            side: "left".into(),
+            peer_node: "WIN-A".into(),
+            ..Default::default()
+        };
         assert!(kvm.normalize());
         assert_eq!(kvm.links.len(), 1);
         assert_eq!(kvm.links[0].node, "WIN-A");
@@ -917,8 +918,10 @@ mod tests {
     /// 同一台对端配两条 = 两条边都通向它，出门方向会随机 → 必须去重。
     #[test]
     fn duplicate_links_collapse() {
-        let mut kvm = Kvm::default();
-        kvm.links = vec![link("WIN-A", "right"), link("win-a", "top")];
+        let mut kvm = Kvm {
+            links: vec![link("WIN-A", "right"), link("win-a", "top")],
+            ..Default::default()
+        };
         kvm.normalize();
         assert_eq!(kvm.links.len(), 1);
         assert_eq!(kvm.links[0].side, "right");
@@ -927,8 +930,10 @@ mod tests {
     /// 主链路写透到镜像：老版本读到的仍是"一条链路 + 一个方向"。
     #[test]
     fn mirror_follows_primary() {
-        let mut kvm = Kvm::default();
-        kvm.links = vec![link("WIN-A", "bottom"), link("WIN-B", "left")];
+        let mut kvm = Kvm {
+            links: vec![link("WIN-A", "bottom"), link("WIN-B", "left")],
+            ..Default::default()
+        };
         kvm.links[0].mode = "edge".into();
         assert!(kvm.mirror_from_primary());
         assert_eq!(kvm.peer_node, "WIN-A");
@@ -943,9 +948,11 @@ mod tests {
     /// 跟随画面链路 side 为空，不能把镜像里的方向清成空 —— 老版本会读不出方向。
     #[test]
     fn empty_side_keeps_mirror() {
-        let mut kvm = Kvm::default();
-        kvm.side = "right".into();
-        kvm.links = vec![link("WIN-A", "")];
+        let mut kvm = Kvm {
+            side: "right".into(),
+            links: vec![link("WIN-A", "")],
+            ..Default::default()
+        };
         kvm.mirror_from_primary();
         assert_eq!(kvm.side, "right");
     }
@@ -953,9 +960,11 @@ mod tests {
     /// 旧 UI 改方向必须写透到链路表，否则界面上改了、运行时没变。
     #[test]
     fn set_primary_side_writes_through() {
-        let mut kvm = Kvm::default();
-        kvm.links = vec![link("WIN-A", "right"), link("WIN-B", "left")];
-        kvm.peer_node = "WIN-B".into();
+        let mut kvm = Kvm {
+            links: vec![link("WIN-A", "right"), link("WIN-B", "left")],
+            peer_node: "WIN-B".into(),
+            ..Default::default()
+        };
         kvm.set_primary_side("top");
         assert_eq!(kvm.links[1].side, "top");
         assert_eq!(kvm.links[0].side, "right");
@@ -964,8 +973,10 @@ mod tests {
     /// 主链路按 peer_node 找，找不到退回第一条。
     #[test]
     fn primary_resolution() {
-        let mut kvm = Kvm::default();
-        kvm.links = vec![link("WIN-A", "right")];
+        let mut kvm = Kvm {
+            links: vec![link("WIN-A", "right")],
+            ..Default::default()
+        };
         assert_eq!(kvm.primary().map(|l| l.node.as_str()), Some("WIN-A"));
         kvm.peer_node = "GONE".into();
         assert_eq!(kvm.primary().map(|l| l.node.as_str()), Some("WIN-A"));

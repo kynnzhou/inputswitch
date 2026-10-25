@@ -828,11 +828,6 @@ impl Switcher {
         })
     }
 
-    /// 等显示器回到本机拓扑。
-    fn wait_here(&self, display: &Display, timeout: Duration) -> bool {
-        self.wait_named(&display.name, timeout)
-    }
-
     fn wait_named(&self, name: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
