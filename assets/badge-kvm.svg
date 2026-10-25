@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="330" height="26" role="img" aria-label="键鼠 · 单屏多主机共用 · 多屏多主机 KVM">
-  <!-- 标题右侧的键鼠模式标语徽章。自绘（不走 shields.io）：
-       中文字形在 shields.io 上不可靠，而且配色要跟面板的 --blue/--blue-soft 一致。
-       字体只用系统栈，两端（mac/Windows）都有中文字体兜底。 -->
+  <!-- 标题右侧的键鼠模式标语徽章。自绘（不走 shields.io）：中文字形在
+       shields.io 上不可靠，配色取面板的蓝色令牌。字体只用系统栈，
+       两端（mac/Windows）都有中文字体兜底。
+       注意：XML 注释里不能出现连续的两个连字符，会毁掉整个文件。 -->
   <rect rx="6" width="330" height="26" fill="#3d6bff" fill-opacity="0.12"/>
   <text x="165" y="17.5" text-anchor="middle" font-size="13" font-weight="600"
         fill="#3d6bff" font-family="-apple-system, 'SF Pro SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">键鼠 · 单屏多主机共用 · 多屏多主机 KVM</text>
