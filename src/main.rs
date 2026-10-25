@@ -677,7 +677,7 @@ fn cmd_menu() -> i32 {
             tail.push_str(" · 有主机");
         }
         if !src.verified && src.presence == Presence::Unknown {
-            tail.push_str(" · 未确认");
+            tail.push_str(" · 待确认");
         }
         println!(
             "    {}{}  (0x{:02X}){}",
@@ -778,7 +778,7 @@ fn cmd_scan(all: bool, yes: bool, idle_window: u64, only: Option<&str>) -> i32 {
         .map(|p| p.inputs.len())
         .unwrap_or(0);
     if total == 0 {
-        println!("还没读到任何输入口。先运行 `inputswitch-cli info` 或点「重新检测显示器」。");
+        println!("还没读到任何输入口。先运行 `inputswitch-cli info`，或在面板里点「重新检测」。");
         return 1;
     }
 

@@ -6,6 +6,12 @@
 //! 顺手做成 HTTP 之后，命令行、脚本、别的进程甚至手机都能用同一套接口，
 //! 也保住了"窗口开不出来就退回浏览器"的退路。
 //!
+//! 页面源码在 `assets/panel/` 下按职责拆成 6 件（index.html 骨架 / style.css /
+//! core.js / render.js / kvm.js / actions.js），本文件各自 `include_str!` 后
+//! 按路由吐出。不做"拼装回单文件"那一步：`include_str!` 的依赖 Cargo 本来就
+//! 自动跟踪，改任何一个源件 `cargo build` 直接生效，不需要先跑脚本再编译。
+//! 全部响应都带 `Cache-Control: no-store`，WebView 每次都拿最新的一份。
+//!
 //! 服务只绑 127.0.0.1，外网连不进来。
 
 use std::io::{Read, Write};
@@ -339,7 +345,36 @@ fn handle(
     };
 
     match (method.as_str(), route.as_str()) {
-        ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_HTML),
+        ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_INDEX),
+        // 页面源件。本机回环上多几个请求零开销；不合并、不压缩 ——
+        // 保持"改哪个文件、cargo build 就生效"的直接性。
+        ("GET", "/panel.css") => {
+            respond(&mut stream, 200, "text/css; charset=utf-8", PANEL_CSS)
+        }
+        ("GET", "/core.js") => respond(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            PANEL_CORE,
+        ),
+        ("GET", "/render.js") => respond(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            PANEL_RENDER,
+        ),
+        ("GET", "/kvm.js") => respond(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            PANEL_KVM,
+        ),
+        ("GET", "/actions.js") => respond(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            PANEL_ACTIONS,
+        ),
         ("GET", "/api/state") => {
             let snap = state.lock().unwrap().clone();
             let json = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
@@ -701,4 +736,11 @@ pub fn open_in_browser(port: u16) -> bool {
     cmd.spawn().is_ok()
 }
 
-const PANEL_HTML: &str = include_str!("../assets/panel.html");
+// 面板的 6 个源件（见本文件开头的说明）。include_str! 的文件依赖
+// Cargo 自动跟踪：改了任何一个，下次 cargo build 一定会重新编译进二进制。
+const PANEL_INDEX: &str = include_str!("../assets/panel/index.html");
+const PANEL_CSS: &str = include_str!("../assets/panel/style.css");
+const PANEL_CORE: &str = include_str!("../assets/panel/core.js");
+const PANEL_RENDER: &str = include_str!("../assets/panel/render.js");
+const PANEL_KVM: &str = include_str!("../assets/panel/kvm.js");
+const PANEL_ACTIONS: &str = include_str!("../assets/panel/actions.js");

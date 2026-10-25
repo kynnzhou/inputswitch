@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InputSwitch · 切屏控制台</title>
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+<div class="glow a"></div><div class="glow b"></div><div class="glow c"></div>
+<div class="wrap">
+  <!-- 顶部常驻状态条：画面 / 键鼠 / 对端 三个事实 + 主操作。
+       最高频的动作（切换）以前埋在「输入源」卡片里，得往下找。 -->
+  <header class="topbar glass">
+    <div class="statusline">
+      <div class="stat node"><span class="k">本机</span><span class="v" id="node">…</span></div>
+      <div class="stat"><span class="k">画面</span><span class="v" id="hdrScreen">—</span></div>
+      <div class="stat"><span class="k">键鼠</span><span class="v" id="hdrKeys">—</span></div>
+      <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
+    </div>
+    <div class="actions">
+      <!-- 主按钮：**永远显示**，不能切时换文案 + .is-off，但位置形状不变。
+           实心蓝只留给它一个 —— 输入口列表里的「切换」全是描边小按钮。 -->
+      <button id="mainSwitch" class="primary btn-lg" onclick="quickSwitch()">切换画面</button>
+      <div class="spacer"></div>
+      <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。 -->
+      <div class="flat-group">
+        <button onclick="post('/api/rescan')">重新检测</button>
+        <button onclick="post('/api/scan')">扫描输入口</button>
+        <button onclick="post('/api/check')">检测能否切换</button>
+      </div>
+    </div>
+    <!-- 只有"下一步该干什么"这一句；没有就整行消失 -->
+    <div class="nextstep" id="nextStep"></div>
+    <div class="hint" id="supportLine" style="display:none">能否用软件切换：<span id="support"></span></div>
+    <div class="toast" id="status"></div>
+  </header>
+
+  <!-- 权限问题提到顶栏：它决定整个共用键鼠能不能用，不该只藏在
+       「单屏多主机」卡里。卡里只留开关。 -->
+  <div class="banner warn" id="permBanner" style="display:none">
+    <span class="grow"><b>系统授权没生效</b><br>
+      <span class="sub" id="permText"></span></span>
+    <button class="btn-lg" onclick="post('/api/restart')">重启应用</button>
+  </div>
+
+  <div id="pairBanner" class="banner warn">正在读取状态…</div>
+
+  <!-- ① 这台显示器：整行铺开 —— 每行有名称 + 徽标 + 两个按钮，
+       塞进半宽会换行成两层，反而更难扫 -->
+  <section class="card">
+      <h2>这台显示器 <span class="sub" id="displayModel" style="font-weight:400"></span></h2>
+      <div id="ports" class="ports"><div class="empty">读取中…</div></div>
+      <!-- 两段说明合成一段：扫描的风险提示只在真点扫描时才有意义，
+           平时占着一行只会把卡片撑高。 -->
+      <div class="hint" id="portsHint"></div>
+  </section>
+
+  <!-- ② 配对（左）+ ③ 局域网对端（右）：紧跟在「这台显示器」下面 ——
+       配对是把两台机器连起来的第一步，配完才谈得上后面的摆位和切屏。 -->
+  <div class="grid2 equal">
+    <section class="card">
+      <h2>配对</h2>
+      <div class="pairrow">
+        <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
+        <button class="ghost" onclick="genCode()">随机生成</button>
+      </div>
+      <div class="btnrow" style="margin-top:10px">
+        <button onclick="savePair()">保存并连接</button>
+        <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
+      </div>
+      <div class="hint">两台填同一个码。码越长越安全；换码后两边的键鼠会重连一次。</div>
+    </section>
+
+    <section class="card">
+      <h2>局域网对端</h2>
+      <div class="empty-fill" id="peers"><div class="empty" style="text-align:center">还没有发现其他机器</div></div>
+      <div class="hint">对端也在运行本程序时会自动出现在这里。</div>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <!-- ④ 共用键鼠（左：状态 + 每台的链路 + 手感；右：摆位图）
+         以前链路行挂在摆位图下面，两栏高度差 300px 以上，左边一大片空白。 -->
+    <section class="card">
+      <h2>共用键鼠</h2>
+      <div class="switch">
+        <span>运行状态：<b id="kvmState">未启动</b></span>
+        <button id="kvmPower" class="btn-sm" onclick="toggleKvm()">开启</button>
+      </div>
+      <div class="hint" id="kvmHint"></div>
+
+      <!-- 每台对端一行：只显示状态 + 一个动作 -->
+      <div id="kvmLinks"></div>
+
+      <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，而画面
+           一走你面前就是另一台机器的桌面，这块面板根本看不见 —— 没有可点的
+           时机。按后端算好的 follow_link 藏掉（见 renderKvm）。键鼠已经在别台
+           手上（active 非空）时同样藏掉：那时光标被钉死、点击到不了这里。 -->
+      <div class="split" style="margin-top:10px">
+        <button id="kvmHandBtn" class="btn-sm" onclick="post('/api/kvm-handover')">把键鼠交给对端</button>
+      </div>
+      <div class="hint" id="kvmHandHint"></div>
+
+      <div class="rowlabel">光标速度 · 键鼠在对端时生效</div>
+      <div id="kvmScaleRow">
+        <button id="kvmScale09" onclick="setKvmScale(0.9)">0.9</button>
+        <button id="kvmScale10" onclick="setKvmScale(1)">1.0</button>
+        <button id="kvmScale11" onclick="setKvmScale(1.1)">1.1</button>
+        <button id="kvmScale12" onclick="setKvmScale(1.2)">1.2</button>
+      </div>
+      <div class="hint" id="kvmScaleHint"></div>
+    </section>
+
+    <!-- ⑤ 摆位（各有一块屏 / 共用一块屏） -->
+    <section class="card">
+      <h2>摆位 <span class="tag plain">一台一格</span></h2>
+      <div id="kvmGrid" class="grid"></div>
+
+      <!-- 两种卡片停在这里，标签**必须分开**：
+           「共用一块屏」= 已配成跟随画面；
+           「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
+      <div id="kvmLoose" class="loosetray" data-drop="loose">
+        <div class="loosehead">共用一块屏 · 拖/点到这里：切画面时键鼠跟着走</div>
+        <div id="kvmLooseBox" class="loosebox"></div>
+      </div>
+
+      <div class="gridhint" id="kvmGridHint"></div>
+      <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
+           因为 #kvmGridHint 每次重绘都会被重写 -->
+      <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
+    </section>
+  </div>
+
+  <!-- ⑥ 文件 -->
+  <section class="card">
+    <h2>文件</h2>
+    <div class="btnrow">
+      <button onclick="post('/api/send')">发送文件…</button>
+      <button onclick="post('/api/inbox')">改接收目录</button>
+      <button onclick="post('/api/open-inbox')">打开接收目录</button>
+    </div>
+    <div class="hint" id="inbox">接收目录：—</div>
+    <div id="transfer" class="hint"></div>
+  </section>
+
+  <!-- ⑦ 高级：跟"我现在要干什么"无关的东西全收在这里 -->
+  <details class="adv card glass">
+    <summary>高级 <span class="sub">热键 · 启动与守护 · 剪贴板</span><span class="chev">›</span></summary>
+    <div class="body">
+      <div class="box">
+        <dl class="kv">
+          <dt>显示器</dt><dd id="display">—</dd>
+          <dt>设备标识</dt><dd><code id="identity">—</code></dd>
+          <dt>热键</dt><dd><span id="hotkey">—</span>
+            <button class="btn-sm" style="margin-left:10px" onclick="recHotkey()">改键</button>
+          </dd>
+          <dt>热键目标</dt><dd id="target">—</dd>
+        </dl>
+      </div>
+
+      <div class="cols">
+        <div class="box">
+          <!-- 开关用 .sw 表达状态，不再拿"已开启 / 已关闭"两个按钮去冒充。
+               三件事必须分开：自启是"程序跑起来"，恢复是"键鼠自动接上"，
+               守护是"崩了自己回来"。想只自启、不想被接管键鼠的人占多数。 -->
+          <div class="switch"><span>开机自启</span>
+            <button id="autoBtn" class="sw" role="switch" aria-checked="false" aria-label="开机自启" onclick="toggleAutostart()"></button></div>
+          <div class="switch"><span>对端上线后自动恢复共用键鼠</span>
+            <button id="resumeBtn" class="sw" role="switch" aria-checked="false" aria-label="对端上线后自动恢复共用键鼠" onclick="toggleAutoResume()"></button></div>
+          <div class="switch"><span>崩溃后自动重启</span>
+            <button id="guardBtn" class="sw" role="switch" aria-checked="false" aria-label="崩溃后自动重启" onclick="toggleKeepAlive()"></button></div>
+          <div class="hint" id="bootHint"></div>
+        </div>
+        <div class="box">
+          <div class="switch"><span>同步剪贴板文本</span>
+            <button id="clipBtn" class="sw" role="switch" aria-checked="false" aria-label="同步剪贴板文本" onclick="toggleClipboard()"></button></div>
+          <!-- 不要放进 .split：那个类会把子元素拉满整栏，一个「副机模式：一键开启」
+               就变成一条横贯卡片的色块，和旁边 32px 的常规按钮完全不是一套。 -->
+          <div class="btnrow" style="margin-top:10px">
+            <button id="subBtn" onclick="toggleSubmachine()">—</button>
+          </div>
+          <div class="hint">副机模式给<b>没接键鼠</b>的那台机器用：一次打开开机自启、自动恢复共用键鼠、崩溃后自动重启，并保持共用键鼠开启。
+            开启前请把这台的 IP 固定下来 —— 共用键鼠按 IP 认机器，不认机器名。</div>
+        </div>
+      </div>
+
+      <div class="hint" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <span>配置文件和日志都在同一个目录里</span>
+        <button class="btn-sm" style="flex:none" onclick="post('/api/open-config')">打开配置文件夹</button>
+      </div>
+    </div>
+  </details>
+</div>
+<script src="/core.js"></script>
+<script src="/render.js"></script>
+<script src="/kvm.js"></script>
+<script src="/actions.js"></script>
+<!-- 自测注入点：headless 截图 / fetch 桩自测时，把注入用的 <script> 插在这一行之后
+     （此时上面四个脚本都已加载完，覆盖 window.fetch 再调一次 pull() 即可）。 -->
+</body>
+</html>

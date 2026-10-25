@@ -4,3 +4,5 @@
 /.build
 *.log
 .DS_Store
+# 内部开发笔记，不随开源仓库发布
+/.workbuddy

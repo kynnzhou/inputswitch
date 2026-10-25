@@ -38,6 +38,9 @@ path = "src/main.rs"
 name = "InputSwitch"
 path = "src/gui.rs"
 
+# Windows 的 exe 图标：build.rs 直接写 COFF 资源对象，不需要 rc.exe / windres，
+# 所以没有 build-dependencies。只有托盘那个 bin 链接它（见 build.rs）。
+
 [profile.release]
 opt-level = "z"
 lto = true

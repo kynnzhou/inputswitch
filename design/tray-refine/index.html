@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>托盘 / 菜单栏图标 · 对照</title>
+<style>
+  :root { --ink:#1b2333; --muted:#5b6577; --line:#e2e7f1; }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:34px 30px 70px; color:var(--ink); background:#f5f7fb;
+    font:14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+         "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 6px; font-weight:650; }
+  .lede { color:var(--muted); margin:0 0 28px; font-size:13.5px; }
+  h2 { font-size:14.5px; margin:34px 0 12px; font-weight:650; display:flex; align-items:center; gap:9px; }
+  h2 .n {
+    width:21px; height:21px; border-radius:6px; background:#e8edf8; color:#4a5a7d;
+    font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:none;
+  }
+  p { margin:0 0 12px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 6px; font-size:13px; background:#fff;
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-weight:600; color:var(--muted); font-size:11.5px; background:#fafbfd; }
+  tr:last-child td { border-bottom:0; }
+  code { background:#eef2f9; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .shot { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px; margin:12px 0; }
+  .shot img { display:block; width:100%; }
+  .cap { font-size:11.5px; color:var(--muted); padding-top:9px; }
+  .note { background:#fff; border:1px solid var(--line); border-radius:10px; padding:13px 16px; margin:16px 0; font-size:13px; }
+  .note b { font-weight:650; }
+  ul { margin:6px 0 12px; padding-left:20px; }
+  li { margin:4px 0; }
+  .rec { display:inline-block; font-size:10.5px; font-weight:700; padding:1px 7px; border-radius:5px;
+         background:#e2f8f1; color:#1c7f68; margin-left:6px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>托盘 / 菜单栏图标</h1>
+  <p class="lede">
+    两个平台的问题不一样：macOS 是<strong>太粗太重</strong>，Windows 是<strong>在白任务栏上看不清</strong>。
+    下面是真尺寸渲染（菜单栏 18pt @2x，Windows 24px 放大 6 倍保留像素）。
+  </p>
+
+  <h2><span class="n">1</span>macOS 菜单栏</h2>
+  <table>
+    <tr><th style="width:140px">问题</th><th>现状</th></tr>
+    <tr><td>笔画太重</td><td>笔宽 3.35pt，在 2x 屏上是 6.7 个像素。系统菜单栏图标一般是 1.2–1.8pt</td></tr>
+    <tr><td>墨迹偏大</td><td>高度占到 13.9pt，和旁边系统图标的视觉重量对不上</td></tr>
+    <tr><td>宽度浪费</td><td>只有 <code>i</code>，右边留白很多；而这一项要占满 22pt 宽的槽位</td></tr>
+  </table>
+  <div class="shot">
+    <img src="01-menubar.png" alt="菜单栏对照">
+    <div class="cap">
+      上：浅色菜单栏；下：深色。编号 1 = 现在，2 = 细 2.2pt，3 = 中 2.6pt，4–6 = 改成 <b>is</b> 两个字（700 / 800 / 900 字重）。
+    </div>
+  </div>
+
+  <h2><span class="n">2</span>Windows 通知区域</h2>
+  <table>
+    <tr><th style="width:140px">问题</th><th>现状</th></tr>
+    <tr><td>浅色任务栏看不清</td><td><code>#4ee0b5</code> 对 <code>#f3f3f3</code> 只有 <b>1.50:1</b> 对比度，低于任何可读性下限</td></tr>
+    <tr><td>深色任务栏很好</td><td>同一颜色对 <code>#202020</code> 是 9.82:1 —— 所以这是「一边好一边差」</td></tr>
+  </table>
+
+  <div class="shot">
+    <img src="02-win-light.png" alt="浅色任务栏">
+    <div class="cap">浅色任务栏 · 从左到右：现在 1.50:1 · <code>#2fbf99</code> 2.10:1 · <code>#1f9d84</code> 3.05:1 · <code>#17806c</code> 4.36:1</div>
+  </div>
+  <div class="shot">
+    <img src="03-win-dark.png" alt="深色任务栏">
+    <div class="cap">深色任务栏 · 同一组颜色反过来：9.82 : 7.01 : 4.82 : 3.37</div>
+  </div>
+
+  <h2><span class="n">3</span>建议</h2>
+  <p>
+    <b>菜单栏改用 6 号（is 900 字重，12pt 高）。</b> 两个字比单个 <code>i</code> 更容易认，
+    而且菜单栏本来就是横向槽位，"is" 的 14.8pt 宽度正好用上；笔画细了之后不再糊成一团。
+  </p>
+  <p>
+    <b>Windows 托盘改用 <code>#1f9d84</code>。</b> 这是两条曲线交叉附近唯一两头都过得去的点：
+    浅色 3.05:1、深色 4.82:1，两个方向都是「肉眼清楚」的水平。这个色值也不是新造的，
+    控制面板里「已配对」「共用键鼠已开」用的就是它（<code>--ok-text</code>），所以托盘和面板是同一个绿。
+  </p>
+
+  <div class="note">
+    <b>要不要两个平台都改用 <code>is</code>？</b>
+    Windows 托盘现在已经是 <code>is</code>，只是颜色不对；macOS 菜单栏一直是单字 <code>i</code>。
+    如果两边统一成 <code>is</code>，用户看到的品牌符号就完全一致了 —— 但 macOS 菜单栏上多一个字，
+    每个像素都要和旁边的系统图标抢位置。我倾向：<b>菜单栏也用 is</b>，因为菜单栏图标本来就是横排的。
+    <br><br>
+    要是你想更保守，菜单栏可以只换成 3 号（还是 <code>i</code>，只是笔画从 3.35pt 收到 2.6pt），
+    改动最小，粗重的问题也能解决。
+  </div>
+
+</div>
+</body>
+</html>

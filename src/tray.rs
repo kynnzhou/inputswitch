@@ -22,7 +22,7 @@ use tao::event::{ElementState, Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::{KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::clipboard::{ClipItem, Watcher};
@@ -63,6 +63,8 @@ const ID_PEER_SIDE: &str = "peer-side:";
 const ID_PANEL: &str = "open-panel";
 /// 重启本程序（只在权限没生效时出现）
 const MENU_RESTART: &str = "restart-app";
+/// 画面在对面时，请对端替我们把画面切回来。值 = 本机记忆里的口。
+const MENU_ASK_BACK: &str = "ask-back";
 /// 面板实际监听的端口。build_menu 要拿它拼菜单项，所以放静态里。
 static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
 
@@ -272,24 +274,24 @@ fn kvm_boot(
 
     let text = match (mode, role) {
         (kvm::Mode::Follow, kvm::Role::Console) => format!(
-            "共用键鼠已开启：本机是键鼠端，画面切走时键鼠自动跟过去（{}）",
+            "共用键鼠已开启：画面切走时，键鼠跟着画面走（{}）",
             routes.join("，")
         ),
         (kvm::Mode::Follow, kvm::Role::Remote) => format!(
-            "共用键鼠已开启：本机不抓键鼠，等对端切过来接管（{}）",
+            "共用键鼠已开启：本机不抓键鼠，等对端把画面切过来后由它接管（{}）",
             routes.join("，")
         ),
         (kvm::Mode::Edge, _) => format!("共用键鼠已开启：{}", routes.join("，")),
     };
     if !offline.is_empty() {
         log_line(&format!(
-            "{} 既不在线、也没有留下过地址，这两条边不占位（在面板里重新连一次它就会记下地址）",
+            "{} 既不在线、也没有留下过地址，这几条边先不启用（在面板里重新连一次它就会记下地址）",
             offline.join("、")
         ));
     }
     if !dead.is_empty() {
         log_line(&format!(
-            "{} 不在线，那几条边仍占位：推过去只会提示「没有回应，不越界」，不会吞键鼠（配置保留）",
+            "{} 不在线，但它占的方向还留着：光标推过去不会有反应，键鼠也不会丢；等它上线就恢复",
             dead.join("、")
         ));
     }
@@ -299,7 +301,8 @@ fn kvm_boot(
     if config.kvm.peer_node != main_node {
         if !config.kvm.peer_node.is_empty() {
             log_line(&format!(
-                "上次的对端 {} 不在线，这次先用 {}（若局域网里还有别的机器装过本程序，建议关掉它的自启，免得又选错）",
+                "上次的对端 {} 不在线，这次先用 {}。局域网里还有别的机器装了本程序的话，\
+                 关掉它的开机自启可以避免下次又选错",
                 config.kvm.peer_node, main_node
             ));
         }
@@ -466,8 +469,21 @@ fn profile_key_of(switcher: &Switcher) -> String {
         .unwrap_or_default()
 }
 
+/// 菜单栏 / 通知区域的图标。
+///
+/// 两个平台要的不是同一张图：
+/// * macOS 用模板图（只有 alpha，系统按菜单栏明暗自动反色），22×22 那张的 @2x。
+///   `with_icon_as_template(true)` 让系统把它当模板处理，图标里的颜色会被丢掉 ——
+///   所以那张图里的黑只是占位，实际显示成什么颜色由系统定。
+/// * Windows 没有模板图，通知区域是彩色小图，用单独画的那张：字形更粗、
+///   不带深色底板。带底板在浅色任务栏上会变成一块突兀的深色方块，
+///   比旁边的系统图标大一圈。
 fn load_icon() -> Option<Icon> {
+    #[cfg(target_os = "windows")]
+    let bytes = include_bytes!("../assets/tray-win-32.png");
+    #[cfg(not(target_os = "windows"))]
     let bytes = include_bytes!("../assets/menubar@2x.png");
+
     let image = image::load_from_memory(bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     Icon::from_rgba(image.into_raw(), width, height).ok()
@@ -644,6 +660,13 @@ fn menu_signature(
     // 权限也要进指纹：勾完以后菜单里那条"重启应用"得自己消失，
     // 不然用户会盯着一条已经无意义的提示
     let _ = write!(sig, "\u{1e}perms={}", perms_ok());
+    // 画面在不在本机决定「切换输入源」下面写什么、以及要不要出现
+    // 「请对面把画面切回本机」—— 它变了必须重画
+    let _ = write!(
+        sig,
+        "\u{1e}display={}",
+        HAS_DISPLAY.load(AtomicOrdering::SeqCst)
+    );
     sig
 }
 
@@ -705,6 +728,19 @@ fn refresh_menu(
     true
 }
 
+/// 对端占用的那个口，给人看的写法。
+///
+/// 有名字就只写名字（`DP`）。十六进制是**它那块屏**的编号，和本机列表里的
+/// 编号各算各的 —— 并排写出来（`DP · 0x10`）会被读成"本机 0x10 那个口"，
+/// 而按那个值切本机的屏就是黑屏。只有它没报名字时才退回写编号。
+fn peer_port_label(config: &Config, peer: &Peer) -> String {
+    if peer.own_input.is_empty() {
+        format!("0x{:02X}", peer.own_value)
+    } else {
+        config.label_for(&peer.own_input)
+    }
+}
+
 fn build_menu(
     status: &str,
     config: &Config,
@@ -713,11 +749,21 @@ fn build_menu(
     profile_key: &str,
     support: &str,
 ) -> Menu {
+    // 本机此刻有没有接通显示器。没有 = 画面在对面那台，这时菜单里
+    // 「切换输入源」必然是空的（本机枚举不到这块屏），得换一条出路。
+    let has_display = HAS_DISPLAY.load(AtomicOrdering::SeqCst);
     let menu = Menu::new();
     let _ = menu.append(&MenuItem::new(status, false, None));
-    // 第二行：这台显示器到底能不能被软件切，以及已经标出几个口有主机
-    if !support.is_empty() {
-        let mut line = support.to_string();
+    // 第二行只放「需要你知道的」：
+    //   · ✓ 完整支持是默认状态，天天挂着没人看，还和"没有其他输入口"这类
+    //     情况摆在一起时自相矛盾（能切，但没口可切）；
+    //   · "3 个输入口，1 个有主机" 是真正有用的一眼信息，留在这一行。
+    // 两件事同时成立时并排放，句子还是短的。
+    {
+        let mut parts: Vec<String> = Vec::new();
+        if !support.is_empty() && !support.starts_with('✓') {
+            parts.push(support.to_string());
+        }
         if let Some(profile) = config.profile_for(profile_key) {
             let total = profile.inputs.len();
             let occupied = profile
@@ -726,13 +772,16 @@ fn build_menu(
                 .filter(|s| s.presence == Presence::Occupied)
                 .count();
             if total > 0 {
-                line.push_str(&format!(" · {} 个口", total));
-                if occupied > 0 {
-                    line.push_str(&format!("，{} 个有主机", occupied));
-                }
+                parts.push(if occupied > 0 {
+                    format!("{total} 个输入口 · {occupied} 个有主机")
+                } else {
+                    format!("{total} 个输入口")
+                });
             }
         }
-        let _ = menu.append(&MenuItem::new(line, false, None));
+        if !parts.is_empty() {
+            let _ = menu.append(&MenuItem::new(parts.join(" · "), false, None));
+        }
     }
 
     // ---- 每台对端一个子菜单 ----
@@ -749,15 +798,13 @@ fn build_menu(
         if !known.is_empty() {
             let _ = menu.append(&PredefinedMenuItem::separator());
             for peer in known {
-                let port_label = if peer.own_input.is_empty() {
-                    format!("0x{:02X}", peer.own_value)
-                } else {
-                    format!("{} · 0x{:02X}", config.label_for(&peer.own_input), peer.own_value)
-                };
+                // 口名只写名字，不并排写十六进制 —— 那个号是**它那块屏**的，
+                // 和本机列表里的 0x10 不是一回事，摆在一起只会被当成同一个口。
+                let port_label = peer_port_label(config, peer);
                 let id = format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value);
                 let _ = menu.append(&MenuItem::with_id(
                     id,
-                    format!("切到 {}（{}）", peer.node, port_label),
+                    format!("切到 {}（{port_label}）", peer.node),
                     true,
                     None,
                 ));
@@ -769,9 +816,9 @@ fn build_menu(
             let live = peers.iter().find(|p| p.node == link.node);
             let mut head = link.node.clone();
             if live.is_none() {
-                head.push_str("（没回应）");
+                head.push_str("（不在线）");
             } else if link.side.is_empty() {
-                head.push_str(" · 共用屏");
+                head.push_str(" · 共用一块屏");
             } else {
                 head.push_str(&format!(" · 在{}侧", side_label(&link.side)));
             }
@@ -783,15 +830,7 @@ fn build_menu(
             // 1) 切到它。它自己广播了占用的口，不用猜口名
             match live.filter(|p| p.knows_port()) {
                 Some(peer) => {
-                    let port_label = if peer.own_input.is_empty() {
-                        format!("0x{:02X}", peer.own_value)
-                    } else {
-                        format!(
-                            "{} · 0x{:02X}",
-                            config.label_for(&peer.own_input),
-                            peer.own_value
-                        )
-                    };
+                    let port_label = peer_port_label(config, peer);
                     let _ = sub.append(&MenuItem::with_id(
                         format!("{}{}:{}", ID_PEER, &peer.node, peer.own_value),
                         format!("切到它（{port_label}）"),
@@ -800,7 +839,7 @@ fn build_menu(
                     ));
                 }
                 None => {
-                    let _ = sub.append(&MenuItem::new("它还没报告占用的口", false, None));
+                    let _ = sub.append(&MenuItem::new("它还没报告自己在哪个口", false, None));
                 }
             }
 
@@ -819,9 +858,12 @@ fn build_menu(
                 None,
             ));
 
-            // 3) 它摆在本机的哪一侧 —— 每条链路各有一份，不再是全局一个值
+            // 3) 它摆在本机的哪一侧 —— 每条链路各有一份，不再是全局一个值。
+            //
+            // 用原生勾选项而不是 "✓ " 前缀：前缀那一版靠全角空格对齐，
+            // 换字体/换系统就歪，而且 macOS 的勾选列本来就在左边。
             let _ = sub.append(&PredefinedMenuItem::separator());
-            let _ = sub.append(&MenuItem::new("它摆在本机的：", false, None));
+            let _ = sub.append(&MenuItem::new("它在本机的方位", false, None));
             for (value, label) in [
                 ("right", "右侧"),
                 ("left", "左侧"),
@@ -829,7 +871,6 @@ fn build_menu(
                 ("bottom", "下方"),
                 ("", "共用一块屏（跟随画面）"),
             ] {
-                let mark = if link.side == value { "✓ " } else { "　 " };
                 // 空值走 `none`：`peer-side:<node>:` 尾部空串在 rsplit 里
                 // 与"没带值"分不开，两种错法表现不同、排查很烦
                 let id = if value.is_empty() {
@@ -837,7 +878,13 @@ fn build_menu(
                 } else {
                     format!("{ID_PEER_SIDE}{}:{value}", link.node)
                 };
-                let _ = sub.append(&MenuItem::with_id(id, format!("{mark}{label}"), true, None));
+                let _ = sub.append(&CheckMenuItem::with_id(
+                    id,
+                    label,
+                    true,
+                    link.side == value,
+                    None,
+                ));
             }
             let _ = menu.append(&sub);
         }
@@ -845,34 +892,59 @@ fn build_menu(
 
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // 切换子菜单：口列表来自显示器自报的能力表，不是硬编码
-    let rows = port_rows(config, profile_key, current, false);
+    // 切换子菜单：口列表来自显示器自报的能力表，不是硬编码。
+    //
+    // 画面在对面那台时**整个子菜单都不建**。注意这不是"列表本来就空"——
+    // `port_rows` 读的是配置里的 profile，它记着上次读到的那些口，画面切走
+    // 之后照样在。照常列出来的话，每一项点下去都必然失败（本机没有 DDC
+    // 通道），用户会以为程序坏了。那种情况下面单独给一条
+    // 「请对面把画面切回本机」才是这条路唯一走得通的写法。
+    let rows = if has_display {
+        port_rows(config, profile_key, current, false)
+    } else {
+        Vec::new()
+    };
     let switch_menu = Submenu::new("切换输入源", true);
-    if rows.is_empty() {
+    if has_display && rows.is_empty() {
         let _ = switch_menu.append(&MenuItem::new(
-            "没读到输入口 · 去控制面板点「重新检测显示器」",
+            "没读到输入口 · 到控制面板点「重新检测」",
             false,
             None,
         ));
     }
     for row in &rows {
         let id = format!("{}{}:{}", ID_SWITCH, &row.name, row.value);
-        let head = if row.current { "✓ " } else { "　" };
         let mut tail = String::new();
-        if row.current {
-            tail.push_str(" · 本机");
-        }
-        // 有没有主机：这是用户最想知道的一件事，直接写在口名后面
+        // **不再写「· 本机」**：勾选标记本身就是"当前口"，再写一遍是重复。
+        // 有主机 / 无信号 / 该口不存在这三样才是真正要多说的一句。
         if row.presence != Presence::Occupied {
             tail.push_str(row.presence.mark());
         } else if !row.current {
             tail.push_str(" · 有主机");
         }
         if !row.verified && row.presence == Presence::Unknown {
-            tail.push_str(" · 未确认");
+            tail.push_str(" · 待确认");
         }
-        let text = format!("{}{}  (0x{:02X}){}", head, row.label, row.value, tail);
-        let _ = switch_menu.append(&MenuItem::with_id(id, text, true, None));
+        // 十六进制只写一次：标签就是十六进制、或者根本没有名字时。
+        // 有名字还并排写一遍，等于把内部编码摊在用户面前；而且两套编号
+        // 各算各的（对端报的是它那块屏的号），摆在一起容易被当成同一个口。
+        let named = !row.label.trim().is_empty() && row.label != row.name;
+        let text = if named {
+            format!("{}{tail}", row.label)
+        } else {
+            format!("0x{:02X}{tail}", row.value)
+        };
+        // 「该口不存在」不能点切换：固件不接受那个值，点了就是黑屏。
+        // 保留这一行（它说明"这个口读过、但不通"），只是禁用 —— 直接藏掉
+        // 会让人以为程序没检测到那个口，反而会去反复重新检测。
+        let dead = row.presence == Presence::Invalid;
+        let _ = switch_menu.append(&CheckMenuItem::with_id(
+            id,
+            text,
+            !dead,
+            row.current,
+            None,
+        ));
     }
     // 没有扫描过就提示一句，别让人以为"没有主机"是本来就有的信息
     if rows
@@ -881,44 +953,66 @@ fn build_menu(
     {
         let _ = switch_menu.append(&PredefinedMenuItem::separator());
         let _ = switch_menu.append(&MenuItem::new(
-            "哪个口接了主机：控制面板 → 扫描哪个口有主机",
+            "哪个口接了主机：到控制面板点「扫描输入口」",
             false,
             None,
         ));
     }
-    let _ = menu.append(&switch_menu);
+    if has_display || !rows.is_empty() {
+        let _ = menu.append(&switch_menu);
+    }
+
+    // ---- 画面在对面时：唯一还能做的事 ----
+    //
+    // 本机没接显示器 = 画面在另一台机器上。这时本机既读不到也写不了这块屏的
+    // DDC，上面的「切换输入源」列表也是空的 —— 如果不给这条，用户看着一个
+    // 什么都点不动的菜单，只能伸手去按显示器按钮。让握着画面的那台替我们发
+    // 指令，是这条物理限制下唯一的路（面板主按钮走的是同一件事）。
+    if !has_display && config.own_value > 0 {
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        let _ = menu.append(&MenuItem::with_id(
+            MENU_ASK_BACK,
+            "请对面把画面切回本机",
+            true,
+            None,
+        ));
+    }
 
     // ---- 从这里开始，所有能改配置的东西都在控制面板里，菜单不再重复第二份 ----
     // 热键、热键目标、检测支持性、扫描口、配对、传文件、开机自启、剪贴板、网络，
     // 面板里各有对应卡片；同一件事有两个入口，出问题时最难查是哪边生效。
 
     let _ = menu.append(&PredefinedMenuItem::separator());
-    // 两种模式的措辞必须不一样 —— 看菜单就知道自己在哪种场景里，
-    // 而不是像之前那样无论什么场景都写"鼠标推到边缘"。
-    let mode_is_follow = config.kvm.mode != "edge";
-    let mode_hint = if mode_is_follow {
-        "跟随画面：画面切到对端时键鼠跟过去".to_string()
-    } else {
-        format!("多屏共享：鼠标推到{}侧越界", side_label(&config.kvm.side))
-    };
+    // 开关本身只写"开/关"和后果，不再把模式塞进括号里。
+    // 模式是**每台对端**的属性（摆位图决定），一个全局值放在这里会让人以为
+    // 它管着所有链路 —— 面板正因为这个删掉了全局模式按钮（v0.6.58：
+    // 一点就把"这台跟随、那台并排"的混拓扑压平成清一色，并排那台跟着掉进
+    // 共用一块屏）。托盘上留着同一个全局开关，等于把那个坑原样搬回来。
+    //
+    // 要看模式/改模式：每台对端的子菜单里各有「它在本机的方位」，或者摆位图。
     let kvm_text = if config.kvm.enabled {
-        format!("共用键鼠 · 已开启（{mode_hint}）点这里关闭")
+        "共用键鼠 · 已开启 · 点此关闭"
     } else {
-        format!("共用键鼠 · 开启（{mode_hint}）")
+        "共用键鼠 · 已关闭 · 点此开启"
     };
     let _ = menu.append(&MenuItem::with_id(MENU_KVM, kvm_text, true, None));
-    let other = if mode_is_follow {
-        "  改用多屏共享（两台各有屏幕和键鼠）"
-    } else {
-        "  改用跟随画面（一套键鼠，跟屏幕走）"
-    };
-    let _ = menu.append(&MenuItem::with_id(MENU_KVM_MODE, other, true, None));
+    // 全局模式切换**只在还没有链路表时**出现（老的单对端配置）。
+    // 有链路表时模式是每台对端各一份（摆位图/子菜单里改），一个全局开关
+    // 会把"这台跟随、那台并排"的混拓扑压平 —— 面板正是因此删掉了它。
+    if config.kvm.links.is_empty() {
+        let other = if config.kvm.mode == "edge" {
+            "改用跟随画面：一套键鼠跟着画面走"
+        } else {
+            "改用多屏共享：两台各用各的屏和键鼠"
+        };
+        let _ = menu.append(&MenuItem::with_id(MENU_KVM_MODE, other, true, None));
+    }
     // 会话中"换收件人"：这是"共用屏那台 → 并排那台"唯一能在托盘上按的入口
     // （画面一走就看不见面板）。只有一条链路时没意义，藏掉。
     if config.kvm.enabled && config.kvm.links.len() > 1 {
         let _ = menu.append(&MenuItem::with_id(
             MENU_KVM_HOP,
-            "把键鼠转给下一条边（画面不动）",
+            "把键鼠转给另一台（画面不动）",
             true,
             None,
         ));
@@ -942,20 +1036,20 @@ fn build_menu(
     // v3 起**方向是每条链路各一份**（上面每台对端的子菜单里），这里只在
     // 还没配链路表时留着 —— 那种情况共用键鼠本来也开不起来，纯粹是给
     // 手改配置的人一个入口。两个入口同时出现会让人以为改一个没用。
-    if !mode_is_follow && config.kvm.links.is_empty() {
+    if config.kvm.mode == "edge" && config.kvm.links.is_empty() {
         let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&MenuItem::new("对端屏幕在本机哪一侧？（两台各配各的）", false, None));
+        let _ = menu.append(&MenuItem::new("对端屏幕在本机哪一侧", false, None));
         for (value, label) in [
             ("right", "右侧"),
             ("left", "左侧"),
             ("top", "上方"),
             ("bottom", "下方"),
         ] {
-            let mark = if config.kvm.side == value { "✓" } else { "　" };
-            let _ = menu.append(&MenuItem::with_id(
+            let _ = menu.append(&CheckMenuItem::with_id(
                 format!("{MENU_KVM_SIDE}{value}"),
-                format!("{mark} 对端在{label}"),
+                format!("对端在{label}"),
                 true,
+                config.kvm.side == value,
                 None,
             ));
         }
@@ -1030,9 +1124,9 @@ fn restart_kvm(
     // 需要的是重新推一次边、或再点一次「切换」。
     let ok_text = match handback {
         Handback::None => ok_text,
-        Handback::Back => format!("{ok_text}（原先的转发已停下，键鼠收回本机）"),
-        Handback::Asked => format!("{ok_text}（原先的转发已停下，已请对端交还键鼠）"),
-        Handback::Stuck => format!("{ok_text}（原先的转发没能正常收场，请按热键收回键鼠）"),
+        Handback::Back => format!("{ok_text}（键鼠已收回本机）"),
+        Handback::Asked => format!("{ok_text}（已请对端交还键鼠）"),
+        Handback::Stuck => format!("{ok_text}（键鼠没能收回，请按 Ctrl+Alt+Esc）"),
     };
     if let Ok(mut slot) = KVM.lock() {
         *slot = None;
@@ -1306,8 +1400,7 @@ fn start_send(
                 .collect::<Vec<_>>()
                 .join("、");
             *status = format!(
-                "有 {} 台对端在线（{names}）：先把键鼠交给要发的那台再发。\
-                 以前固定发第一台，多机时必然发错人",
+                "有 {} 台对端在线（{names}）：先把键鼠交给要发的那台，再点「发送文件」",
                 peers.len()
             );
             return;
@@ -1553,22 +1646,29 @@ fn status_text(switcher: &mut Switcher) -> String {
     let display = &displays[0];
     // 静默期（显示器刚切回来）用记忆里的口拼状态，绝不再发 DDC 读
     if switcher.ddc_quiet() {
+        // 走 label_for：`own_input` 是配置键（`usbc` / `hdmi1`），直接印出来
+        // 就是「P275MV PLUS · usbc」——托盘第一行最显眼的位置放一个内部标识，
+        // 用户既看不懂也不知道跟下面那行「USB-C」是同一个口。
         let known = if switcher.config.own_input.is_empty() {
             format!("输入源 0x{:02X}", switcher.config.own_value)
         } else {
-            switcher.config.own_input.clone()
+            switcher.config.label_for(&switcher.config.own_input)
         };
         return format!("{} · {}", display.name, known);
     }
     let cap = switcher.capability(display);
+    // `current_input_name` 读到的是**配置键**（`usbc`）或者查不到时的
+    // `输入源 0x12`。两者都过一遍 label_for：键换成口名，查不到的原样返回。
+    // 托盘第一行是用户看得最多的一行，不该出现内部标识。
     let known = switcher
         .current_input_name(display)
+        .map(|name| switcher.config.label_for(&name))
         .unwrap_or_else(|| "输入源未知".to_string());
     let read_ok = switcher.backend().get_vcp(display, VCP_BRIGHTNESS).is_some();
     if read_ok {
         format!("{} · {}", display.name, known)
     } else {
-        format!("{} · {} {}", display.name, cap.mark(), "仅可写")
+        format!("{} · {} {}", display.name, cap.mark(), "只能切，读不到当前输入")
     }
 }
 
@@ -2395,14 +2495,32 @@ fn engine_loop(
                         Err(err) => why.push(err),
                     }
                 }
+                // 口名而不是 0x 编码：这条回执是用户直接读的。画面在对面时
+                // 本机 profile 是空的（压根没枚举到这块屏），所以再退一步用
+                // 「上次自己插在哪个口」的记忆，最后才写编码。
+                let key = profile_key_of(&switcher);
+                let port = switcher
+                    .config
+                    .input_name_of(&key, value)
+                    .or_else(|| {
+                        (value == switcher.config.own_value
+                            && !switcher.config.own_input.is_empty())
+                        .then(|| switcher.config.own_input.clone())
+                    })
+                    .map(|name| switcher.config.label_for(&name))
+                    .unwrap_or_else(|| format!("0x{value:02X}"));
                 let text = if sent == 0 {
                     if why.is_empty() {
                         "没有在线对端可以代切".to_string()
                     } else {
                         format!("切不了：{}", why.join("；"))
                     }
+                } else if value == switcher.config.own_value {
+                    // 请对端切到本机插的那个口 = 把画面送回来。措辞跟着变：
+                    // "切到 USB-C" 会被读成"把对面的画面切到它自己的某个口"。
+                    format!("已请对端把画面切回本机（{port}），几秒后屏幕会回来")
                 } else {
-                    format!("已请对端把画面切到 0x{value:02X}，几秒后屏幕会回来")
+                    format!("已请对端把画面切到 {port}，几秒后屏幕会回来")
                 };
                 let target = switcher.config.hotkey_target.clone();
                 push(&proxy, &switcher, &target, text, &support, &mut last_push);
@@ -2433,10 +2551,10 @@ fn engine_loop(
                     .collect();
                 let can_relay = !peers_now.is_empty() && blocked.is_empty();
                 let skip_reason: Option<String> = if peers_now.is_empty() {
-                    Some("局域网里没有别的机器在跑本程序，切过去就回不来".to_string())
+                    Some("局域网里没有别的机器在运行本程序，切过去就切不回来".to_string())
                 } else if !blocked.is_empty() {
                     Some(format!(
-                        "{} 设了配对码而本机没设，它会把代切请求当成未签名的包丢掉 —— \
+                        "{} 设了配对码、本机没设，发给它的切换请求会被拒绝 —— \
                          两边填同一个码再来",
                         blocked.join("、")
                     ))
@@ -2726,7 +2844,7 @@ pub fn run() -> ! {
         thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
     }
     log_line(&format!(
-        "启动：热键={} 目标={} 节点={} 构建=v0.6.76",
+        "启动：热键={} 目标={} 节点={} 构建=v0.6.89",
         if hotkey_id.is_some() { "已注册" } else { "注册失败" },
         config_snapshot.hotkey_target,
         config_snapshot.node
@@ -2946,8 +3064,8 @@ pub fn run() -> ! {
                         // 空码 = 取消配对：mesh 会真的把 key 置空（link_key 对空串返回 None），
                         // 之后本机不再签名也不再验签。这句必须把后果说全，不然用户不知道
                         // 自己刚把门打开了。
-                        "已取消配对：本机不再校验签名，同一网段的任何设备都能发指令。\
-                         对面还留着码的话，它会拒收你的指令，两边都要取消或重新填同一个码"
+                        "已取消配对：本机不再验证对方身份，同一网段的任何设备都能发指令。\
+                         对面还留着码的话，它会拒收你的指令 —— 两边都取消，或重新填同一个码"
                             .to_string()
                     } else {
                         format!("已保存配对码 {}，对面填同一个码就能连上", mask_code(&code))
@@ -3062,8 +3180,8 @@ pub fn run() -> ! {
                                         } else {
                                             kvm::open_settings();
                                             status = "共用键鼠开不了：缺系统授权。设置页已打开，\
-                                                      勾上本程序后点托盘里的「重启应用」\
-                                                      —— 不重启这个进程不会认新授权"
+                                                      勾上本程序后点托盘里的「重启应用」，\
+                                                      重启后才会生效"
                                                 .to_string();
                                         }
                                         // **不改用户意图**：他点了「开启」，那就是
@@ -3226,7 +3344,7 @@ pub fn run() -> ! {
                     };
                     status = match auto {
                         Ok(()) if on => "副机模式已开启：开机自启 + 自动恢复 + 崩溃重启。\
-                             记得给这台配静态 IP —— 共用键鼠的白名单只认地址，不认机器名"
+                             记得给这台配固定 IP —— 共用键鼠按 IP 认机器，不认机器名"
                             .to_string(),
                         Ok(()) => "副机模式已关闭：不再自启、不再自动恢复、不再守护".to_string(),
                         Err(err) => format!("副机模式设置失败：{err}"),
@@ -3627,6 +3745,13 @@ pub fn run() -> ! {
                     } else if id == MENU_RESTART {
                         log_line("菜单里点了「重启应用」");
                         restart_app();
+                    } else if id == MENU_ASK_BACK {
+                        // 画面在对面：本机没有 DDC 通道，只能请握着画面的那台代发。
+                        // 用的还是本机记住的 own_value —— 那是**这块屏**的口编号，
+                        // 对端切的是同一块屏，所以这个编号在它那边同样成立
+                        // （跟"拿对端自己那块屏的编号切本屏"不是一回事）。
+                        status = "已请对面把画面切回本机…".to_string();
+                        let _ = tx.send(Command::AskPeerSwitch { value: config.own_value });
                     } else if id == ID_PANEL {
                         let port = PANEL_PORT.load(AtomicOrdering::SeqCst);
                         // 已经有窗口就只是叫到前面来；没有才建，建不出来退回浏览器
@@ -3724,12 +3849,12 @@ pub fn run() -> ! {
                             *slot = None;
                         }
                         status = if next == "edge" {
-                            "已切到多屏共享：两台各有屏幕和键鼠，鼠标推到边缘越界".to_string()
+                            "已切到多屏共享：两台各有屏幕和键鼠，光标推到边缘就过去".to_string()
                         } else {
                             "已切到跟随画面：一套键鼠，画面切到哪台就跟到哪台".to_string()
                         };
                         if was_on.is_some() {
-                            status.push_str("（共用键鼠已关闭，请重新打开）");
+                            status.push_str("。共用键鼠已关闭，请重新打开");
                             config.kvm.enabled = false;
                             let _ = config.save();
                         }
@@ -3768,10 +3893,20 @@ pub fn run() -> ! {
                                     log_line(&status);
                                 }
                                 Some(_) => {
+                                    // 方向决定模式，两个字段一起改：
+                                    //   进格子 = 多屏共享（edge），进「共用一块屏」= 跟随（follow）。
+                                    // 只改 side 不改 mode 会造出「有门却跟随」——摆位图上
+                                    // 画在格子里、实际根本不占边，推过去毫无反应。面板的
+                                    // /api/link 那条入口一直有这层纠正，托盘这条漏了。
                                     if let Some(link) =
                                         config.kvm.links.iter_mut().find(|l| l.node == node)
                                     {
                                         link.side = side.to_string();
+                                        link.mode = if side.is_empty() {
+                                            "follow".to_string()
+                                        } else {
+                                            "edge".to_string()
+                                        };
                                     }
                                     // 镜像要跟着回写：老版本只读镜像里的 side，
                                     // 不回写的话两台程序看到的拓扑不一样
@@ -3783,7 +3918,7 @@ pub fn run() -> ! {
                                     } else {
                                         format!("本机{}侧", side_label(side))
                                     };
-                                    let mut text = format!("{node} 已设为在{where_is}");
+                                    let mut text = format!("{node} 已设在{where_is}");
                                     // 同一侧摆了两台：推过去落到谁那儿是不确定的。
                                     // 不拦（物理摆位是用户的事），但必须说出来
                                     if !side.is_empty() {
@@ -3853,9 +3988,8 @@ pub fn run() -> ! {
                                     .unwrap_or(false);
                                 if !known {
                                     status = format!(
-                                        "本机的口里没有 0x{value:02X}（{node} 报的是它自己\
-                                         那块屏的编号）。这条只在两台接同一块屏时成立，\
-                                         已拒绝切换"
+                                        "本机没有 0x{value:02X} 这个口（{node} 报的是它那块屏的\
+                                         编号，两块屏的编号不通用），已取消切换"
                                     );
                                 } else {
                                     let name = mesh
@@ -3891,7 +4025,8 @@ pub fn run() -> ! {
                         continue;
                     }
                     if target.is_empty() {
-                        status = "热键目标未设置：控制面板 → 输入源 → 设为目标".to_string();
+                        status =
+                            "热键还没指定目标：到控制面板的输入源列表点「设为热键」".to_string();
                     } else if let Some(value) = configured_value(&config, &profile_key, &target) {
                         status = format!("正在切换到 {}…", target);
                         let _ = tx.send(Command::SwitchRaw {

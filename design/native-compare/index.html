@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>控制面板 · 网页感 / 原生感 对比</title>
+<style>
+  :root { --ink: #1b2333; --muted: #5b6577; --line: #e2e7f1; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 28px 64px; color: var(--ink);
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+          "Microsoft YaHei", system-ui, sans-serif;
+    background: #f5f7fb;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 19px; margin: 0 0 6px; font-weight: 650; }
+  .lede { color: var(--muted); margin: 0 0 26px; font-size: 13.5px; }
+  h2 { font-size: 14px; margin: 30px 0 10px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  h2 .n {
+    width: 20px; height: 20px; border-radius: 6px; background: #e8edf8; color: #4a5a7d;
+    font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+  }
+  p { margin: 0 0 12px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 14px 0 6px; }
+  .shot { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; }
+  .shot img { display: block; width: 100%; }
+  .cap { font-size: 11.5px; color: var(--muted); padding: 7px 10px; border-top: 1px solid var(--line); }
+  .cap b { color: var(--ink); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 4px; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  code { background: #eef2f9; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .try { display: flex; gap: 10px; margin: 12px 0 0; }
+  .try a {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; border-radius: 6px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); text-decoration: none;
+    font-size: 13px; font-weight: 500;
+  }
+  .try a:hover { border-color: #b9c6e2; }
+  .note { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; margin: 16px 0; font-size: 13px; }
+  .note b { font-weight: 650; }
+  ul { margin: 6px 0 12px; padding-left: 20px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>控制面板：网页感 vs 原生感</h1>
+  <p class="lede">
+    只改样式，不碰任何功能、文案、接口。两版都是同一份 <code>panel.html</code> 加同一份假数据渲染的，
+    下半页可以直接滚动、鼠标悬停测试。
+  </p>
+
+  <h2><span class="n">1</span>整体</h2>
+  <div class="pair">
+    <div class="shot"><img src="01-before.png" alt="改前"><div class="cap"><b>改前</b> · 18px 大圆角卡片、36px 渐变按钮、14px 正文</div></div>
+    <div class="shot"><img src="01-after.png" alt="改后"><div class="cap"><b>改后</b> · 12px 卡片、28px 平涂按钮、13px 正文</div></div>
+  </div>
+
+  <h2><span class="n">2</span>滚到中段</h2>
+  <div class="pair">
+    <div class="shot"><img src="02-scroll-before.png" alt="改前滚动"><div class="cap"><b>改前</b> · 顶栏跟着滚走了，切屏按钮要滚回顶部才点得到</div></div>
+    <div class="shot"><img src="02-scroll-after.png" alt="改后滚动"><div class="cap"><b>改后</b> · 顶栏钉在窗口顶部，内容从下面过</div></div>
+  </div>
+
+  <h2><span class="n">3</span>改了哪七处</h2>
+  <table>
+    <tr><th style="width:150px">位置</th><th style="width:44%">改前</th><th>改后</th></tr>
+    <tr><td>顶栏</td><td>跟随页面滚动，出了视口就没了</td><td><code>position: sticky</code>，常驻顶部；底边加一条 1px 分隔线，滚动时和内容分开</td></tr>
+    <tr><td>滚动条</td><td>WebKit 默认细条，一直挂着</td><td>隐藏，跟随 macOS 的 overlay 滚动条习惯</td></tr>
+    <tr><td>列表行悬停</td><td>口行 / 对端行 / 链路行都 <code>translateY(-1px)</code> + 投影</td><td>只换行底色（淡蓝），不位移、不加投影</td></tr>
+    <tr><td>按钮</td><td>36 / 32 / 26px，渐变填充 + 蓝色光晕投影，按下有缩放</td><td>28 / 26 / 22px，平涂，只留 1px 内高光，按下不缩放</td></tr>
+    <tr><td>圆角</td><td>卡片 18px、输入框 11px、按钮 10px</td><td>卡片 12px、输入框 / 按钮 6px，徽标 5px</td></tr>
+    <tr><td>字号与间距</td><td>正文 14px，卡片内边距 18px，间距 14px</td><td>正文 13px，内边距 14px，间距 12px</td></tr>
+    <tr><td>页面宽度</td><td>内容限宽 880px 居中，两侧留白（像博客）</td><td>铺满窗口，左右 16px（像应用窗口）</td></tr>
+  </table>
+
+  <div class="note">
+    <b>没改的：</b>玻璃材质、配色、所有按钮的位置和文案、主按钮永远是实心蓝这条规则、
+    摆位图的拖拽、键盘操作。这些是上一轮定下来的，这次只动“像不像原生控件”。
+  </div>
+
+  <div class="try">
+    <a href="before.html">打开改前（可滚动 / 可悬停）</a>
+    <a href="after.html">打开改后（可滚动 / 可悬停）</a>
+  </div>
+
+</div>
+</body>
+</html>

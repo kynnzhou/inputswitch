@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>InputSwitch · 图标设计稿</title>
+<style>
+  :root {
+    --navy: #232a38; --teal: #4ee0b5;
+    --ink: #1b2333; --muted: #5a6579; --faint: #8b94a8;
+    --line: rgba(120,130,155,.22);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 44px 48px 90px;
+    font: 14px/1.65 -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+    color: var(--ink); background: #f2f4f9;
+  }
+  h1 { font-size: 23px; margin: 0 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 8px; max-width: 800px; }
+  .lede code {
+    background: rgba(120,130,155,.12); padding: 1px 5px; border-radius: 4px;
+    font-size: 12.5px;
+  }
+  h2 { font-size: 16px; margin: 46px 0 4px; }
+  h2 .n {
+    display: inline-block; min-width: 24px; height: 24px; line-height: 24px;
+    text-align: center; border-radius: 7px; background: var(--navy); color: #fff;
+    font-size: 12.5px; margin-right: 9px; vertical-align: 1px;
+  }
+  h2 .tag {
+    font-size: 11.5px; font-weight: 500; color: var(--teal);
+    background: rgba(78,224,181,.14); border-radius: 999px; padding: 2px 9px;
+    margin-left: 8px; vertical-align: 2px;
+  }
+  h2 .tag.alt { color: #6b7488; background: rgba(120,130,155,.14); }
+  .note { color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: 810px; }
+  .row { display: flex; gap: 22px; align-items: flex-end; flex-wrap: wrap; }
+  .plate { display: flex; flex-direction: column; gap: 9px; align-items: center; }
+  .plate .cap { font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+  .surface {
+    border-radius: 16px; padding: 16px; display: flex; gap: 14px; align-items: center;
+    border: 1px solid var(--line);
+  }
+  .surface.light { background: linear-gradient(150deg,#fff,#e7ebf5); }
+  .surface.dark  { background: linear-gradient(150deg,#2a3140,#161a23); }
+  .ladder {
+    display: flex; gap: 14px; align-items: flex-end; padding: 13px 15px;
+    border-radius: 13px; background: #fff; border: 1px solid var(--line);
+  }
+  .ladder.dark { background: #1e242e; border-color: #2d3543; }
+  .ladder .cap2 { font-size: 10px; color: var(--faint); }
+
+  table { border-collapse: collapse; font-size: 13px; margin: 6px 0 0; }
+  th, td { text-align: left; padding: 5px 22px 5px 0; vertical-align: top; }
+  th { color: var(--faint); font-weight: 500; font-size: 12px; }
+
+  .pros, .cons { margin: 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+  .pros li, .cons li { margin: 2px 0; }
+
+  .traybar {
+    display: flex; align-items: center; gap: 13px;
+    background: linear-gradient(180deg,#eaedf4,#dee3ed);
+    border-radius: 9px; padding: 4px 13px; border: 1px solid var(--line);
+  }
+  .traybar svg { width: 22px; height: 22px; display: block; }
+  .traybar .sep { width: 1px; height: 15px; background: rgba(0,0,0,.12); }
+  .traybar .muted { color: #444; font-size: 12px; }
+
+  .traywin {
+    display: flex; align-items: center; gap: 9px;
+    background: #1c2230; border-radius: 8px; padding: 4px 11px;
+  }
+  .traywin svg { width: 16px; height: 16px; display: block; }
+  .traywin .t { color: #dfe6f2; font-size: 12px; }
+  .traywin .sep { width: 1px; height: 14px; background: rgba(255,255,255,.16); }
+
+  .pick {
+    margin-top: 44px; padding: 20px 24px; border-radius: 14px;
+    background: #fff; border: 1px solid var(--line);
+  }
+  .pick h3 { margin: 0 0 8px; font-size: 14px; }
+  .pick p { margin: 6px 0; color: var(--muted); font-size: 13px; }
+  .pick b { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<h1>InputSwitch · 图标设计稿</h1>
+<p class="lede">
+  品牌记号就做 <b>is</b> 两个字母。色板沿用现有的深蓝
+  <code>#232A38</code> + 薄荷绿 <code>#4EE0B5</code>，不引新颜色。
+  下面是两条路线，都按 1024 出图，并排看 1024 / 256 / 128 / 64 / 32 / 16 六级缩放。
+</p>
+<p class="lede" style="color:#8b94a8;font-size:12.5px">
+  先说明：起点试过六个变体 —— i 的竖笔弯成 s、开关轨道里放 is、s 收成箭头、is 加边界竖线 ——
+  1024 下都还能看，但缩到 64px 以下全部糊成一团或者读成别的字母（“Ls”“oS”“Fs”）。
+  真正站得住的只有下面两条。
+</p>
+
+<!-- ═══ 1 ═══ -->
+<h2><span class="n">1</span>纯字标<span class="tag">推荐</span></h2>
+<p class="note">
+  i 的竖笔 + 圆点，s 用两段反向圆弧咬合。笔画等宽（86/1024）、端点全圆，
+  和面板里那套 10px 圆角按钮是同一套语言。字面宽 470，四周留白 ≥ 280，
+  在系统图标网格里不会顶着边。
+</p>
+<div class="row">
+  <div class="plate">
+    <div class="surface light">
+      <svg width="180" height="180" viewBox="0 0 1024 1024">
+        <rect width="1024" height="1024" rx="228" fill="#232a38"/>
+        <g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M320 392 V 700"/>
+          <path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466
+                   C 516 512 560 528 610 538 C 664 550 712 570 712 620
+                   C 712 672 662 700 610 700 C 556 700 512 672 504 618"/>
+        </g>
+        <circle cx="320" cy="286" r="44" fill="#4ee0b5"/>
+      </svg>
+    </div>
+    <span class="cap">1024</span>
+  </div>
+  <div class="plate">
+    <div class="surface dark">
+      <svg width="180" height="180" viewBox="0 0 1024 1024">
+        <rect width="1024" height="1024" rx="228" fill="#232a38"/>
+        <g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M320 392 V 700"/>
+          <path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466
+                   C 516 512 560 528 610 538 C 664 550 712 570 712 620
+                   C 712 672 662 700 610 700 C 556 700 512 672 504 618"/>
+        </g>
+        <circle cx="320" cy="286" r="44" fill="#4ee0b5"/>
+      </svg>
+    </div>
+    <span class="cap">深色桌面</span>
+  </div>
+  <div class="plate">
+    <div class="ladder">
+      <svg width="118" height="118" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+      <svg width="70" height="70" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+      <svg width="44" height="44" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+      <svg width="28" height="28" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+      <svg width="18" height="18" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+    </div>
+    <span class="cap">256 / 128 / 64 / 32 / 16</span>
+  </div>
+</div>
+<div class="row" style="margin-top:14px">
+  <div class="ladder dark">
+    <span class="cap2">深色底 64 / 32 / 16</span>
+    <svg width="64" height="64" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+    <svg width="32" height="32" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+    <svg width="16" height="16" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+  </div>
+</div>
+
+<!-- ═══ 2 ═══ -->
+<h2><span class="n">2</span>方框徽章<span class="tag alt">备选</span></h2>
+<p class="note">
+  同样的 is，外面加一圈圆角方框。方框把字标收成一个整体，也让"这软件是个框在管着屏幕"这件事有一点暗示。
+  但 32px 下框线和笔画一样粗，会挤成一块；实际会做一版"小尺寸去掉方框"的规则。
+</p>
+<div class="row">
+  <div class="plate">
+    <div class="surface light">
+      <svg width="180" height="180" viewBox="0 0 1024 1024">
+        <rect width="1024" height="1024" rx="228" fill="#232a38"/>
+        <rect x="150" y="292" width="724" height="440" rx="146" fill="none"
+              stroke="#4ee0b5" stroke-width="34" opacity=".5"/>
+        <g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M344 428 V 648"/>
+          <path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496
+                   C 542 526 572 538 602 546 C 636 554 668 568 668 600
+                   C 668 634 636 652 602 652 C 570 652 540 634 534 606"/>
+        </g>
+        <circle cx="344" cy="360" r="36" fill="#4ee0b5"/>
+      </svg>
+    </div>
+    <span class="cap">1024</span>
+  </div>
+  <div class="plate">
+    <div class="surface dark">
+      <svg width="180" height="180" viewBox="0 0 1024 1024">
+        <rect width="1024" height="1024" rx="228" fill="#232a38"/>
+        <rect x="150" y="292" width="724" height="440" rx="146" fill="none"
+              stroke="#4ee0b5" stroke-width="34" opacity=".5"/>
+        <g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M344 428 V 648"/>
+          <path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496
+                   C 542 526 572 538 602 546 C 636 554 668 568 668 600
+                   C 668 634 636 652 602 652 C 570 652 540 634 534 606"/>
+        </g>
+        <circle cx="344" cy="360" r="36" fill="#4ee0b5"/>
+      </svg>
+    </div>
+    <span class="cap">深色桌面</span>
+  </div>
+  <div class="plate">
+    <div class="ladder">
+      <svg width="118" height="118" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><rect x="150" y="292" width="724" height="440" rx="146" fill="none" stroke="#4ee0b5" stroke-width="34" opacity=".5"/><g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"><path d="M344 428 V 648"/><path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496 C 542 526 572 538 602 546 C 636 554 668 568 668 600 C 668 634 636 652 602 652 C 570 652 540 634 534 606"/></g><circle cx="344" cy="360" r="36" fill="#4ee0b5"/></svg>
+      <svg width="70" height="70" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><rect x="150" y="292" width="724" height="440" rx="146" fill="none" stroke="#4ee0b5" stroke-width="34" opacity=".5"/><g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"><path d="M344 428 V 648"/><path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496 C 542 526 572 538 602 546 C 636 554 668 568 668 600 C 668 634 636 652 602 652 C 570 652 540 634 534 606"/></g><circle cx="344" cy="360" r="36" fill="#4ee0b5"/></svg>
+      <svg width="44" height="44" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><rect x="150" y="292" width="724" height="440" rx="146" fill="none" stroke="#4ee0b5" stroke-width="34" opacity=".5"/><g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"><path d="M344 428 V 648"/><path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496 C 542 526 572 538 602 546 C 636 554 668 568 668 600 C 668 634 636 652 602 652 C 570 652 540 634 534 606"/></g><circle cx="344" cy="360" r="36" fill="#4ee0b5"/></svg>
+      <svg width="28" height="28" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><rect x="150" y="292" width="724" height="440" rx="146" fill="none" stroke="#4ee0b5" stroke-width="34" opacity=".5"/><g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"><path d="M344 428 V 648"/><path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496 C 542 526 572 538 602 546 C 636 554 668 568 668 600 C 668 634 636 652 602 652 C 570 652 540 634 534 606"/></g><circle cx="344" cy="360" r="36" fill="#4ee0b5"/></svg>
+      <svg width="18" height="18" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><rect x="150" y="292" width="724" height="440" rx="146" fill="none" stroke="#4ee0b5" stroke-width="34" opacity=".5"/><g fill="none" stroke="#4ee0b5" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"><path d="M344 428 V 648"/><path d="M668 486 C 668 458 630 448 602 448 C 568 448 542 466 542 496 C 542 526 572 538 602 546 C 636 554 668 568 668 600 C 668 634 636 652 602 652 C 570 652 540 634 534 606"/></g><circle cx="344" cy="360" r="36" fill="#4ee0b5"/></svg>
+    </div>
+    <span class="cap">256 / 128 / 64 / 32 / 16</span>
+  </div>
+</div>
+
+<!-- ═══ 菜单栏 ═══ -->
+<h2>菜单栏与托盘</h2>
+<p class="note">
+  macOS 菜单栏用模板图（只有 alpha，系统按明暗自动反色），22×22（@2x 为 44）。
+  那个尺寸放不下两个字母还认得出，所以取笔画更简的 <b>i</b>：一个圆点加一根竖笔，
+  和图标里 i 的比例完全一致。Windows 托盘是彩色小图，直接缩字标的 16px 版本。
+</p>
+<div class="row" style="align-items:center">
+  <div class="plate">
+    <div class="traybar">
+      <svg viewBox="0 0 44 44"><g fill="#000"><circle cx="15" cy="10.5" r="4.2"/><rect x="12.2" y="17" width="5.6" height="17" rx="2.8"/></g></svg>
+      <span class="sep"></span>
+      <span class="muted">周三 10:42</span>
+    </div>
+    <span class="cap">macOS 菜单栏（模板图，自动反色）</span>
+  </div>
+  <div class="plate">
+    <div class="traywin">
+      <svg viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="228" fill="#232a38"/><g fill="none" stroke="#4ee0b5" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"><path d="M320 392 V 700"/><path d="M712 452 C 712 408 654 392 610 392 C 556 392 516 420 516 466 C 516 512 560 528 610 538 C 664 550 712 570 712 620 C 712 672 662 700 610 700 C 556 700 512 672 504 618"/></g><circle cx="320" cy="286" r="44" fill="#4ee0b5"/></svg>
+      <span class="sep"></span>
+      <span class="t">10:42</span>
+    </div>
+    <span class="cap">Windows 托盘（16px）</span>
+  </div>
+  <div class="plate">
+    <div class="traybar" style="background:linear-gradient(180deg,#242a36,#161a23);border-color:#2d3543">
+      <svg viewBox="0 0 44 44"><g fill="#fff"><circle cx="15" cy="10.5" r="4.2"/><rect x="12.2" y="17" width="5.6" height="17" rx="2.8"/></g></svg>
+      <span class="sep" style="background:rgba(255,255,255,.16)"></span>
+      <span class="muted" style="color:#cfd6e4">深色菜单栏时</span>
+    </div>
+    <span class="cap">同一个模板图，自动变白</span>
+  </div>
+</div>
+
+<div class="pick">
+  <h3>我推荐 1（纯字标）</h3>
+  <p><b>原因：</b>小尺寸下是唯一还能读出字的一个。图标最终活在 32px 和 16px 上，
+    而“方框 + is”在 32px 时框线和笔画会挤在一起。</p>
+  <p><b>落地范围：</b>
+    <code>assets/AppIcon-1024.png</code>、<code>AppIcon.icns</code>（macOS 装包）、
+    <code>AppIcon.ico</code>（16–256 九个尺寸，Windows exe 内嵌 + 资源管理器）、
+    <code>menubar.png</code> / <code>menubar@2x.png</code>（菜单栏模板图）。
+    图标由脚本按同一份矢量几何生成，以后改色只改一处。</p>
+  <p><b>已定：</b>1 纯字标 + 菜单栏只放 <b>i</b>（2026-10-22）。已生成
+    <code>assets/AppIcon-1024.png</code> / <code>AppIcon.icns</code> / <code>AppIcon.ico</code>（11 个尺寸）/
+    <code>menubar.png</code> / <code>menubar@2x.png</code> / <code>tray-win-32.png</code>，
+    Windows exe 由 <code>build.rs</code> 内嵌资源。源文件在 <code>design/brand/</code>，
+    重新生成跑 <code>python3 tools/make-icons.py</code>。</p>
+</div>
+
+</body>
+</html>

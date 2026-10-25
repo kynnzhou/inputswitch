@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>is 图标 · 精修对照</title>
+<style>
+  :root { --ink:#1b2333; --muted:#5b6577; --line:#e2e7f1; --teal:#4ee0b5; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 34px 30px 70px; color: var(--ink); background: #f5f7fb;
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+          "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; font-weight: 650; }
+  .lede { color: var(--muted); margin: 0 0 28px; font-size: 13.5px; }
+  h2 { font-size: 14.5px; margin: 34px 0 12px; font-weight: 650; display: flex; align-items: center; gap: 9px; }
+  h2 .n {
+    width: 21px; height: 21px; border-radius: 6px; background: #e8edf8; color: #4a5a7d;
+    font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  p { margin: 0 0 12px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0 8px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .card img { display: block; width: 100%; background: #fafbfd; }
+  .cap { font-size: 11.5px; color: var(--muted); padding: 8px 11px; border-top: 1px solid var(--line); }
+  .cap b { color: var(--ink); font-weight: 600; }
+
+  .opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 16px 0 10px; }
+  .opt { background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .opt.pick { border-color: #7fd9c0; box-shadow: 0 0 0 3px rgba(78,224,181,.14); }
+  .opt .head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  .opt .tag {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .3px; padding: 2px 7px; border-radius: 5px;
+    background: #eef2f9; color: #4a5a7d;
+  }
+  .opt.pick .tag { background: #e2f8f1; color: #1c7f68; }
+  .opt .name { font-weight: 600; font-size: 13px; }
+  .opt .body { padding: 16px; display: flex; justify-content: center; background: #fafbfd; }
+  .opt .body img { width: 168px; height: 168px; display: block; }
+  .opt .note { padding: 10px 13px 13px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); }
+  .opt .note b { color: var(--ink); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 6px; font-size: 13px; background: #fff;
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 11.5px; background: #fafbfd; }
+  tr:last-child td { border-bottom: 0; }
+  code { background: #eef2f9; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .note-box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 13px 16px; margin: 18px 0; font-size: 13px; }
+  .note-box b { font-weight: 650; }
+  ul { margin: 6px 0 12px; padding-left: 20px; }
+  li { margin: 4px 0; }
+  .sizes { display: flex; gap: 18px; align-items: flex-end; background: #fff; border: 1px solid var(--line);
+           border-radius: 12px; padding: 16px 18px; }
+  .sizes figure { margin: 0; text-align: center; }
+  .sizes figcaption { font-size: 10.5px; color: var(--muted); margin-top: 6px; }
+  .sizes img { display: block; margin: 0 auto; }
+  .big { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .big img { display: block; width: 100%; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>is 图标 · 精修</h1>
+  <p class="lede">
+    你说“粗糙”，我把它拆成三处可量的问题，然后重画了一版。下面是可以点开、放大、并排比较的结果 —— 还没动仓库里的图标文件。
+  </p>
+
+  <h2><span class="n">1</span>粗糙到底出在哪</h2>
+  <table>
+    <tr><th style="width:132px">问题</th><th style="width:44%">现在</th><th>为什么看起来糙</th></tr>
+    <tr>
+      <td>S 的轮廓</td>
+      <td>三段贝塞尔手调，上下两个弧不是同一个圆心</td>
+      <td>两个弧相接的地方（右上、左下）有一条肉眼可见的“折”，放大后像被捏过；这个折在小尺寸会被抗锯齿放大成毛边</td>
+    </tr>
+    <tr>
+      <td>字形的比例</td>
+      <td><code>i</code> 和 <code>s</code> 各自独立摆位，笔画粗细也不一致</td>
+      <td>两个字不是同一套度量里长出来的，视觉上不齐；<code>i</code> 的杆比 <code>s</code> 的笔画细一圈</td>
+    </tr>
+    <tr>
+      <td>底板与留白</td>
+      <td>内容铺满 1024 画布，没有投影、没有渐变</td>
+      <td>系统图标的底板统一内缩到画布的 ~10%，底下还压着一层很淡的投影。少了这两样，图标在 Dock 里像贴在墙上，而不是一块有厚度的东西</td>
+    </tr>
+  </table>
+
+  <div class="pair">
+    <div class="card">
+      <img src="04-S-old.png" alt="现在的 S">
+      <div class="cap"><b>现在</b> · 右上弧与主干相接处有折角，左下同样</div>
+    </div>
+    <div class="card">
+      <img src="04-S-new.png" alt="新的 S">
+      <div class="cap"><b>重画后</b> · 同一套圆弧，接缝处曲率连续</div>
+    </div>
+  </div>
+
+  <h2><span class="n">2</span>怎么修的</h2>
+  <ul>
+    <li><b>字形不再手画。</b><code>i</code> 和 <code>s</code> 直接取 <b>Nunito</b>（SIL OFL 许可，可商用）在 weight 900 下的真实轮廓，两者天生同一套度量。</li>
+    <li><b>轮廓是矢量曲线，不是拼圆弧。</b>字体轮廓自带正确的曲率过渡，所以没有接缝；小尺寸下抗锯齿也干净。</li>
+    <li><b>底板按 macOS 的网格重做。</b>实测了 Notes / Music / Chess / Photos 等系统图标，它们的底板统一是：<b>1024 画布里内缩约 104 px</b>、超椭圆指数 <b>n≈5.3</b>、底下一层 <b>向下 8px、模糊 7px、不透明度 0.30</b> 的投影。现在照这个来。</li>
+    <li><b>加了极轻的竖直渐变</b>（<code>#2b3343 → #1c222d</code>），系统图标都有这一层，纯平色会显得像色块。</li>
+  </ul>
+
+  <h2><span class="n">3</span>三个版本，选一个</h2>
+  <div class="opts">
+    <div class="opt pick">
+      <div class="head"><span class="tag">推荐</span><span class="name">A · 系统网格</span></div>
+      <div class="body"><img src="new-A-1024.png" alt="A"></div>
+      <div class="note">缩到 102px 留白，带投影和渐变。<b>和系统图标放一起最齐</b>。</div>
+    </div>
+    <div class="opt">
+      <div class="head"><span class="tag">B</span><span class="name">A 的纯平版</span></div>
+      <div class="body"><img src="new-B-1024.png" alt="B"></div>
+      <div class="note">同上，但去掉投影和渐变。更“素”，和其它图标并排时略扁。</div>
+    </div>
+    <div class="opt">
+      <div class="head"><span class="tag">C</span><span class="name">保持满版</span></div>
+      <div class="body"><img src="new-C-1024.png" alt="C"></div>
+      <div class="note">沿用原来的满版圆角矩形，只换字形。桌面图标会显得比同排大一圈。</div>
+    </div>
+  </div>
+
+  <h2><span class="n">4</span>放进 Dock 看</h2>
+  <div class="big"><img src="02-dock.png" alt="Dock 对照"></div>
+  <p style="font-size:12.5px;color:var(--muted);margin-top:8px">
+    从左到右：备忘录、App Store、国际象棋、音乐（系统图标）· <b>现在</b> · <b>A</b> · <b>B</b>。按 64px 渲染后放大 2 倍，刻意保留像素。
+  </p>
+
+  <h2><span class="n">5</span>小尺寸下还认得出吗</h2>
+  <div class="pair">
+    <div class="card">
+      <img src="03-sizes-old.png" alt="现在的尺寸阶梯">
+      <div class="cap"><b>现在</b> · 16 / 32 / 64 / 128 / 256</div>
+    </div>
+    <div class="card">
+      <img src="03-sizes-new.png" alt="新版的尺寸阶梯">
+      <div class="cap"><b>方案 A</b> · 同样五档，每档都是原生像素渲染</div>
+    </div>
+  </div>
+
+  <div class="note-box">
+    <b>改的话会动到什么：</b>只有 <code>design/brand/icon.svg</code> 里字形的写法，
+    加上 <code>tools/make-icons.py</code> 生成时多渲一层投影。
+    菜单栏那个 <code>i</code> 和 Windows 托盘图的形状保持不变（它们本来就是几何画法，没有接缝问题），只把字重和 App 图标对齐。
+    <br><br>
+    <b>许可：</b>Nunito 是 SIL Open Font License，字形可以商用、可以嵌入、可以改；字体文件本身不进仓库，
+    只把转好的曲线写进 <code>icon.svg</code>。
+  </div>
+
+</div>
+</body>
+</html>

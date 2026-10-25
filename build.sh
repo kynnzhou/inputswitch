@@ -129,6 +129,13 @@ rm -f "${REPO}/dist/InputSwitch-macOS-arm64.zip"
   cd "${INSTALL_DIR}" && ditto -c -k --sequesterRsrc --keepParent \
     "${APP_NAME}.app" "${REPO}/dist/InputSwitch-macOS-arm64.zip"
 ) && echo "分发包: ${REPO}/dist/InputSwitch-macOS-arm64.zip"
+
+# 说明文档一起塞进包里（放在 .app 旁边，不放进 bundle 里 —— 放进去会破坏签名）。
+# Windows 包是 exe + README.txt 平铺，两边解压后看到的东西保持一致。
+if [ -f "${REPO}/dist/README-macOS.txt" ]; then
+  (cd "${REPO}/dist" && zip -q -X InputSwitch-macOS-arm64.zip README-macOS.txt)
+fi
+
 rm -rf "$BUNDLE"
 "$LSR" -u "${REPO}/${BUNDLE}" >/dev/null 2>&1 || true
 
