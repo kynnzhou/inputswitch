@@ -1,4 +1,4 @@
-# InputSwitch <sub>键鼠 · 单屏多主机共用 · 多屏多主机 KVM</sub>
+# InputSwitch <img src="assets/badge-kvm.svg" alt="键鼠 · 单屏多主机共用 · 多屏多主机 KVM" height="26">
 
 [![CI](https://github.com/kynnzhou/inputswitch/actions/workflows/ci.yml/badge.svg)](https://github.com/kynnzhou/inputswitch/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kynnzhou/inputswitch)](https://github.com/kynnzhou/inputswitch/releases/latest)
