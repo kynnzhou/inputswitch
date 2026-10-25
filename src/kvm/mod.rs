@@ -127,7 +127,7 @@ pub fn open_settings() {
 /// 主屏尺寸（点）
 pub fn screen_size() -> (u32, u32) {
     let (w, h) = plat::screen_size();
-    (w, h)
+    (narrow(w), narrow(h))
 }
 
 /// 启动。Console 会装上抓取钩子但**不吞事件**；只有 `follow()` 之后才开始抓。

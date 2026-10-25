@@ -3,9 +3,9 @@
 //! macOS 写一个 LaunchAgent plist（用户级，不需要管理员权限）；
 //! Windows 写 HKCU 的 Run 键。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(windows)]
-use std::sync::Mutex;
+use std::{path::Path, sync::Mutex};
 
 #[cfg(target_os = "macos")]
 const LABEL: &str = "cn.zhouke.inputswitch";
