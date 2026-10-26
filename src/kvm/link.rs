@@ -80,11 +80,6 @@ pub(super) fn pick_retarget(cur: u8, active: Option<usize>, links: &[Link], side
     }
 }
 
-/// 回程 Enter 该带的方向字节（语义是"发送方从哪一侧出门"）。
-///
-/// 直接取目标链路自己的 `side`：门是**本机**通向那台的门。回到 Follow
-/// 链路（共用一块屏那台）时它没有门，回 `CODE_UNKNOWN` —— 对端会沿用
-/// 自己配置的方向，和 `follow()` 逐字一样。
 /// 改指向时往 `Enter` 里塞的「进门侧」和标志位。
 ///
 /// 两种情况完全不是一回事：
@@ -96,7 +91,12 @@ pub(super) fn pick_retarget(cur: u8, active: Option<usize>, links: &[Link], side
 ///   出门"，接收端会把门口取反，所以给反面才能让光标落回我们自己出去
 ///   的那一侧（给正面就成了屏幕另一头）。同时带上
 ///   `ENTER_FLAG_LANDING_ONLY`，否则对端会把这次回程当成"这条链路有
-///   门"，从此开始判推门交还。
+///   门"，从此开始判推门交还。`CODE_UNKNOWN` 只剩一种来源：来路也
+///   没有门（两次都是 Follow 会话）。
+///
+/// 历史注：v0.6.60 的旧版函数叫 `return_side`，行为是"目标没门一律回
+/// `CODE_UNKNOWN`"；v0.6.62 加回程落点时改成了上面这套，旧文档当时
+/// 忘了删，Issue #6 抓到的矛盾就是它。
 pub(super) fn enter_aim(links: &[Link], from: usize, to: usize) -> (u8, u16) {
     if let Some(s) = links.get(to).and_then(|l| l.side) {
         return (s.code(), 0);
