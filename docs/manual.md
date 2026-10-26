@@ -802,7 +802,13 @@ src/
 │   ├── ui.rs     Ui：主线程全部可变状态，每个 Event 一个方法
 │   ├── actions.rs   控制面板转发来的动作
 │   ├── events.rs    托盘菜单 / 全局热键 / 400ms tick 轮询
-│   ├── engine.rs    工作线程：独占一个 Switcher，吃 Command 队列
+│   ├── engine/    工作线程（原 engine.rs 619 行，按命令性质切）
+│   │   ├── mod.rs    切分轴 + Ctx 结构体（engine_loop 全部状态）+ push + run() 分发骨架
+│   │   ├── status.rs 4 个 pub(super) 查询助手：身份键 / 状态文案 / 占口同步 / 体检
+│   │   ├── switch.rs 切屏执行：SwitchRaw / SwitchOnly / SetTarget / ClearTarget
+│   │   ├── probe.rs  探测：Rescan / CheckSupport / ScanPorts
+│   │   ├── clip.rs   剪贴板按需传输：PasteIntent / RemoteClipboard
+│   │   └── beat.rs   心跳与对端协作：Heartbeat / AskPeerSwitch
 │   └── 其余      menu / snapshot / kvmctl / hotkey / send / switch / sys / log
 ├── kvm/          软件 KVM（协议、状态机、平台钩子）
 │   ├── mod.rs    模块文档 + 声明 + pub use 收口
