@@ -27,8 +27,8 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 
-// 新文件的上限。Rust 侧取 800：现有中位数在 250 行左右，而 main.rs(1379)、
-// switcher.rs(979) 说明这个项目单文件上千行是常态，取 300 会逼着人乱切。
+// 新文件的上限。Rust 侧取 800：现有中位数在 250 行左右，而 win.rs(1723)、
+// config.rs(1117) 说明这个项目单文件上千行是常态，取 300 会逼着人乱切。
 const NEW_FILE_LIMIT = 800;
 // 面板前端是手写 JS/CSS、无构建无框架，style.css 529 行是设计令牌的自然体量。
 const PANEL_NEW_FILE_LIMIT = 400;
@@ -51,7 +51,7 @@ const RUST_BASELINE = {
   'src/kvm/mod.rs': 371,
   'src/kvm/win.rs': 1723,
   'src/lib.rs': 31,
-  'src/main.rs': 1379,
+  'src/main.rs': 208,
   'src/models.rs': 252,
   'src/panel.rs': 746,
   'src/panelwin.rs': 194,
@@ -61,7 +61,7 @@ const RUST_BASELINE = {
   'src/switcher.rs': 979,
   'src/transfer.rs': 448,
   'src/tray/mod.rs': 449
-};;;;;;;;;;;;;;;;;;;;;;;;;
+};
 
 const PANEL_BASELINE = {
   'assets/panel/actions.js': 96,
@@ -70,7 +70,7 @@ const PANEL_BASELINE = {
   'assets/panel/kvm.js': 395,
   'assets/panel/render.js': 279,
   'assets/panel/style.css': 529
-};;;;;;;;;;;;;;;;;;;;;;;;;
+};
 
 // exts 是数组。注意别把数组直接喂给 endsWith —— 它会被 ToString 成
 // ".js,.css,.html" 从而永远不匹配（这个 bug 让面板六件全被误判成"已不存在"）。
@@ -217,9 +217,12 @@ if (update) {
   if (changed || renames.length) {
     const body = `const RUST_BASELINE = ${JSON.stringify(RUST_BASELINE, null, 2).replace(/"([^"]+)":/g, "'$1':").replace(/"/g, "'")};\n\nconst PANEL_BASELINE = ${JSON.stringify(PANEL_BASELINE, null, 2).replace(/"([^"]+)":/g, "'$1':").replace(/"/g, "'")};`;
     const self = fs.readFileSync(__filename, 'utf8');
+    // 正则要连尾部所有分号一起吃干净（`\};+`），替换体自己也已带一个 `;`：
+    // 早先只吃到第一个 `};` 又多补一个 `;`，结果每跑一次 --update 块尾就
+    // 多攒一个分号（空语句，无害，但每次 diff 都多一行垃圾）。
     const replaced = self
-      .replace(/const RUST_BASELINE = \{[\s\S]*?\};/, body.split('\n\n')[0] + ';')
-      .replace(/const PANEL_BASELINE = \{[\s\S]*?\};/, body.split('\n\n')[1] + ';');
+      .replace(/const RUST_BASELINE = \{[\s\S]*?\};+/, body.split('\n\n')[0])
+      .replace(/const PANEL_BASELINE = \{[\s\S]*?\};+/, body.split('\n\n')[1]);
     fs.writeFileSync(__filename, replaced);
     console.log(`已写回基线（${changed} 条收紧 + ${renames.length} 条改名）`);
   } else {

@@ -793,7 +793,14 @@ src/
 │   └── 其余      menu / snapshot / kvmctl / hotkey / send / switch / sys / log
 ├── kvm/          软件 KVM（协议、状态机、平台钩子）
 ├── gui.rs        托盘入口（windows 子系统）
-├── main.rs       CLI 入口（console 子系统）
+├── main.rs       CLI 入口：clap 定义 + 分发表（console 子系统）
+├── cli/          子命令实现，按「会不会真的改动屏幕」分文件
+│   ├── mod.rs    切分轴说明 + display/act 共用的排查建议
+│   ├── display.rs   只读诊断：probe / selftest / raw / info / menu / check
+│   ├── act.rs    会改动屏幕：switch / wizard / rename / scan / write
+│   ├── net.rs    局域网与配对：status / pair / send
+│   ├── kvm.rs    共用键鼠：kvm / kvm-probe / inject-probe
+│   └── service.rs   常驻与服务项：daemon / autostart / clip
 └── ddc/
     ├── mod.rs    后端 trait
     ├── mac.rs    IOKit IOAVService（纯 FFI，无第三方绑定）
