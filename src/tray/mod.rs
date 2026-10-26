@@ -29,8 +29,8 @@ use crate::{transfer, Switcher};
 
 // ---- 子模块 ----
 // 按"改一件事要动几个文件"切，不按层切：原来是 4202 行一个文件，改一行菜单文案
-// 要滚过 kvm_boot、engine_loop 两个几百行的函数；现在 12 个文件、最大 619 行
-// （门禁见 tools/check-size.js）。分工：
+// 要滚过 kvm_boot、engine_loop 两个几百行的函数；现在 18 个文件、最大 menu.rs 575
+// 行（engine 拆成 engine/ 六文件，门禁见 tools/check-size.js）。分工：
 //   ui / actions / events   主线程：tao Event → Ui 方法 → 面板动作、菜单与热键轮询
 //   engine / switch         工作线程：吃 Command 队列，真正下发切屏指令
 //   menu / snapshot         菜单构建与签名去重、面板快照

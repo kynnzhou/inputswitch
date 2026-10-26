@@ -62,7 +62,7 @@
 
 | 模块 | 拆前 | 现状 |
 |---|---|---|
-| `src/tray/` | `tray.rs` 4202 行 | 13 个文件，最大 `engine.rs` 619 行 |
+| `src/tray/` | `tray.rs` 4202 行 | 18 个文件，最大 `menu.rs` 575 行；`engine/` 六文件承接原 `engine.rs`（最大 `probe.rs` 208 行） |
 | `src/kvm/` | `kvm/mod.rs` 3570 行 | 24 个文件，最大 `win.rs` 1723 行（平台钩子，天然大） |
 | `src/cli/` | `main.rs` 1379 行 | 6 个文件，最大 `act.rs` 346 行；`main.rs` 只剩 clap 定义 + 分发表 |
 | `src/config/` | `config.rs` 1117 行 | 5 个文件，最大 `store.rs` 517 行；`mod.rs` 只管切分轴与 `pub use` 收口 |
@@ -70,7 +70,7 @@
 | `src/kvm/event/` | `kvm/event.rs` 832 行 | 4 个文件，最大 `codec.rs` 336 行；`mod.rs` 只管切分轴与 `pub use` 收口 |
 | `src/kvm/recv/` | `kvm/recv.rs` 793 行 | 5 个文件，最大 `input.rs` 285 行；`mod.rs` 的 `Ctx` 收拢 spawn 的全部状态（`inject` 除外 —— macOS 的 `Inject` 含 `CGEventSourceRef` 不是 `Send`，收进来 `thread::spawn` 直接编译不过，它在 `run()` 里现造、按参数传给要用它的方法），`run()` 只留收包 → 验址 → 解密 → 分发骨架 |
 
-拆分思路：平台差异 → `kvm/{win,mac}.rs`；纯计算/协议 → 独立模块；主线程的全部可变状态 → `tray/ui.rs` 的 `Ui` 结构体（每个 tao `Event` 一个 `on_*` 方法）；命令行 → `cli/` 按「跑下去会不会真的改动屏幕」切（只读诊断与会黑屏的操作分开，排查时滚动不易看漏）；配置 → `config/` 按 schema / paths / kvm / store / state 切（纯数据、本机路径、链路表行为、读写盘、运行状态各占一个文件）；切换编排 → `switcher/` 按 types / probe / topology / switch / scan / discover 切（报告名词、身份与能力、屏幕在不在、切换判据、扫描、向导各占一个文件）；事件协议 → `kvm/event/` 按 codec / edge / seal 切（事件枚举与编解码、边界几何、加密封装各占一个文件，测试跟着被测代码走）；接收线程 → `kvm/recv/` 按 match 分支切（enter 接管、input 注入、handoff 交还、upkeep 维护各占一个文件，730 行 `move` 闭包的捕获变量收进 `Ctx` 结构体，分支中间的 `continue` 提进方法后变 `return`）。
+拆分思路：平台差异 → `kvm/{win,mac}.rs`；纯计算/协议 → 独立模块；主线程的全部可变状态 → `tray/ui.rs` 的 `Ui` 结构体（每个 tao `Event` 一个 `on_*` 方法）；命令行 → `cli/` 按「跑下去会不会真的改动屏幕」切（只读诊断与会黑屏的操作分开，排查时滚动不易看漏）；配置 → `config/` 按 schema / paths / kvm / store / state 切（纯数据、本机路径、链路表行为、读写盘、运行状态各占一个文件）；切换编排 → `switcher/` 按 types / probe / topology / switch / scan / discover 切（报告名词、身份与能力、屏幕在不在、切换判据、扫描、向导各占一个文件）；事件协议 → `kvm/event/` 按 codec / edge / seal 切（事件枚举与编解码、边界几何、加密封装各占一个文件，测试跟着被测代码走）；接收线程 → `kvm/recv/` 按 match 分支切（enter 接管、input 注入、handoff 交还、upkeep 维护各占一个文件，730 行 `move` 闭包的捕获变量收进 `Ctx` 结构体，分支中间的 `continue` 提进方法后变 `return`）；工作线程 → `tray/engine/` 按命令性质切（switch 切屏执行、probe 探测、clip 剪贴板传输、beat 心跳协作各占一个文件，`engine_loop` 的 4 个参数加 4 个跨分支局部状态收进 `Ctx`，11 个 `Command` 分支提成 `on_*` 方法，嵌套函数 `push` 改成 `Ctx` 方法只留 `(target, text)`；4 个查询助手留在 `status.rs` 做自由函数 —— `tray::switch` 也要用 `sync_own`，方法化反而要把 `Ctx` 暴露过去）。
 
 **体量棘轮**（存量文件只准变小不准变大；新增文件上限 Rust 800 行 / 面板 400 行）：
 
@@ -203,13 +203,13 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 | 单元测试 | `cargo test --lib -- --test-threads=1` | ✅ 55/55 通过（2026-10-25 实测；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
 | 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 50 条全过 |
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
-| fmt | `cargo fmt --check` | 🔴 49 个文件有 diff（2026-10-26 实测；`kvm/recv/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量） |
+| fmt | `cargo fmt --check` | 🔴 48 个文件有 diff（2026-10-26 实测；`kvm/recv/` 与 `tray/engine/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48） |
 | 体量 | `node tools/check-size.js` | ✅ 通过，基线已是最紧（tray/ 与 kvm/ 拆分后逐批收紧） |
 
 **纪律**：
 - **`--test-threads=1` 不是可选项**，并行跑会 SIGABRT，这不是 bug。
 - **不要全仓 `cargo fmt`**：`tray/` 和 `kvm/` 会被整体重排成巨型 diff，把协作者在飞的改动全变成冲突。只对**你新写的文件**保持 rustfmt 风格，改动老文件时跟周围代码走。
-- **clippy 已清零，可以进钩子/CI 了**；fmt 还是红的，别在 49 个文件没处理前把 `cargo fmt --check` 写进门禁——那会让门禁从第一天就是红的、然后被所有人无视。
+- **clippy 已清零，可以进钩子/CI 了**；fmt 还是红的，别在 48 个文件没处理前把 `cargo fmt --check` 写进门禁——那会让门禁从第一天就是红的、然后被所有人无视。
 - 现在 CI 只有四张面（linux 纯库编译 / panelcheck / macOS 编译+测试 / Windows 编译），**没有 clippy 和 fmt**。想加要单独提 PR 跟协作者对齐，别顺手塞进功能 PR。
 - 本地**没有** pre-push 钩子（`.git/hooks` 为空）。cc-bridge 那套"七项门禁钩子"没搬过来：先有绿的门禁，再谈自动执行。
 
@@ -221,7 +221,7 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 |---|---|---|
 | 版本真源 = `Cargo.toml` | 真源 = `src/tray/mod.rs` 的 `构建=vX.Y.Z` | `Cargo.toml` 是占位 `0.1.0`，打包脚本从 tray/mod.rs 提取 |
 | 前端 ≤300 行 + hooks 计数 | 面板用**基线棘轮**，不设硬线 | 手写 JS 无框架，`style.css` 529 行是自然体量 |
-| `cargo fmt --check` 零警告 | **不要全仓 fmt**，只保新文件 | 现状 49 个文件不干净，全格式化会和协作者冲突 |
+| `cargo fmt --check` 零警告 | **不要全仓 fmt**，只保新文件 | 现状 48 个文件不干净，全格式化会和协作者冲突 |
 | commit 用 `feat:/fix:` 前缀 | **一行中文**，无前缀 | 与 `CONTRIBUTING.md` 和现有 log 一致 |
 | 加 `.gitattributes` 统一 LF | **不加** | 索引已是 LF，加了会触发 24 文件 renormalize 假改动 |
 | 文件名一律中文 | 沿用短英文名 | 公开仓库，README/注释已有引用 |
