@@ -809,7 +809,7 @@ src/
 │   ├── win.rs    Windows 平台钩子（天然大，维护者裁决不动）
 │   ├── mac.rs    macOS 平台钩子（天然大，维护者裁决不动）
 │   ├── recv/      收包主循环（原 recv.rs 793 行，按 match 分支切）
-│   │   ├── mod.rs    切分轴 + Ctx 结构体（spawn 全部状态）+ run() 骨架
+│   │   ├── mod.rs    切分轴 + Ctx 结构体（spawn 全部状态，inject 除外）+ run() 骨架
 │   │   ├── enter.rs  接管：抢占矩阵、会话重建、门口校正、光标落点
 │   │   ├── input.rs  注入：救援、乱序、缩放、有效性验证、推门交还
 │   │   ├── handoff.rs   交还：Leave / Takeback（含回程改指向）

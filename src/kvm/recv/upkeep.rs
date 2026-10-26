@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use super::Ctx;
 use crate::kvm::event::Event;
 use crate::kvm::link::state_for;
+use crate::kvm::plat;
 use crate::kvm::state::State;
 use crate::kvm::util::{anchor_target, now_ms};
 
@@ -28,7 +29,13 @@ impl Ctx {
         self.peer_rx_rx.set_state(from.ip(), peer);
     }
 
-    pub(super) fn on_anchor(&mut self, from_link: usize, fx: u16, fy: u16) {
+    pub(super) fn on_anchor(
+        &mut self,
+        inject: &mut plat::Inject,
+        from_link: usize,
+        fx: u16,
+        fy: u16,
+    ) {
         // 绝对锚点：只用来**纠漂移**，不参与正常移动。
         //
         // 传输还是相对位移（丢包只少走几像素），锚点每 400ms 来
@@ -45,15 +52,13 @@ impl Ctx {
         if now_ms().saturating_sub(self.sess.enter_ms) < 300 {
             return;
         }
-        let Some((cx, cy)) = self.inject.cursor() else {
+        let Some((cx, cy)) = inject.cursor() else {
             return;
         };
-        let (w, h) = self.inject.screen();
+        let (w, h) = inject.screen();
         if let Some((tx, ty)) = anchor_target(fx, fy, w, h, (cx, cy)) {
-            self.inject.place_cursor(tx, ty);
-            (self.log)(format!(
-                "锚点校正：({cx:.0},{cy:.0}) → ({tx:.0},{ty:.0})"
-            ));
+            inject.place_cursor(tx, ty);
+            (self.log)(format!("锚点校正：({cx:.0},{cy:.0}) → ({tx:.0},{ty:.0})"));
         }
     }
 }

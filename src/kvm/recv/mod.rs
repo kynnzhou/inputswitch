@@ -22,7 +22,7 @@
 //!
 //! ---- 切分轴（2026-10-26，原 793 行一个文件）----
 //! 730 行的 `move` 闭包按 match 分支各归一个文件，闭包捕获的 16 个变量
-//! 加 5 个局部状态收进 `Ctx` 结构体（spawn 参数一个字段一个），事件处理
+//! 加 4 个局部状态收进 `Ctx` 结构体（spawn 参数一个字段一个），事件处理
 //! 方法按 `&mut self` 拿它们：
 //!   enter    接管：抢占矩阵、会话重建、门口校正、落点
 //!   input    注入：救援、乱序、缩放、有效性验证、推门交还（最大的一块）
@@ -30,6 +30,13 @@
 //!   upkeep   维护类：Ping/Pong 应答、Anchor 纠漂
 //! `run()` 只留骨架：收包 → 验址 → 解密 → 按事件分发。分支中间的
 //! continue 搬进方法后变成 return（方法返回即回到 while 顶部）。
+//!
+//! `inject` 是唯一不进 `Ctx` 的局部状态：macOS 的 `Inject` 内含
+//! `CGEventSourceRef`（`*mut c_void`）不是 `Send`，收进 `Ctx` 会让
+//! `thread::spawn(move || ctx.run())` 直接编译不过（2026-10-26 CI 的
+//! macOS job 抓到的）。它在 `run()` 里现造、按参数传给要用它的四个
+//! `on_*` 方法（Takeback / Ping / Pong 三个分支不碰注入，就不传）——
+//! 与拆前一样只在接收线程内使用。
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -51,9 +58,13 @@ mod input;
 mod upkeep;
 
 /// 接收线程的全部状态：`spawn()` 的 16 个参数一个字段一个，原闭包里的
-/// 5 个局部可变状态（inject / openers / sess / 两个告警限流时钟）也是字段
-/// —— 事件处理方法按 `&mut self` 拿它们。字段私有即可：行为文件是本模块
+/// 4 个局部可变状态（openers / sess / 两个告警限流时钟）也是字段 ——
+/// 事件处理方法按 `&mut self` 拿它们。字段私有即可：行为文件是本模块
 /// 的后代，看得见。
+///
+/// `inject` 不在里面：macOS 的 `Inject` 含 `CGEventSourceRef`
+/// （`*mut c_void`）不是 `Send`，它一进来 `thread::spawn` 就编译不过，
+/// 所以它在 `run()` 里现造、按参数传给要用它的 `on_*` 方法。
 struct Ctx {
     state: Arc<AtomicU8>,
     stop: Arc<AtomicBool>,
@@ -70,7 +81,6 @@ struct Ctx {
     hop_rx: Arc<AtomicU64>,
     recv_scale: f64,
     reclaim_rx: Arc<AtomicU64>,
-    inject: plat::Inject,
     openers: HashMap<IpAddr, Opener>,
     sess: Session,
     last_ignore_ms: u64,
@@ -100,7 +110,6 @@ impl Ctx {
         // 门口方向可变：每当对端带着它自己的出门侧过来，就按拓扑改一次。
         // 两台屏水平相邻时，它从右边出去 ⇒ 我这边必然在它左边 —— 这是
         // 几何定理，不该让两台各自配、配反了就 1 秒弹回去。
-        let inject = plat::Inject::new();
         if sides_mask != 0 {
             // 多屏共享：注入限制在"本机工作屏"内。工作屏不在这里定 ——
             // 物理用户可能换屏活动，每次收到 Enter（接管开始）时按
@@ -140,7 +149,6 @@ impl Ctx {
             hop_rx,
             recv_scale,
             reclaim_rx,
-            inject,
             openers,
             sess,
             last_ignore_ms,
@@ -179,6 +187,11 @@ pub(super) fn spawn(
 
 impl Ctx {
     fn run(&mut self) {
+        // inject 在接收线程里现造，不进 Ctx：macOS 的 Inject 内含
+        // CGEventSourceRef（*mut c_void），不是 Send，收进 Ctx 会让上面的
+        // thread::spawn 直接编译不过（2026-10-26 CI 的 macOS job 抓到的）。
+        // 拆前它就是闭包里现造的，用法没变。
+        let mut inject = plat::Inject::new();
         let mut buf = [0u8; 64];
         while !self.stop.load(Ordering::Relaxed) {
                 let (len, from) = match self.out.socket.recv_from(&mut buf) {
@@ -231,14 +244,23 @@ impl Ctx {
                         flags,
                         ..
                     } => {
-                        self.on_enter(seq, from_link, width, height, along, peer_side, flags);
+                        self.on_enter(
+                            &mut inject,
+                            seq,
+                            from_link,
+                            width,
+                            height,
+                            along,
+                            peer_side,
+                            flags,
+                        );
                     }
-                    Event::Leave => self.on_leave(from_link),
+                    Event::Leave => self.on_leave(&mut inject, from_link),
                     Event::Takeback { along } => self.on_takeback(from_link, along),
                     Event::Ping => self.on_ping(from, from_link),
                     Event::Pong { state: peer } => self.on_pong(from, peer),
-                    Event::Anchor { fx, fy } => self.on_anchor(from_link, fx, fy),
-                    _ => self.on_input(seq, ev, from, from_link),
+                    Event::Anchor { fx, fy } => self.on_anchor(&mut inject, from_link, fx, fy),
+                    _ => self.on_input(&mut inject, seq, ev, from, from_link),
                 }
         }
     }

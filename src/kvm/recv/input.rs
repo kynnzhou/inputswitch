@@ -10,12 +10,20 @@ use std::sync::atomic::Ordering;
 
 use super::Ctx;
 use crate::kvm::event::{self, Event, Side};
+use crate::kvm::plat;
 use crate::kvm::state::State;
 use crate::kvm::tuning::{EDGE_REARM_DIST, RETURN_PUSH};
 use crate::kvm::util::{now_ms, release_local, rescale_delta, same_key};
 
 impl Ctx {
-    pub(super) fn on_input(&mut self, seq: u16, ev: Event, from: SocketAddr, from_link: usize) {
+    pub(super) fn on_input(
+        &mut self,
+        inject: &mut plat::Inject,
+        seq: u16,
+        ev: Event,
+        from: SocketAddr,
+        from_link: usize,
+    ) {
         // 只有真在被控制时才注入。否则对端明明已经松手，
         // 我们还在把它的事件打进系统 —— 注入的事件和本机
         // 真实的键鼠打架，看起来就是"鼠标乱窜、点不了东西"。
@@ -69,7 +77,7 @@ impl Ctx {
             Event::Motion { dx, dy }
                 if self.sess.sender_size.0 >= 1.0 && self.sess.sender_size.1 >= 1.0 =>
             {
-                let (lw, lh) = self.inject.screen();
+                let (lw, lh) = inject.screen();
                 Event::Motion {
                     dx: rescale_delta(*dx, (lw / self.sess.sender_size.0) * self.recv_scale),
                     dy: rescale_delta(*dy, (lh / self.sess.sender_size.1) * self.recv_scale),
@@ -77,7 +85,7 @@ impl Ctx {
             }
             _ => ev,
         };
-        self.inject.apply(&to_inject);
+        inject.apply(&to_inject);
         self.sess.injected += 1;
         if self.sess.injected == 1 {
             // 把首笔事件的具体数值打进日志：位移是 0、键码是
@@ -115,14 +123,14 @@ impl Ctx {
                 // (是否判失效, 真实光标移动, 账本移动)
                 let mut verdict: Option<(bool, f64, f64)> = None;
                 if self.sess.verify.is_none() {
-                    let p = self.inject.cursor().unwrap_or((0.0, 0.0));
-                    self.sess.verify = Some((now_ms(), p, self.inject.walked(), 1));
+                    let p = inject.cursor().unwrap_or((0.0, 0.0));
+                    self.sess.verify = Some((now_ms(), p, inject.walked(), 1));
                 } else if let Some(slot) = self.sess.verify.as_mut() {
                     slot.3 += 1;
                     if slot.3 >= 40 && now_ms().saturating_sub(slot.0) >= 1000 {
-                        let cur = self.inject.cursor().unwrap_or(slot.1);
+                        let cur = inject.cursor().unwrap_or(slot.1);
                         let real_moved = (cur.0 - slot.1 .0).abs() + (cur.1 - slot.1 .1).abs();
-                        let ledger_moved = self.inject.walked() - slot.2;
+                        let ledger_moved = inject.walked() - slot.2;
                         let invalid = real_moved < 2.0 && ledger_moved >= 2.0;
                         verdict = Some((invalid, real_moved, ledger_moved));
                     }
@@ -132,9 +140,11 @@ impl Ctx {
                     Some((true, real_moved, ledger_moved)) => {
                         self.sess.verify = None;
                         if self.sess.suspect >= 1 {
-                            release_local(&self.inject, &mut self.sess.pressed);
-                            self.out.to_link(from_link, &Event::Takeback { along: 0xFFFF });
-                            self.out.to_link(from_link, &Event::Takeback { along: 0xFFFF });
+                            release_local(inject, &mut self.sess.pressed);
+                            self.out
+                                .to_link(from_link, &Event::Takeback { along: 0xFFFF });
+                            self.out
+                                .to_link(from_link, &Event::Takeback { along: 0xFFFF });
                             self.state.store(State::Idle as u8, Ordering::SeqCst);
                             self.active_rx.set(None);
                             self.reclaim_rx.store(now_ms(), Ordering::SeqCst);
@@ -188,8 +198,8 @@ impl Ctx {
             // 是按本机屏幕算的，拿对端的原始 delta 记账会差一
             // 整个缩放比（4K 被控端刚好差一倍）。
             if let Event::Motion { dx, dy } = to_inject {
-                if let Some((x, y)) = self.inject.cursor() {
-                    let (w, h) = self.inject.screen();
+                if let Some((x, y)) = inject.cursor() {
+                    let (w, h) = inject.screen();
                     // 武装/交还的距离都按屏幕宽度缩放：4K 物理像素屏
                     // 上固定的 32px 只等效 16 逻辑点，太小 —— 进门
                     // 3 秒内正常来回移动就能穿越整个门口区，被误判
@@ -248,13 +258,23 @@ impl Ctx {
                             self.sess.edge_hold_ms = 0;
                             self.sess.out_push = 0;
                             self.sess.last_giveback_ms = now;
-                            release_local(&self.inject, &mut self.sess.pressed);
+                            release_local(inject, &mut self.sess.pressed);
                             // 单发 UDP 会丢：丢一包对端就卡在 Sending
                             // 连发两笔，接收端有状态闸门，幂等。
                             // **显式寻址到这台**：交还是还给
                             // 正被释放的那条链路（I4）。
-                            self.out.to_link(from_link, &Event::Takeback { along: self.sess.portal.along(x, y, w, h) });
-                            self.out.to_link(from_link, &Event::Takeback { along: self.sess.portal.along(x, y, w, h) });
+                            self.out.to_link(
+                                from_link,
+                                &Event::Takeback {
+                                    along: self.sess.portal.along(x, y, w, h),
+                                },
+                            );
+                            self.out.to_link(
+                                from_link,
+                                &Event::Takeback {
+                                    along: self.sess.portal.along(x, y, w, h),
+                                },
+                            );
                             self.state.store(State::Idle as u8, Ordering::SeqCst);
                             // I2：拆场先改 state 再 clear active
                             self.active_rx.set(None);
@@ -262,8 +282,7 @@ impl Ctx {
                             // 数字落日志：位置（门口=0）+ 账本位置
                             //（两者差得远 = 有外力直接挪真实光标，
                             // 而不是注入的负位移流）
-                            let ledger = self
-                                .inject
+                            let ledger = inject
                                 .tracked()
                                 .map(|(lx, ly)| format!("{lx:.0},{ly:.0}"))
                                 .unwrap_or_else(|| "?".to_string());
