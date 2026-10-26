@@ -780,8 +780,21 @@ macOS 上 DDC 走 Display Coprocessor，读操作经常返回未初始化内存�
 ```
 src/
 ├── models.rs     数据结构、VCP 常量、MCCS 标准值表
-├── config.rs     配置持久化（profile 按显示器型号索引）
-├── switcher.rs   切换编排、拓扑验证、输入源发现
+├── config/       配置与运行状态持久化（profile 按显示器型号索引）
+│   ├── mod.rs    切分轴说明 + 公开面收口（pub use）
+│   ├── schema.rs   结构体与默认值：配置长什么样（纯数据）
+│   ├── paths.rs    本机路径：配置目录、默认节点名
+│   ├── kvm.rs      配置里的共用键鼠：链路表行为 + 测试
+│   ├── store.rs    读写盘：load / save / migrate / monitors 增删查
+│   └── state.rs    运行状态：上次把屏幕给了哪个口
+├── switcher/     切换编排、拓扑验证、输入源发现
+│   ├── mod.rs    切分轴说明 + 公开面收口（pub use）+ Switcher 结构体与构造
+│   ├── types.rs     报告与结论的名词：ProbeSource / PortProbe / ScanReport / SwitchOutcome
+│   ├── probe.rs     身份与能力：身份键、EDID 与能力表缓存、挑哪台操作
+│   ├── topology.rs  屏幕在不在本机：拓扑等待原语 + DDC 静默期
+│   ├── switch.rs    切换：按名字切与按 MCCS 标准值切 + 成功判据
+│   ├── scan.rs      扫输入口：逐口物理试探 + 把画面送回本机
+│   └── discover.rs  向导：试出"另一个口"的 0x60 取值
 ├── peer.rs       UDP 广播发现 + 中继指令
 ├── autostart.rs  开机自启（LaunchAgent / 注册表 Run）
 ├── tray/         托盘 + 全局热键（tao 事件循环 + 工作线程跑 DDC）
@@ -792,6 +805,21 @@ src/
 │   ├── engine.rs    工作线程：独占一个 Switcher，吃 Command 队列
 │   └── 其余      menu / snapshot / kvmctl / hotkey / send / switch / sys / log
 ├── kvm/          软件 KVM（协议、状态机、平台钩子）
+│   ├── mod.rs    模块文档 + 声明 + pub use 收口
+│   ├── win.rs    Windows 平台钩子（天然大，维护者裁决不动）
+│   ├── mac.rs    macOS 平台钩子（天然大，维护者裁决不动）
+│   ├── recv/      收包主循环（原 recv.rs 793 行，按 match 分支切）
+│   │   ├── mod.rs    切分轴 + Ctx 结构体（spawn 全部状态）+ run() 骨架
+│   │   ├── enter.rs  接管：抢占矩阵、会话重建、门口校正、光标落点
+│   │   ├── input.rs  注入：救援、乱序、缩放、有效性验证、推门交还
+│   │   ├── handoff.rs   交还：Leave / Takeback（含回程改指向）
+│   │   └── upkeep.rs    维护类：Ping/Pong 应答、Anchor 纠漂
+│   ├── event/    事件协议（原 event.rs 832 行，按 codec / edge / seal 切）
+│   │   ├── mod.rs    切分轴 + pub use 收口 + MAGIC / PEER_UNKNOWN
+│   │   ├── codec.rs  Event 枚举与编解码 + 明包测试
+│   │   ├── edge.rs   Side 与边界几何（撞边 / 死区 / 撤防圈）+ 几何测试
+│   │   └── seal.rs   ChaCha20-Poly1305 加密封装 + 加解密测试
+│   └── 其余      session / state / watchdog / capture / rx / link / linker / handle / opts / tuning / util / tests
 ├── gui.rs        托盘入口（windows 子系统）
 ├── main.rs       CLI 入口：clap 定义 + 分发表（console 子系统）
 ├── cli/          子命令实现，按「会不会真的改动屏幕」分文件

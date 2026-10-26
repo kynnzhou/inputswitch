@@ -28,7 +28,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 // 新文件的上限。Rust 侧取 800：现有中位数在 250 行左右，而 win.rs(1723)、
-// config.rs(1117) 说明这个项目单文件上千行是常态，取 300 会逼着人乱切。
+// kvm/mac.rs(1231) 说明这个项目单文件上千行是常态，取 300 会逼着人乱切。
 const NEW_FILE_LIMIT = 800;
 // 面板前端是手写 JS/CSS、无构建无框架，style.css 529 行是设计令牌的自然体量。
 const PANEL_NEW_FILE_LIMIT = 400;
@@ -38,7 +38,6 @@ const RUST_BASELINE = {
   'src/autostart.rs': 281,
   'src/caps.rs': 195,
   'src/clipboard.rs': 646,
-  'src/config.rs': 1117,
   'src/ddc/linux.rs': 133,
   'src/ddc/mac.rs': 655,
   'src/ddc/mod.rs': 105,
@@ -46,7 +45,6 @@ const RUST_BASELINE = {
   'src/edid.rs': 185,
   'src/gui.rs': 17,
   'src/hidden.rs': 20,
-  'src/kvm/event.rs': 832,
   'src/kvm/mac.rs': 1231,
   'src/kvm/mod.rs': 371,
   'src/kvm/win.rs': 1723,
@@ -58,9 +56,11 @@ const RUST_BASELINE = {
   'src/pair.rs': 201,
   'src/peer.rs': 547,
   'src/support.rs': 249,
-  'src/switcher.rs': 979,
   'src/transfer.rs': 448,
-  'src/tray/mod.rs': 449
+  'src/tray/mod.rs': 449,
+  'src/config/mod.rs': 26,
+  'src/switcher/mod.rs': 71,
+  'src/kvm/event/mod.rs': 51
 };
 
 const PANEL_BASELINE = {
