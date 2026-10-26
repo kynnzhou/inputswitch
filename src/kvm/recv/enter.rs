@@ -19,6 +19,7 @@ impl Ctx {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn on_enter(
         &mut self,
+        inject: &mut plat::Inject,
         seq: u16,
         from_link: usize,
         width: u16,
@@ -77,14 +78,14 @@ impl Ctx {
                 cap.set_grabbing(false);
                 cap.set_claim_armed(true);
             }
-            release_local(&self.inject, &mut self.sess.pressed);
+            release_local(inject, &mut self.sess.pressed);
             self.out.to_link(from_link, &Event::Leave);
         }
         if cur == State::Receiving as u8 && act != Some(from_link) {
             // 正被 A 控制着，B 也发 Enter（B 的用户推门抢）。
             // 先把 A 拆干净：它的键鼠必须收回，否则我们一边
             // 注入 B 的位移、一边还在收 A 的 —— 两台抢一只光标。
-            release_local(&self.inject, &mut self.sess.pressed);
+            release_local(inject, &mut self.sess.pressed);
             if let Some(old) = act {
                 self.out.to_link(old, &Event::Takeback { along: 0xFFFF });
                 self.out.to_link(old, &Event::Takeback { along: 0xFFFF });
@@ -128,7 +129,7 @@ impl Ctx {
             // 把对端报的屏幕尺寸和算出来的位移倍率写进日志：
             // 「回到本机鼠标变慢/变快」只能靠这两个数定位 ——
             // 是分辨率比例算错了，还是两系统加速曲线不同。
-            let (lw, lh) = self.inject.screen();
+            let (lw, lh) = inject.screen();
             (self.log)(format!(
                 "对端屏幕 {}x{}，本机 {}x{} ⇒ 位移倍率 x{:.3}（接收侧微调 x{:.2}）",
                 width,
@@ -214,13 +215,13 @@ impl Ctx {
             // —— 否则它只能落在屏幕正中，看起来像"凭空闪现"。
             if self.sess.edge || landing {
                 // 每次接管重新锚定工作屏：物理用户实际看着的那块
-                let own = self.inject.enable_own_screen(self.sess.portal);
+                let own = inject.enable_own_screen(self.sess.portal);
                 let src = plat::work_screen_source();
                 (self.log)(format!("本机工作屏锚定：{own:?}（来源：{}，1=物理活动屏 5=窗口分布 2=主屏 3=光标屏 4=几何）", src));
-                let (ex, ey) = entry_spot(&self.inject, self.sess.portal, along);
-                self.inject.place_cursor(ex, ey);
+                let (ex, ey) = entry_spot(inject, self.sess.portal, along);
+                inject.place_cursor(ex, ey);
             } else {
-                self.inject.center();
+                inject.center();
             }
             self.sess.edge_armed = false;
             self.sess.enter_ms = now_ms();

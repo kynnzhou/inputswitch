@@ -8,18 +8,19 @@ use std::sync::atomic::Ordering;
 use super::Ctx;
 use crate::kvm::link::{takeback_action, TakebackAction};
 use crate::kvm::linker::Linker;
+use crate::kvm::plat;
 use crate::kvm::state::State;
 use crate::kvm::util::{now_ms, release_local};
 
 impl Ctx {
-    pub(super) fn on_leave(&mut self, from_link: usize) {
+    pub(super) fn on_leave(&mut self, inject: &mut plat::Inject, from_link: usize) {
         // 只认当前会话目标：正被 A 控制时收到 B 的 Leave
         // （上一场的残包）不该动本机状态。
         if self.active_rx.get() != Some(from_link) {
             return;
         }
         // 对端松手了，把可能残留的按下状态清掉
-        release_local(&self.inject, &mut self.sess.pressed);
+        release_local(inject, &mut self.sess.pressed);
         match State::from_u8(self.state.load(Ordering::Relaxed)) {
             State::Receiving => {
                 self.state.store(State::Idle as u8, Ordering::SeqCst);
