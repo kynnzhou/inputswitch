@@ -830,7 +830,14 @@ src/
 │   │   ├── codec.rs  Event 枚举与编解码 + 明包测试
 │   │   ├── edge.rs   Side 与边界几何（撞边 / 死区 / 撤防圈）+ 几何测试
 │   │   └── seal.rs   ChaCha20-Poly1305 加密封装 + 加解密测试
-│   └── 其余      session / state / watchdog / capture / rx / link / linker / handle / opts / tuning / util / tests
+│   ├── capture/   抓取线程（原 capture.rs 600 行，按 match 分支切）
+│   │   ├── mod.rs    切分轴 + Ctx 结构体（spawn 全部状态）+ run() 分发骨架
+│   │   ├── begin.rs  越界建会话：Begin（Idle 越界 / Receiving 抢回 / Sending 改指向）
+│   │   ├── input.rs  转发：Input（位移流 + 锚点校漂 + 推边影子光标 + 记账采样）
+│   │   ├── claim.rs  物理抢回：Claim（时间窗 + 去抖）
+│   │   ├── end.rs    紧急收回：End（先补 key-up 再通知对端）
+│   │   └── hop.rs    改指向 / 回起点：Hop（三态表态 + 限流 + 回家判断）
+│   └── 其余      session / state / watchdog / rx / link / linker / handle / opts / tuning / util / tests
 ├── gui.rs        托盘入口（windows 子系统）
 ├── main.rs       CLI 入口：clap 定义 + 分发表（console 子系统）
 ├── cli/          子命令实现，按「会不会真的改动屏幕」分文件

@@ -232,7 +232,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
     // Follow 模式只有键鼠端需要抓；Edge 模式两边对等，都要抓。
     // `edge_trigger` 决定"没抓取时"要不要盯着边缘：只要有 Edge 链路就需要，
     // Follow 链路装了钩子但完全不判断位置（否则切屏后光标停在边缘就会误触发）。
-    // 线程本体在 `capture.rs`（540 行，拆出去单放一个文件）。
+    // 线程本体在 `capture/`（原 `capture.rs` 600 行，按 match 分支拆成六文件）。
     let mut capture: Option<Arc<plat::Capture>> = None;
     if needs_capture {
         let (tx, rx) = mpsc::channel::<Captured>();
@@ -243,7 +243,7 @@ pub fn start(opts: Options) -> Result<Kvm, String> {
             },
             tx,
         )?);
-        // 参数顺序与 `capture.rs::spawn` 的签名一一对应（= 当年闭包的
+        // 参数顺序与 `capture/mod.rs::spawn` 的签名一一对应（= 当年闭包的
         // 捕获清单），最后一个 `rx` 是直接移进闭包的那条通道。
         capture::spawn(
             state.clone(),
