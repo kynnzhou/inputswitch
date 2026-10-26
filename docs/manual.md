@@ -800,7 +800,12 @@ src/
 ├── tray/         托盘 + 全局热键（tao 事件循环 + 工作线程跑 DDC）
 │   ├── mod.rs    run() 装配 + Event 分发到 Ui
 │   ├── ui.rs     Ui：主线程全部可变状态，每个 Event 一个方法
-│   ├── actions.rs   控制面板转发来的动作
+│   ├── actions/    控制面板转发来的动作（原 actions.rs 556 行，按「改一件事要动几个文件」切）
+│   │   ├── mod.rs    切分轴 + on_panel 分发骨架（_ => {} 兜底不用回主线程的变体）
+│   │   ├── pair.rs   配对码：Pair / GenerateCode
+│   │   ├── kvm.rs    共用键鼠总控：Power / Mode / Role / Scale / AutoResume / KeepAlive / TakeBack / HandOver
+│   │   ├── link.rs   链路摆位：KvmLink（拖格子改链路）
+│   │   └── system.rs 系统开关与杂项：自启 / 剪贴板 / 接收目录 / 发文件 / 副机 / 别名 / 热键 / 重启 / 开目录
 │   ├── events.rs    托盘菜单 / 全局热键 / 400ms tick 轮询
 │   ├── engine/    工作线程（原 engine.rs 619 行，按命令性质切）
 │   │   ├── mod.rs    切分轴 + Ctx 结构体（engine_loop 全部状态）+ push + run() 分发骨架
