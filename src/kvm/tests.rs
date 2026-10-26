@@ -3,7 +3,7 @@
 //! 从 `mod.rs` 末尾拆出来（`#[cfg(test)] mod tests;` 挂回去）。测的全是
 //! **不碰硬件的纯逻辑**：链路判据（`link.rs`）、状态转换（`state.rs`）、
 //! 门口模拟（`session.rs::EdgeSim`）、锚点与缩放（`util.rs`）。三个线程体
-//! （`capture.rs` / `recv.rs` / `watchdog.rs`）没有直接测 —— 它们的判据
+//! （`capture/mod.rs` / `recv/mod.rs` / `watchdog.rs`）没有直接测 —— 它们的判据
 //! 都抽成了上面这些自由函数，测函数等于测线程。
 //!
 //! 约定：测试必须单线程跑（`cargo test --lib -- --test-threads=1`）——
@@ -12,7 +12,7 @@
 use super::*;
 // 调优常量只被测试直接引用（运行期路径全走各线程文件），故在这里导。
 use super::tuning::*;
-// 只在测试里用：bin 构建不碰 EdgeSim（线程体在 capture.rs）
+// 只在测试里用：bin 构建不碰 EdgeSim（线程体在 capture/）
 use super::session::EdgeSim;
 
     #[test]
