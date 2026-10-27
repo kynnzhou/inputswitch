@@ -220,7 +220,7 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 | 编译 | `cargo check --bins` | ✅ 通过 |
 | 构建 | `cargo build --bins` | ✅ 通过（两 exe 均链接成功） |
 | 瘦构建（bin） | `cargo build --bin inputswitch-cli --no-default-features` | ✅ 0 警告（2026-10-27 清掉 `cli/service.rs:53` 的 `let mut sw` 存量；这个形态 release.yml 真构建，此前门禁的 no-default-features 只查 `--lib`，bin 的警告一直没人管——`cmd_daemon_headless` 整个函数是 `cfg(not(feature = "tray"))` 专属，默认构建里不存在，所以只在瘦构建现形） |
-| 单元测试 | `cargo test --lib -- --test-threads=1` | 108/108 通过（2026-10-28 实测，`update` 模块 52 条 + 面板 round-trip 1 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
+| 单元测试 | `cargo test --lib -- --test-threads=1` | 109/109 通过（2026-10-27 实测，`update` 模块 52 条 + 面板 round-trip 1 条 + 锚点取帧 1 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
 | 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 80 条全过（含 P3 自动更新五幕：徽章/弹窗/进度/过渡层/忽略） |
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
 | fmt | `cargo fmt --check` | 🔴 46 个文件有 diff（2026-10-26 实测；`kvm/recv/`、`tray/engine/`、`tray/actions/`、`kvm/capture/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48，actions.rs 删掉后 48 → 47，capture.rs 删掉后 47 → 46 —— 旧 capture.rs 自带 1 处存量，删除即消账） |
