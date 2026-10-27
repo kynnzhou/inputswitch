@@ -244,6 +244,11 @@ inputswitch-cli pair                 # 看当前状态和密钥指纹
 
 命令行也能走同一条路：`inputswitch-cli update`（只查）、`--download`（顺带下载校验）、`--install`（装完并重启）。
 
+> **自动更新的起点**：v0.6.90 是第一个带 updater 的版本，这一版要**手动从 GitHub Release
+> 装一次**（Windows 是 `InputSwitch_0.6.90_x64-setup.exe` 安装器，macOS 是 `.app` 的 zip）。
+> 安装形态从「解压即用」变成了安装器 —— 运行中的 exe 能改名不能写，静默安装必须有一个
+> 安装器来干「覆盖」这件事。自动更新只对装过安装版的机器生效，往后每个版本都会自己升级。
+
 窗口用的是系统自带的 WebView，不额外打包浏览器内核：
 
 | 平台 | 内核 | 说明 |
@@ -881,3 +886,12 @@ src/
 （`core` 取数通道 / `render` 渲染 / `kvm` 共用键鼠 / `update` 自动更新 / `actions` 动作）。
 由 `panel.rs` 各自 `include_str!` 按路由内嵌进 exe —— **改完必须重编，没有热更新**。
 改动的离线门禁是 `node tools/panelcheck.js assets/panel`（渲染断言 + 界面铁律）。
+
+构建与发布：`build.ps1`（Windows 编译）/ `build.sh`（macOS `.app` + zip）/
+`cross-build-windows.sh`（mac 交叉编 Windows）/ `packaging/windows/InputSwitch.nsi`
++ `tools/pack-windows.js`（NSIS 安装器，产物 `InputSwitch_<版本>_x64-setup.exe`，
+自动更新装的就是它）。发版脚本：`tools/gen-updater-json.js`（扫产物目录现算 SHA-256
+生成 `updater.json`）、`tools/release.js`（编排：check 预检 / notes / tag / publish，
+默认 dry-run）、`tools/fake-update-server.js`（本地 HTTPS 假更新源，联调
+`inputswitch-cli update` 整条链路）。正常发版只推 tag：
+`node tools/release.js tag --yes`，其余由 `.github/workflows/release.yml` 自动完成。

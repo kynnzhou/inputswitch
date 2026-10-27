@@ -37,20 +37,40 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 上跑同样的检查（Li
 
 **3. 失败要说清楚，不猜、不谎报。** 异步动作回执只能承诺已发出的事（“已请对端交还”不能写成“已收回”）；多处判据必须同源（后端算好的字段，前端不要自己再推一遍）。
 
-**4. 版本号只有一个来源**：`src/tray/mod.rs` 启动日志里那句 `构建=vX.Y.Z`，`build.sh` 从这里提取写进 Info.plist。发版流程见下。
+**4. 版本号只有一个来源**：`Cargo.toml` 的 `version`。代码读 `crate::VERSION`，`build.sh` 和发版流水线都从这里提取。展示副本 `assets/badge-release.svg` 里的 `vX.Y.Z` 是静态文本，不会自动同步，发版时一起改。发版流程见下。
 
 ## 发版
 
+正常发版走 CI：**推 tag，其余自动**。
+
 ```bash
-# 1. 改 src/tray/mod.rs 里的 构建=vX.Y.Z；assets/badge-release.svg 里的版本号一起改
-# 2. 双端打包
-./build.sh                 # macOS：编译 → .app → ad-hoc 签名 → 装进 /Applications → zip
-./cross-build-windows.sh   # Windows：交叉编译 → dist/windows/
-cd dist/windows && zip -q -X ../InputSwitch-windows-x64.zip \
-  InputSwitch.exe inputswitch-cli.exe WebView2Loader.dll README.txt
-# 3. 提交 + 打 tag + 推送
-# 4. GitHub Release 挂两个 zip（gh release create vX.Y.Z dist/*.zip）
+# 1. 改 Cargo.toml 的 version + assets/badge-release.svg 里的 vX.Y.Z（两处一起改）
+# 2. 提交，走 PR 合进 main，本地切到最新的 main
+# 3. 预检（不碰任何东西）：工作区干净 / tag 未占用 / gh 已登录 / 徽章版本一致
+node tools/release.js check
+# 4. 打 tag 并推送 —— release.yml 自动构建双端、生成 updater.json、建 Release
+node tools/release.js tag --yes
 ```
+
+tag 推上去后 `.github/workflows/release.yml` 自动完成：Windows 打 NSIS 安装器
+（`InputSwitch_<版本>_x64-setup.exe`）/ macOS 打 `.app` zip → 用当次产物**现算 SHA-256**
+生成 `updater.json` → 建 GitHub Release 并上传。**tag 名必须和 Cargo.toml 的 version 一致**，
+不一致流水线直接失败（版本号是机器可读的真源，见第 4 条）。
+
+本地手工发版（workflow 挂了要补包，或就是想本机发）：
+
+```bash
+./build.sh                  # macOS：dist/InputSwitch-macOS-arm64.zip
+# Windows：先 .\build.ps1，再（需要本机装 NSIS）：
+node tools/pack-windows.js  # dist/windows/InputSwitch_<版本>_x64-setup.exe
+node tools/gen-updater-json.js dist --notes-file notes.md   # 生成 updater.json
+node tools/release.js publish dist --notes-file notes.md --yes
+```
+
+`release.js` 所有子命令默认 dry-run，只打印将要执行的命令，`--yes` 才真干。
+
+**自动更新的第一个版本必须让用户手动装一次**：安装形态从「解压即用」变成了安装器，
+只有装过安装版的机器上才有自动更新链路。
 
 ## 代码地图
 
