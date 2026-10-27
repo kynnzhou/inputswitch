@@ -6,7 +6,8 @@
 //!
 //! 这里也是**无界面验证整条链路**的入口：`inputswitch-cli update --download`
 //! 跑一遍就知道清单能不能拉、版本比得对不对、包能不能下、摘要对不对，
-//! 不用先开托盘再点面板。P2 的安装能力还没接，所以下完只报路径。
+//! 不用先开托盘再点面板；`--install` 则接着静默安装并重启（安装由 helper
+//! 脚本等本进程退出后执行，见 `update::install`）。
 
 use std::io::Write;
 use std::time::Duration;
@@ -134,7 +135,7 @@ fn download_and_report() -> i32 {
                 None => println!("安装包路径未知（内部状态被清空）"),
             }
             println!();
-            println!("（当前版本还没有自动安装能力，P2 会接上静默安装与重启）");
+            println!("（加 --install 可接着静默安装并重启）");
             0
         }
         Phase::Error => report_error(&s.error, &s.code),
