@@ -10,8 +10,9 @@
 
 ```bash
 cargo check --bins                      # 两个二进制都过一遍编译
+cargo build --bin inputswitch-cli --no-default-features   # 瘦构建：发版流水线构建的就是这个形态，保持 0 警告
 cargo test --lib -- --test-threads=1    # ⚠️ 必须单线程：套件里有 DDC/回环测试，并行会崩
-node tools/panelcheck.js assets/panel   # 面板 UI 的离线断言（约 50 条）
+node tools/panelcheck.js assets/panel   # 面板 UI 的离线断言（80 条）
 ```
 
 **`--test-threads=1` 不是可选项**，并行跑会 SIGABRT，这不是 bug。
