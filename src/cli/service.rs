@@ -50,7 +50,7 @@ pub fn cmd_daemon() -> i32 {
 
 #[cfg(not(feature = "tray"))]
 pub fn cmd_daemon_headless() -> i32 {
-    let mut sw = inputswitch::Switcher::new();
+    let sw = inputswitch::Switcher::new();
     let ddc_ok = sw
         .pick_display(None)
         .map(|d| sw.capability(&d) != inputswitch::Capability::Unsupported)
