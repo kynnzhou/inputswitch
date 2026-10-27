@@ -8,12 +8,13 @@ BUNDLE="dist/${APP_NAME}.app"
 GUI_BIN="target/release/${APP_NAME}"
 INSTALL_DIR="/Applications"
 
-# 版本号只有一个来源：托盘启动日志里那句「构建=vX.Y.Z」。
-# 以前 Info.plist 固定写 0.1.0，用户查版本只能看到 0.1.0，误以为装的还是老版本。
-# tray.rs 拆成 src/tray/ 目录后真源在 mod.rs，这里跟着改。
-VERSION="$(sed -n 's/.*构建=v\([0-9][0-9.]*\).*/\1/p' src/tray/mod.rs | head -1)"
+# 版本号只有一个来源：Cargo.toml 的 version（与代码里的 crate::VERSION 同源）。
+# 以前这里从托盘启动日志里 sed 抓「构建=vX.Y.Z」，2026-10-27 起日志改成引用
+# crate::VERSION、字面量没了，所以改读 Cargo.toml —— 否则这里会读不到版本号
+# 而直接退出，macOS 打包当场坏掉。
+VERSION="$(sed -n 's/^version = "\([0-9][0-9.]*\)".*/\1/p' Cargo.toml | head -1)"
 if [ -z "$VERSION" ]; then
-  echo "读不到版本号（src/tray/mod.rs 里应该有一句 构建=vX.Y.Z）" >&2
+  echo "读不到版本号（Cargo.toml 里应该有 version = \"X.Y.Z\"）" >&2
   exit 1
 fi
 

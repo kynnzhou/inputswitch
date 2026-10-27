@@ -7,7 +7,7 @@ mod cli;
 
 use clap::{Parser, Subcommand};
 
-use cli::{act, display, kvm, net, service};
+use cli::{act, display, kvm, net, service, update};
 
 #[derive(Parser)]
 #[command(name = "inputswitch", version, about = "跨平台显示器输入源切换")]
@@ -130,6 +130,8 @@ enum Command {
         /// 不填就打印当前剪贴板文本
         text: Option<String>,
     },
+    /// 检查更新（只查不装，不依赖图形界面）
+    Update,
     /// 检查共用键鼠需要的权限和屏幕尺寸
     KvmProbe,
     /// 注入自检：把光标挪到屏幕中央再读回位置（不依赖网络）
@@ -188,6 +190,7 @@ fn main() {
         }) => net::cmd_pair(code.as_deref(), generate, clear),
         Some(Command::Send { paths, wait }) => net::cmd_send(&paths, wait),
         Some(Command::Clip { text }) => service::cmd_clip(text.as_deref()),
+        Some(Command::Update) => update::cmd_update(),
         Some(Command::KvmProbe) => kvm::cmd_kvm_probe(),
         Some(Command::InjectProbe) => kvm::cmd_inject_probe(),
         Some(Command::Kvm {

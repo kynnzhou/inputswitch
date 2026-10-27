@@ -1,4 +1,4 @@
-//! 子命令实现层。`main.rs` 只留接口（clap 定义 + 分发表），20 个命令的实现在这里。
+//! 子命令实现层。`main.rs` 只留接口（clap 定义 + 分发表），21 个命令的实现在这里。
 //!
 //! 按「跑下去会不会真的改动屏幕」切，不按层切：诊断 CLI 的用法是排查时
 //! 随手跑，`probe`/`info`/`check` 只读可以放心跑，`switch`/`wizard`/`scan`
@@ -8,6 +8,7 @@
 //!   net       局域网与配对：status / pair / send
 //!   kvm       共用键鼠：kvm / kvm-probe / inject-probe
 //!   service   常驻与服务项：daemon / autostart / clip
+//!   update    自动更新：update（唯一要联网的命令，单独放好排查）
 //! 子模块声明成 pub：`mod cli` 本身是 main.rs 私有的，pub 出不了这个 bin
 //! crate，只是为了 main.rs 的分发表能写 `display::cmd_probe()` 这样自带
 //! 文件名的路径。
@@ -17,6 +18,7 @@ pub mod display;
 pub mod kvm;
 pub mod net;
 pub mod service;
+pub mod update;
 
 /// DDC 排查建议。selftest 和 wizard 失败时都要打印，放父模块当共享 helper，
 /// 省得 display 和 act 两个兄弟模块互相 import。

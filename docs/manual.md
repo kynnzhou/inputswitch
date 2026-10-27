@@ -846,7 +846,13 @@ src/
 │   ├── act.rs    会改动屏幕：switch / wizard / rename / scan / write
 │   ├── net.rs    局域网与配对：status / pair / send
 │   ├── kvm.rs    共用键鼠：kvm / kvm-probe / inject-probe
-│   └── service.rs   常驻与服务项：daemon / autostart / clip
+│   ├── service.rs   常驻与服务项：daemon / autostart / clip
+│   └── update.rs    自动更新：update（唯一要联网的命令）
+├── update/       自动更新（检查 / 下载 / 校验 / 安装，零新增依赖）
+│   ├── mod.rs    七态状态机 + check_blocking + 进程级状态（面板轮询读）
+│   ├── manifest.rs  updater.json 解析 + 版本比较（自己写，不引 semver）
+│   ├── source.rs    候选源 ghproxy → GitHub 两级 + 退避重试 + 错误分类
+│   └── fetch.rs     网络层：系统 curl 封装（死代理兜底、Windows 不查证书吊销）
 └── ddc/
     ├── mod.rs    后端 trait
     ├── mac.rs    IOKit IOAVService（纯 FFI，无第三方绑定）
