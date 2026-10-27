@@ -12,7 +12,7 @@ use crate::kvm::event::{Event, Side};
 use crate::kvm::link::pick_retarget;
 use crate::kvm::state::{Mode, State};
 use crate::kvm::tuning::PEER_ALIVE_MS;
-use crate::kvm::util::now_ms;
+use crate::kvm::util::{anchor_origin, now_ms};
 
 use super::Ctx;
 
@@ -126,20 +126,12 @@ impl Ctx {
         // 并按两屏比例缩放位移（不然两块屏分辨率不同时，
         // 一边的 delta 到另一边会被放大/缩小得不成样子）
         let (sw, sh) = self.capture_ref.screen();
-        // 锚点起点 = 接收端的落点（门口那侧 + 出门时的高度比例），
+        // 锚点起点 = 接收端的落点比例（门口那侧 + 出门时的高度比例），
         // 不是本机光标位置 —— 两边要对齐的是"接收端光标在哪"。
-        // along 未知（0xFFFF）时按居中算。
-        let af = if along == 0xFFFF {
-            0.5
-        } else {
-            along as f64 / 65535.0
-        };
-        self.anchor_pos = Some(match side {
-            Side::Left => (0.0, af),
-            Side::Right => (1.0, af),
-            Side::Top => (af, 0.0),
-            Side::Bottom => (af, 1.0),
-        });
+        // 算式与四个 case 的由来见 util::anchor_origin：按发送端出缘
+        // 比例初始化会把对端光标在 400ms 后纠到屏幕对侧（v0.6.90
+        // 实测「Mac→Windows 光标漂到右侧」的根因）。
+        self.anchor_pos = Some(anchor_origin(side, along));
         self.anchor_at = 0; // 下一笔输入立刻补一发锚点，把落点钉死
                             // Enter 双发：丢一包对端就收不到开工信号（好在
                             // Pong 状态自愈 2.5s 兜底，双发把卡顿窗口压到最小）

@@ -229,6 +229,85 @@ use super::session::EdgeSim;
         assert_eq!(anchor_target(center.0, center.1, 0.0, 0.0, (0.0, 0.0)), None);
     }
 
+    /// 回归守门（v0.6.90 实测「Mac→Windows 光标漂到 Windows 右侧」）：
+    /// 发送端从右缘出门，用户过门后向左回一次手（极自然的微调），
+    /// 下一发锚点不许把接收端光标从门口纠到镜像位置。v0.6.67 初版
+    /// 初值按发送端出缘比例取（1.0），回手后 0xFFFF 哨兵失效即现形。
+    #[test]
+    fn post_crossing_leftward_move_must_not_teleport_to_far_side() {
+        let (w, h) = (1920.0, 1080.0);
+        let along = 0x4000u16;
+        let mut vc = anchor_origin(Side::Right, along);
+        // 用户过门后向左回手 15% 发送端屏宽
+        let dx = -(0.15 * 1728.0) as i32;
+        vc.0 = (vc.0 + dx as f64 / 1728.0).clamp(0.0, 1.0);
+        let fx = (vc.0 * 65535.0).round() as u16;
+        let fy = (vc.1 * 65535.0).round() as u16;
+        // 接收端光标：落点左缘内距 16，向左 15% 后被操作系统钳在 0
+        let cur = (0.0, along as f64 / 65535.0 * h);
+        assert_eq!(
+            anchor_target(fx, fy, w, h, cur),
+            None,
+            "锚点把正确跟踪的光标当成漂移：Mac→Windows 回一次手就被拽到屏幕对侧"
+        );
+    }
+
+    /// 同一条根因的另一条现形路径：出门在左（接收端门在右、落点贴
+    /// 右缘）。初值按发送端出缘取 0.0 时，第一发锚点（过 300ms 门后）
+    /// 就把光标从右缘纠到左缘 —— 不依赖用户任何后续动作。
+    #[test]
+    fn entry_landing_must_survive_the_first_anchor() {
+        let (w, h) = (1920.0, 1080.0);
+        let along = 0x4000u16;
+        let (ax, ay) = anchor_origin(Side::Left, along);
+        let fx = (ax * 65535.0).round() as u16;
+        let fy = (ay * 65535.0).round() as u16;
+        // 接收端落点：门口 = Left.opposite() = Right，内距 16 点
+        let landing = (w - 16.0, along as f64 / 65535.0 * h);
+        assert_eq!(
+            anchor_target(fx, fy, w, h, landing),
+            None,
+            "锚点把进门落点当成漂移：出左缘后光标被拽到屏幕对侧"
+        );
+    }
+
+    /// 锚点初值必须取**接收端**的帧：四个出门方向，初值映射回接收端
+    /// 屏幕后都得落在它自己的门边上（门在出门侧的反面），打到落点上
+    /// 不许触发校正。v0.6.90「Mac→Windows 光标被拽到对侧」回归的
+    /// 守门测试 —— 与上面两条各管一半（Left/Top 无条件现形，
+    /// Right/Bottom 要用户回一次手才现形）。
+    #[test]
+    fn anchor_origin_lands_on_the_receivers_door_all_sides() {
+        let (w, h) = (1920.0, 1080.0);
+        for exit in Side::all() {
+            let along = 0x6000u16;
+            let (ax, ay) = anchor_origin(exit, along);
+            let fx = (ax * 65535.0).round() as u16;
+            let fy = (ay * 65535.0).round() as u16;
+            // 接收端落点：门在 exit 的反面（拓扑定理，见 recv/enter.rs）
+            let landing = landing_spot(exit.opposite(), along, w, h);
+            assert_eq!(
+                anchor_target(fx, fy, w, h, landing),
+                None,
+                "{exit:?} 出门：锚点初值把落点当成漂移（该落在门边上，不是对侧）"
+            );
+        }
+    }
+
+    /// 初值四个 case 的直接单测：法向那一维贴在接收端的门边上
+    /// （0=门在左/上，1=门在右/下），沿门轴用 along。
+    #[test]
+    fn anchor_origin_takes_the_receivers_frame() {
+        let along = 0x8000u16;
+        let f = along as f64 / 65535.0;
+        assert_eq!(anchor_origin(Side::Right, along), (0.0, f));
+        assert_eq!(anchor_origin(Side::Left, along), (1.0, f));
+        assert_eq!(anchor_origin(Side::Top, along), (f, 1.0));
+        assert_eq!(anchor_origin(Side::Bottom, along), (f, 0.0));
+        // along 未知（0xFFFF，跟随画面模式没有"门"）：沿门轴居中
+        assert_eq!(anchor_origin(Side::Right, 0xFFFF), (0.0, 0.5));
+    }
+
     /// 对面交还：起点不是它 → 改指向回起点；起点就是它 → 常规收回。
     #[test]
     fn takeback_returns_to_root() {

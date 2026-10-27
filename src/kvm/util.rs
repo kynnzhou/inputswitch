@@ -66,20 +66,53 @@ pub(super) fn rescale_delta(v: i32, scale: f64) -> i32 {
 /// 跟随画面模式没有"门"）时退回该轴居中。
 pub(super) fn entry_spot(inject: &plat::Inject, side: Side, along: u16) -> (f64, f64) {
     let (w, h) = inject.screen();
+    landing_spot(side, along, w, h)
+}
+
+/// 落点算式（纯函数版）：屏幕尺寸由调用方给，单测直接验，不用造
+/// `plat::Inject`。法向贴门口内距，沿门轴按 `along` 比例。
+pub(super) fn landing_spot(side: Side, along: u16, w: f64, h: f64) -> (f64, f64) {
     // 门口距离按屏幕宽度缩放：16 这个数是在 1080p 逻辑点上定的，
     // 4K 物理像素屏（3840 宽）上等效只有 8 逻辑点 —— 贴门太近，
     // 手一回拉就撞边。按宽度比例放大（4K = 32px）。
     let margin = ENTRY_MARGIN * (w / 1920.0).max(1.0);
     let f = if along == 0xFFFF {
-        None
+        0.5
     } else {
-        Some(along as f64 / 65535.0)
+        along as f64 / 65535.0
     };
     match side {
-        Side::Left => (margin, f.map_or(h / 2.0, |f| (f * h).clamp(0.0, h))),
-        Side::Right => (w - margin, f.map_or(h / 2.0, |f| (f * h).clamp(0.0, h))),
-        Side::Top => (f.map_or(w / 2.0, |f| (f * w).clamp(0.0, w)), margin),
-        Side::Bottom => (f.map_or(w / 2.0, |f| (f * w).clamp(0.0, w)), h - margin),
+        Side::Left => (margin, (f * h).clamp(0.0, h)),
+        Side::Right => (w - margin, (f * h).clamp(0.0, h)),
+        Side::Top => ((f * w).clamp(0.0, w), margin),
+        Side::Bottom => ((f * w).clamp(0.0, w), h - margin),
+    }
+}
+
+/// 发送端虚拟光标的初始比例 = **接收端的落点比例**。
+///
+/// 拓扑定理：对端的门在本机出门侧的反面（接收端据此校正门口，见
+/// `recv/enter.rs`）—— 从右缘出门，对端光标落在它自己屏幕的左缘
+/// （比例 ≈0），虚拟光标就必须从 ≈0 开始积分。两边要对齐的是
+/// "接收端光标在哪"，不是发送端真实光标在哪。
+///
+/// v0.6.67 初版四个 case 直接按 `side` 写（Right→1.0、Top→0.0），
+/// 于是每遍越界后约 400ms，锚点就把接收端光标从门口纠到屏幕对侧：
+/// 出左缘/上缘无条件现形（比例 0 直接纠到对侧那缘）；出右缘起初
+/// 被 0xFFFF 哨兵撞中（1.0×65535=65535=「该维未知」）碰巧无害，
+/// 用户向左回一次手哨兵失效，光标照样被拽到右侧 —— v0.6.90 实测
+/// 「Mac→Windows 光标漂到 Windows 右侧」的根因就在这。
+pub(super) fn anchor_origin(side: Side, along: u16) -> (f64, f64) {
+    let f = if along == 0xFFFF {
+        0.5
+    } else {
+        along as f64 / 65535.0
+    };
+    match side {
+        Side::Left => (1.0, f),
+        Side::Right => (0.0, f),
+        Side::Top => (f, 1.0),
+        Side::Bottom => (f, 0.0),
     }
 }
 
@@ -110,8 +143,13 @@ pub(super) fn anchor_target(
         fy as f64 / 65535.0 * h
     };
     // 阈值按宽度算（高度常常被任务栏/刘海吃掉一截，按宽度更稳），
-    // 8 点是下限：小屏上 0.6% 只有几个像素，太敏感。
-    let tol = (w * ANCHOR_TOL).max(8.0);
+    // 8 点是下限：小屏上 0.6% 只有几个像素，太敏感。还要盖住落点的
+    // 门口内距：锚点初值贴在门边上（0/1），而落点在门内 ENTRY_MARGIN
+    // 处 —— 这个固定偏移是落点本身、不是漂移，不盖住的话每次进门后
+    // 第一发校正都会把光标往门边拽一小截（内距量级，4K 上 32 点）。
+    let tol = (w * ANCHOR_TOL)
+        .max(8.0)
+        .max(ENTRY_MARGIN * (w / 1920.0).max(1.0));
     if (cur.0 - tx).abs() > tol || (cur.1 - ty).abs() > tol {
         Some((tx, ty))
     } else {
