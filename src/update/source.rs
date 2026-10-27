@@ -34,7 +34,7 @@ const GH_DIRECT: &str = "https://github.com";
 
 /// 覆盖用的环境变量：给了就**只**用它，不再追加 ghproxy/GitHub。
 ///
-/// 用途是联调（起一个 `python -m http.server` 或 `fake-update-server.mjs`），
+/// 用途是联调（起一个 `python -m http.server` 或 `fake-update-server.js`），
 /// 以及给企业内网自建镜像留一条口子。注意仍然只接受 https（见 fetch）。
 pub const ENV_OVERRIDE: &str = "INPUTSWITCH_UPDATE_URL";
 
