@@ -10,9 +10,9 @@
 //      （这个命名是 updater.json 的约定，src/update/source.rs 的测试在用）
 //
 // 用法：
-//   node tools/pack-windows.mjs                 # 全流程
-//   node tools/pack-windows.mjs --skip-makensis # 只 stage（本机没装 NSIS 时验证前半段）
-//   node tools/pack-windows.mjs --version 9.9.9 # 覆盖版本号（默认读 Cargo.toml）
+//   node tools/pack-windows.js                 # 全流程
+//   node tools/pack-windows.js --skip-makensis # 只 stage（本机没装 NSIS 时验证前半段）
+//   node tools/pack-windows.js --version 9.9.9 # 覆盖版本号（默认读 Cargo.toml）
 //
 // 本机没装 NSIS 时报中文错误并给出安装办法；CI（release.yml）用 choco 装。
 const fs = require('fs');
@@ -81,11 +81,14 @@ if (probe.error || probe.status !== 0) {
   fail(
     '系统里没有 makensis（NSIS）。\n' +
       '  本机装一个：https://nsis.sourceforge.io/Download ，或 choco install nsis -y\n' +
-      '  只想验证 staging 前半段：node tools/pack-windows.mjs --skip-makensis'
+      '  只想验证 staging 前半段：node tools/pack-windows.js --skip-makensis'
   );
 }
 
-const out = path.join('.build', 'InputSwitch-setup.exe');
+// OUT 必须是绝对路径：makensis 把相对的 OutFile 解析到 .nsi 脚本所在目录
+// （packaging/windows/），不是 spawn 时的 cwd——v0.6.90 第二次 Release run 正是
+// 死在这：Can't open output file（packaging\windows\.build 不存在，NSIS 也不建目录）
+const out = path.join(ROOT, '.build', 'InputSwitch-setup.exe');
 const r = spawnSync(
   'makensis',
   [`/DVERSION=${version}`, `/DSTAGING=${stage}`, `/DOUT=${out}`, nsi],
@@ -98,7 +101,8 @@ if (r.status !== 0) {
 }
 
 // ---------- 3. 搬到 dist/windows ----------
-const built = path.join(ROOT, out);
+// out 已是绝对路径（见上），不再拼 ROOT
+const built = out;
 if (!fs.existsSync(built)) fail(`makensis 报成功但找不到 ${out}`);
 const finalName = `InputSwitch_${version}_x64-setup.exe`;
 const dist = path.join(ROOT, 'dist/windows');
@@ -115,4 +119,4 @@ console.log(`\n安装器: ${path.relative(ROOT, finalPath)}`);
 console.log(`  大小: ${(buf.length / 1024 / 1024).toFixed(2)} MB`);
 console.log(`  SHA-256: ${sum}`);
 console.log(`\n静默安装（自动更新走的就是这条）：${finalName} /S`);
-console.log('生成 updater.json：node tools/gen-updater-json.mjs dist/windows');
+console.log('生成 updater.json：node tools/gen-updater-json.js dist/windows');

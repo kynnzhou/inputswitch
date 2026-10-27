@@ -1,8 +1,10 @@
 # InputSwitch 的 Windows 安装器（NSIS，除 nsExec（随 NSIS 分发）外零插件）。
 #
-# 由 tools/pack-windows.mjs 调用，不要手敲 makensis：
-#   makensis /DVERSION=0.6.90 /DSTAGING=.build/stage /DOUT=.build/InputSwitch-setup.exe \
-#     packaging/windows/InputSwitch.nsi
+# 由 tools/pack-windows.js 调用，不要手敲 makensis：
+#   makensis /DVERSION=0.6.90 /DSTAGING=<绝对路径>/stage \
+#     /DOUT=<绝对路径>/InputSwitch-setup.exe packaging/windows/InputSwitch.nsi
+# STAGING/OUT 都必须传绝对路径：makensis 把相对路径解析到本脚本所在目录，
+# 不是调用时的 cwd（v0.6.90 第二次 Release run 死在相对 OUT 的 Can't open output file）
 # 版本号只从命令行来：Cargo.toml 的 version 是真源，pack 脚本负责读它并传进来。
 #
 # 几个决定的理由：
@@ -21,10 +23,10 @@
 #   都还在。真要清干净用面板里的重置。
 
 !ifndef VERSION
-  !error "必须传 /DVERSION=x.y.z（tools/pack-windows.mjs 从 Cargo.toml 读入后传入）"
+  !error "必须传 /DVERSION=x.y.z（tools/pack-windows.js 从 Cargo.toml 读入后传入）"
 !endif
 !ifndef STAGING
-  !error "必须传 /DSTAGING=<无空格目录>（tools/pack-windows.mjs 准备的暂存目录；makensis 的 /D 值遇空格会被截断）"
+  !error "必须传 /DSTAGING=<无空格目录>（tools/pack-windows.js 准备的暂存目录；makensis 的 /D 值遇空格会被截断）"
 !endif
 !ifndef OUT
   !define OUT "InputSwitch-setup.exe"
