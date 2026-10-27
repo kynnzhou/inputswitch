@@ -49,7 +49,7 @@ const RUST_BASELINE = {
   'src/kvm/mod.rs': 371,
   'src/kvm/win.rs': 1723,
   'src/lib.rs': 38,
-  'src/main.rs': 215,
+  'src/main.rs': 218,
   'src/models.rs': 252,
   'src/panel.rs': 746,
   'src/panelwin.rs': 194,

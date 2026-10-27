@@ -13,9 +13,10 @@
 //! ## 分期
 //!
 //! - **P0**：状态机 + 检查（拿到「有没有新版」的结论）
-//! - **P1（本文件已接）**：下载到临时文件、进度、摘要校验（`download.rs`）
-//! - P2：安装（Windows NSIS 静默安装 / macOS .app 替换）+ 重启
-//! - P3：面板 UI（徽章 / 更新说明弹窗 / 重启过渡层）
+//! - **P1（`download.rs`）**：下载到临时文件、进度、摘要校验
+//! - **P2（`install.rs`）**：安装（Windows NSIS 静默安装 / macOS `.app` 替换）
+//!   + 8 秒重启倒计时 + helper 脚本负责「等本进程退出 → 装 → 拉起」
+//! - P3：面板 UI（徽章 / 更新说明弹窗 / 重启过渡层）+ `/api/update` 动作接口
 //!
 //! 状态放在一个进程级 `Mutex` 里。面板线程只读（`snapshot`），检查线程只写。
 //! 不用 channel 是因为读写两端都不关心「变化了几次」，只关心「现在是什么」。
@@ -26,6 +27,7 @@
 
 pub mod download;
 pub mod fetch;
+pub mod install;
 pub mod manifest;
 pub mod source;
 
@@ -60,8 +62,11 @@ pub enum Phase {
     Downloading,
     /// 下载并校验完成，等着装
     Ready,
+    /// 正在装 / 即将重启。倒计时归零就退出进程让安装器跑
+    Restarting,
     /// 已经是最新
     UpToDate,
+    /// 检查或下载失败
     Error,
 }
 
@@ -95,6 +100,9 @@ pub struct UpdateState {
     pub total: u64,
     /// 瞬时速率（字节/秒）。下载结束后归 0，避免面板一直显示最后那个数
     pub bytes_per_sec: u64,
+    /// 重启倒计时剩余秒数。0 = 不在倒计时；`restarting` 期间面板用它显示
+    /// 「8 秒后重启」并提供取消按钮
+    pub auto_restart_in: u64,
 }
 
 impl UpdateState {
@@ -372,7 +380,19 @@ pub fn is_skipped(version: &str) -> bool {
     !s.skipped.is_empty() && s.skipped == normalise_version(version)
 }
 
-fn lock() -> MutexGuard<'static, UpdateState> {
+/// 写一行日志。
+///
+/// 包一层是因为 `tray` 模块在 `tray` feature 后面：`--no-default-features`
+/// 的瘦构建（CLI only）里没有它。那个构建本来就没有托盘、也没有人在看
+/// 日志文件，所以退化成什么都不做 —— 但 `update` 模块两种构建都要编。
+pub(super) fn log(message: &str) {
+    #[cfg(feature = "tray")]
+    crate::tray::log_line(message);
+    #[cfg(not(feature = "tray"))]
+    let _ = message;
+}
+
+pub(super) fn lock() -> MutexGuard<'static, UpdateState> {
     // 这个锁的保护范围里没有会 panic 的代码，中毒了也能继续用
     state().lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -538,5 +558,13 @@ mod tests {
         let after = start_blocking();
         assert_eq!(after.phase, before.phase);
         assert!(pending_installer().is_none());
+    }
+
+    #[test]
+    fn restarting_phase_serializes_as_restarting() {
+        assert_eq!(
+            serde_json::to_string(&Phase::Restarting).unwrap(),
+            "\"restarting\""
+        );
     }
 }
