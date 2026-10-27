@@ -12,27 +12,38 @@
 //!
 //! ## 分期
 //!
-//! - **P0（本文件）**：状态机 + 检查（拿到「有没有新版」的结论）
-//! - P1：下载到临时文件、进度、摘要校验
+//! - **P0**：状态机 + 检查（拿到「有没有新版」的结论）
+//! - **P1（本文件已接）**：下载到临时文件、进度、摘要校验（`download.rs`）
 //! - P2：安装（Windows NSIS 静默安装 / macOS .app 替换）+ 重启
 //! - P3：面板 UI（徽章 / 更新说明弹窗 / 重启过渡层）
 //!
 //! 状态放在一个进程级 `Mutex` 里。面板线程只读（`snapshot`），检查线程只写。
 //! 不用 channel 是因为读写两端都不关心「变化了几次」，只关心「现在是什么」。
+//!
+//! 下载进度也是同一份状态：`download.rs` 每 250ms 回调一次，直接写进
+//! `downloaded`/`total`/`bytes_per_sec`。面板本来就在 1.2s 轮询，P3 只需要
+//! 在 `downloading` 时把间隔临时调小，不需要额外的事件通道。
 
+pub mod download;
 pub mod fetch;
 pub mod manifest;
 pub mod source;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use manifest::Manifest;
-use source::{CheckError, ErrorCode};
+use source::{ErrorCode, UpdateError};
 
 /// 自动检查更新的间隔。面板每次启动只查一次，够用；24h 是 cc-bridge 的选择。
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 检查结果「新鲜」多久。超过这个时间才下载，就先去远端复查一次：
+/// 用户可能前一天看到提示、第二天才点「更新」，期间发的包早换成新版了，
+/// 拿旧 URL + 旧摘要去下会直接校验失败（更糟的是装了个已撤回的版本）。
+const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// 七态，与 cc-bridge 的 `UpdateContext` 一一对应，方便两边对照排查。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -78,6 +89,12 @@ pub struct UpdateState {
     pub skipped: String,
     /// 上次检查完成的时间（unix 秒，0 = 从没查过）
     pub checked_at: u64,
+    /// 已下载字节数（只在 `downloading` / `ready` 时有意义）
+    pub downloaded: u64,
+    /// 安装包总字节数。0 = 服务器没给 `Content-Length`，界面别画百分比
+    pub total: u64,
+    /// 瞬时速率（字节/秒）。下载结束后归 0，避免面板一直显示最后那个数
+    pub bytes_per_sec: u64,
 }
 
 impl UpdateState {
@@ -102,11 +119,40 @@ fn state() -> &'static Mutex<UpdateState> {
 /// 并发 curl 同时改状态，最后写回的那份未必是最新的。
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
+/// 下载的单飞闸。与 [`CHECKING`] 分开：两个动作用的是不同的 URL、不同的
+/// 临时文件，但**不能同时跑**——下载途中重查会把 `url`/`checksum` 覆盖成
+/// 另一版，下到一半的包和最后的期望摘要对不上。
+static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+
+/// 下载完、校验过的安装包路径。不进 `UpdateState`：路径是本机实现细节，
+/// 面板不需要知道，也不该被客户端左右。P2 的安装步骤从这里取。
+fn pending() -> &'static Mutex<Option<PathBuf>> {
+    static P: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(None))
+}
+
+/// 拿走已经校验好的安装包路径（P2 安装时调用）。
+pub fn pending_installer() -> Option<PathBuf> {
+    pending().lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+fn set_pending(path: Option<PathBuf>) {
+    *pending().lock().unwrap_or_else(|e| e.into_inner()) = path;
+}
+
 struct CheckGuard;
 
 impl Drop for CheckGuard {
     fn drop(&mut self) {
         CHECKING.store(false, Ordering::Release);
+    }
+}
+
+struct DownloadGuard;
+
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        DOWNLOADING.store(false, Ordering::Release);
     }
 }
 
@@ -120,8 +166,12 @@ pub fn snapshot() -> UpdateState {
 
 /// 检查更新，阻塞到出结果。**不下载、不安装。**
 ///
-/// 供 CLI（`inputswitch-cli update --check`）和 P1 的后台线程使用。
+/// 供 CLI（`inputswitch-cli update`）和后台线程使用。
 pub fn check_blocking() -> UpdateState {
+    // 下载途中不复查：会覆盖 url/checksum，让正在下的包和期望摘要对不上
+    if DOWNLOADING.load(Ordering::Acquire) {
+        return snapshot();
+    }
     if CHECKING.swap(true, Ordering::AcqRel) {
         return snapshot();
     }
@@ -170,9 +220,104 @@ pub fn check_blocking() -> UpdateState {
     s.clone()
 }
 
-fn check_once() -> Result<Decision, CheckError> {
+fn check_once() -> Result<Decision, UpdateError> {
     let (manifest, _source_url) = source::fetch_manifest(fetch::DEFAULT_TIMEOUT)?;
     decide(&manifest)
+}
+
+/// 下载并校验安装包，阻塞到出结果。**不安装**（P2 才做）。
+///
+/// 前置条件：状态必须是 `available`（有 `url` 和 `checksum`）。不满足就
+/// 原样返回当前状态——面板上的按钮在非 `available` 时会被禁用，所以这种
+/// 调用只可能来自竞态（比如两个窗口同时点），不该当成错误弹给用户。
+pub fn start_blocking() -> UpdateState {
+    if DOWNLOADING.swap(true, Ordering::AcqRel) {
+        return snapshot();
+    }
+    let _guard = DownloadGuard;
+
+    let (version, url, checksum) = {
+        let s = lock();
+        if s.phase != Phase::Available || s.url.is_empty() || s.checksum.is_empty() {
+            return s.clone();
+        }
+        (s.latest.clone(), s.url.clone(), s.checksum.clone())
+    };
+
+    // 先复查再下：见 STALE_AFTER 的说明。复查本身失败不拦下载（摘要仍能
+    // 兜住「下错包」），但版本确实变了就必须拦——否则会装回一个已撤回的版本。
+    if let Err(e) = recheck_if_stale(&version) {
+        return fail(e);
+    }
+
+    {
+        let mut s = lock();
+        s.phase = Phase::Downloading;
+        s.downloaded = 0;
+        s.total = 0;
+        s.bytes_per_sec = 0;
+        s.error.clear();
+        s.code.clear();
+    }
+    set_pending(None);
+
+    let dir = download::staging_dir();
+    let name = download::file_name_for(&url);
+    let urls = source::asset_urls_from(&url);
+    let result = download::download(&urls, &dir, &name, &checksum, |p| {
+        let mut s = lock();
+        s.downloaded = p.downloaded;
+        s.total = p.total;
+        s.bytes_per_sec = p.bytes_per_sec;
+    });
+
+    match result {
+        Ok(path) => {
+            let mut s = lock();
+            s.phase = Phase::Ready;
+            // 收尾：把进度定在总量上（最后一个采样点可能差几 KB），速率归零
+            s.downloaded = s.downloaded.max(s.total);
+            s.bytes_per_sec = 0;
+            set_pending(Some(path));
+            s.clone()
+        }
+        Err(e) => fail(e),
+    }
+}
+
+/// 把错误写进状态并返回，省得每个失败分支都抄一遍。
+fn fail(e: UpdateError) -> UpdateState {
+    let mut s = lock();
+    s.phase = Phase::Error;
+    s.error = e.message;
+    s.code = e.code.to_string();
+    s.bytes_per_sec = 0;
+    s.clone()
+}
+
+/// 检查结果是否已经过期；过期就重新查一遍，看远端是否已经不认这个版本。
+fn recheck_if_stale(expected: &str) -> Result<(), UpdateError> {
+    if !needs_recheck(snapshot().checked_at, now_secs()) {
+        return Ok(());
+    }
+    match check_once() {
+        Ok(Decision::Available { version, .. }) if version == expected => Ok(()),
+        Ok(Decision::Available { version, .. }) => Err(UpdateError::new(
+            ErrorCode::Stale,
+            format!("远端已经发布 v{version}，请重新检查更新"),
+        )),
+        Ok(Decision::UpToDate) => Err(UpdateError::new(
+            ErrorCode::Stale,
+            "远端已经撤下这个版本，请重新检查更新",
+        )),
+        // 复查拉不到清单就按原计划下：摘要能挡住下错包，没必要因为
+        // 「二次确认失败」把用户卡死在原地
+        Err(_) => Ok(()),
+    }
+}
+
+fn needs_recheck(checked_at: u64, now: u64) -> bool {
+    now.saturating_sub(checked_at) > STALE_AFTER.as_secs()
 }
 
 /// 拿到的清单该怎么理解。抽成纯函数：不碰网络、不碰全局状态，能直接单测。
@@ -188,7 +333,7 @@ pub enum Decision {
     },
 }
 
-fn decide(m: &Manifest) -> Result<Decision, CheckError> {
+fn decide(m: &Manifest) -> Result<Decision, UpdateError> {
     // 先比版本。「没新版」是最常见的结果，这条路径不该因为清单里少了个
     // 可有可无的字段就报错——那会让用户看到「检查更新失败」但其实无妨。
     if !manifest::is_newer(&m.version, crate::VERSION) {
@@ -196,7 +341,7 @@ fn decide(m: &Manifest) -> Result<Decision, CheckError> {
     }
     // 确定有新版，再来要本平台的产物：版本再新、我这边没有包也装不了，
     // 报错比假装「有更新」然后下载失败要好
-    let platform = m.for_this_platform().map_err(|e| CheckError {
+    let platform = m.for_this_platform().map_err(|e| UpdateError {
         code: ErrorCode::from_manifest(&e),
         message: e.to_string(),
     })?;
@@ -227,7 +372,7 @@ pub fn is_skipped(version: &str) -> bool {
     !s.skipped.is_empty() && s.skipped == normalise_version(version)
 }
 
-fn lock() -> std::sync::MutexGuard<'static, UpdateState> {
+fn lock() -> MutexGuard<'static, UpdateState> {
     // 这个锁的保护范围里没有会 panic 的代码，中毒了也能继续用
     state().lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -365,5 +510,33 @@ mod tests {
             "\"up_to_date\""
         );
         assert_eq!(serde_json::to_string(&Phase::Error).unwrap(), "\"error\"");
+    }
+
+    #[test]
+    fn recheck_window_is_ten_minutes() {
+        let now = 1_000_000_000u64;
+        assert!(!needs_recheck(now, now), "刚查过不用复查");
+        assert!(
+            !needs_recheck(now - STALE_AFTER.as_secs(), now),
+            "整好 10 分钟还算新鲜"
+        );
+        assert!(
+            needs_recheck(now - STALE_AFTER.as_secs() - 1, now),
+            "超过 10 分钟要复查"
+        );
+        // 从没查过（checked_at = 0）必须复查
+        assert!(needs_recheck(0, now));
+    }
+
+    #[test]
+    fn start_without_available_phase_touches_nothing() {
+        // 没有可用版本时不能启动下载：这条路径连 curl 都不该起
+        if snapshot().phase == Phase::Available {
+            return; // 同进程别的测试把它设成 available 了
+        }
+        let before = snapshot();
+        let after = start_blocking();
+        assert_eq!(after.phase, before.phase);
+        assert!(pending_installer().is_none());
     }
 }

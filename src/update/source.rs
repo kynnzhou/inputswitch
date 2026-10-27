@@ -57,6 +57,8 @@ pub enum ErrorCode {
     Http,
     /// 下载完摘要不符
     Checksum,
+    /// 下载前复查发现远端版本已变（清单比 check 时新了）
+    Stale,
     /// 安装器执行失败
     Install,
     /// 本机环境（没 curl、没写权限）
@@ -92,6 +94,7 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::Timeout => "timeout",
             ErrorCode::Http => "http",
             ErrorCode::Checksum => "checksum",
+            ErrorCode::Stale => "stale",
             ErrorCode::Install => "install",
             ErrorCode::Config => "config",
             ErrorCode::Unsupported => "unsupported",
@@ -101,15 +104,27 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
-/// 一次检查失败的结果：给用户看的消息 + 机器可读的分类。
+/// 更新流程里任意一步失败的结果：给用户看的消息 + 机器可读的分类。
+///
+/// 检查、下载、安装共用这一个类型——它们的消费方（面板、CLI）要做的事
+/// 完全相同：把 `message` 显示出来、按 `code` 决定给什么建议。
 #[derive(Clone, Debug)]
-pub struct CheckError {
+pub struct UpdateError {
     pub code: ErrorCode,
     /// 中文、可展示、已经翻译过 curl 的报错
     pub message: String,
 }
 
-impl std::fmt::Display for CheckError {
+impl UpdateError {
+    pub(crate) fn new(code: ErrorCode, message: impl Into<String>) -> UpdateError {
+        UpdateError {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}（{}）", self.message, self.code)
     }
@@ -127,22 +142,30 @@ pub fn manifest_urls() -> Vec<String> {
     vec![format!("{GH_PROXY}{direct}"), direct]
 }
 
-/// 安装包的候选地址。`file` 是 release 里的资产名。
+/// 安装包的候选地址，按优先级排列。
 ///
-/// 与 [`manifest_urls`] 同一套两级顺序——清单能取到、包取不到是很常见的
-/// 中间状态（ghproxy 缓存了清单但还没缓存包），必须能独立降级。
-pub fn asset_urls(file: &str) -> Vec<String> {
-    let direct = format!("{GH_DIRECT}/{REPO}/releases/latest/download/{file}");
-    vec![format!("{GH_PROXY}{direct}"), direct]
+/// 入参是清单里给的**完整**下载地址（不是文件名）：清单对每个平台写自己的
+/// `url`，我们只需要按「同一套两级」把它包一层。只有 github.com 上的地址
+/// 才套 ghproxy——清单指向别处（企业自建源）时原样直连，不猜。
+///
+/// 与 [`manifest_urls`] 同一套顺序：清单能取到、包取不到是很常见的中间状态
+/// （ghproxy 缓存了清单但还没缓存包），必须能独立降级。
+pub fn asset_urls_from(url: &str) -> Vec<String> {
+    let direct = url.trim();
+    if direct.starts_with("https://github.com/") {
+        vec![format!("{GH_PROXY}{direct}"), direct.to_string()]
+    } else {
+        vec![direct.to_string()]
+    }
 }
 
 /// 拉清单：逐候选源、逐次重试，返回第一个可用的。
 ///
 /// 返回 `(清单, 实际生效的源)` 而不是只返回清单——出错时用户最需要知道的
 /// 就是「到底哪个源坏了」。
-pub fn fetch_manifest(timeout: Duration) -> Result<(Manifest, String), CheckError> {
+pub fn fetch_manifest(timeout: Duration) -> Result<(Manifest, String), UpdateError> {
     let urls = manifest_urls();
-    let mut last: Option<CheckError> = None;
+    let mut last: Option<UpdateError> = None;
 
     for url in &urls {
         for attempt in 0..MAX_ATTEMPTS {
@@ -155,7 +178,7 @@ pub fn fetch_manifest(timeout: Duration) -> Result<(Manifest, String), CheckErro
                     Ok(m) => return Ok((m, url.clone())),
                     Err(e) => {
                         // 清单内容坏了：换源也没用（同一份文件），直接失败
-                        return Err(CheckError {
+                        return Err(UpdateError {
                             code: ErrorCode::from_manifest(&e),
                             message: e.to_string(),
                         });
@@ -163,7 +186,7 @@ pub fn fetch_manifest(timeout: Duration) -> Result<(Manifest, String), CheckErro
                 },
                 Err(e) => {
                     let retry = should_retry(&e);
-                    last = Some(CheckError {
+                    last = Some(UpdateError {
                         code: ErrorCode::from_fetch(&e),
                         message: format!("{url}：{e}"),
                     });
@@ -175,7 +198,7 @@ pub fn fetch_manifest(timeout: Duration) -> Result<(Manifest, String), CheckErro
         }
     }
 
-    Err(last.unwrap_or(CheckError {
+    Err(last.unwrap_or(UpdateError {
         code: ErrorCode::Unknown,
         message: "没有可用的更新源".into(),
     }))
@@ -213,11 +236,28 @@ mod tests {
 
     #[test]
     fn asset_urls_keep_the_same_two_levels() {
-        let urls = asset_urls("InputSwitch_0.6.90_x64-setup.exe");
-        assert_eq!(urls.len(), 2);
-        assert!(urls[0].starts_with(GH_PROXY));
-        assert!(urls[0].ends_with("/InputSwitch_0.6.90_x64-setup.exe"));
-        assert!(urls[1].starts_with("https://github.com/"));
+        let direct = format!(
+            "{GH_DIRECT}/{REPO}/releases/download/v0.6.90/InputSwitch_0.6.90_x64-setup.exe"
+        );
+        let urls = asset_urls_from(&direct);
+        assert_eq!(urls.len(), 2, "{urls:?}");
+        assert!(
+            urls[0].starts_with(GH_PROXY),
+            "第一级应是 ghproxy：{}",
+            urls[0]
+        );
+        assert!(urls[0].ends_with(&direct), "两级要指向同一个包");
+        assert_eq!(urls[1], direct, "第二级应是原地址");
+    }
+
+    #[test]
+    fn non_github_asset_is_not_proxied() {
+        // 企业自建源 / 假更新服务器：不该被塞进 ghproxy 前缀里
+        let urls = asset_urls_from("https://mirror.example.com/dl/a-setup.exe");
+        assert_eq!(
+            urls,
+            vec!["https://mirror.example.com/dl/a-setup.exe".to_string()]
+        );
     }
 
     #[test]

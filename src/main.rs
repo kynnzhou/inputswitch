@@ -130,8 +130,12 @@ enum Command {
         /// 不填就打印当前剪贴板文本
         text: Option<String>,
     },
-    /// 检查更新（只查不装，不依赖图形界面）
-    Update,
+    /// 检查更新（可顺带下载校验，不依赖图形界面）
+    Update {
+        /// 有新版时接着下载并校验 SHA-256（只下不装）
+        #[arg(long)]
+        download: bool,
+    },
     /// 检查共用键鼠需要的权限和屏幕尺寸
     KvmProbe,
     /// 注入自检：把光标挪到屏幕中央再读回位置（不依赖网络）
@@ -190,7 +194,7 @@ fn main() {
         }) => net::cmd_pair(code.as_deref(), generate, clear),
         Some(Command::Send { paths, wait }) => net::cmd_send(&paths, wait),
         Some(Command::Clip { text }) => service::cmd_clip(text.as_deref()),
-        Some(Command::Update) => update::cmd_update(),
+        Some(Command::Update { download }) => update::cmd_update(download),
         Some(Command::KvmProbe) => kvm::cmd_kvm_probe(),
         Some(Command::InjectProbe) => kvm::cmd_inject_probe(),
         Some(Command::Kvm {

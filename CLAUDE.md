@@ -64,12 +64,12 @@
 |---|---|---|
 | `src/tray/` | `tray.rs` 4202 行 | 22 个文件，最大 `menu.rs` 575 行；`engine/` 六文件承接原 `engine.rs`（最大 `probe.rs` 208 行）；`actions/` 五文件承接原 `actions.rs`（最大 `kvm.rs` 286 行） |
 | `src/kvm/` | `kvm/mod.rs` 3570 行 | 29 个文件，最大 `win.rs` 1723 行（平台钩子，天然大）；`capture/` 六文件承接原 `capture.rs`（最大 `mod.rs` 291 行） |
-| `src/cli/` | `main.rs` 1379 行 | 7 个文件，最大 `act.rs` 346 行；`main.rs` 只剩 clap 定义 + 分发表；`update.rs` 64 行是最小的一个（唯一要联网的命令，单独放好排查） |
+| `src/cli/` | `main.rs` 1379 行 | 7 个文件，最大 `act.rs` 346 行；`main.rs` 只剩 clap 定义 + 分发表；`update.rs` 150 行（唯一要联网的命令，单独放好排查） |
 | `src/config/` | `config.rs` 1117 行 | 5 个文件，最大 `store.rs` 517 行；`mod.rs` 只管切分轴与 `pub use` 收口 |
 | `src/switcher/` | `switcher.rs` 979 行 | 7 个文件，最大 `scan.rs` 379 行；`mod.rs` 只管切分轴与 `pub use` 收口 |
 | `src/kvm/event/` | `kvm/event.rs` 832 行 | 4 个文件，最大 `codec.rs` 336 行；`mod.rs` 只管切分轴与 `pub use` 收口 |
 | `src/kvm/recv/` | `kvm/recv.rs` 793 行 | 5 个文件，最大 `input.rs` 285 行；`mod.rs` 的 `Ctx` 收拢 spawn 的全部状态（`inject` 除外 —— macOS 的 `Inject` 含 `CGEventSourceRef` 不是 `Send`，收进来 `thread::spawn` 直接编译不过，它在 `run()` 里现造、按参数传给要用它的方法），`run()` 只留收包 → 验址 → 解密 → 分发骨架 |
-| `src/update/` | （新增模块） | 4 个文件，最大 `mod.rs` 376 行；**零新增依赖**（网络走系统 curl、摘要用已有 sha2、版本比较自己写） |
+| `src/update/` | （新增模块） | 5 个文件，最大 `mod.rs` 542 行；**零新增依赖**（网络走系统 curl、摘要用已有 sha2、版本比较自己写） |
 
 拆分思路：平台差异 → `kvm/{win,mac}.rs`；纯计算/协议 → 独立模块；主线程的全部可变状态 → `tray/ui.rs` 的 `Ui` 结构体（每个 tao `Event` 一个 `on_*` 方法）；命令行 → `cli/` 按「跑下去会不会真的改动屏幕」切（只读诊断与会黑屏的操作分开，排查时滚动不易看漏）；配置 → `config/` 按 schema / paths / kvm / store / state 切（纯数据、本机路径、链路表行为、读写盘、运行状态各占一个文件）；切换编排 → `switcher/` 按 types / probe / topology / switch / scan / discover 切（报告名词、身份与能力、屏幕在不在、切换判据、扫描、向导各占一个文件）；事件协议 → `kvm/event/` 按 codec / edge / seal 切（事件枚举与编解码、边界几何、加密封装各占一个文件，测试跟着被测代码走）；接收线程 → `kvm/recv/` 按 match 分支切（enter 接管、input 注入、handoff 交还、upkeep 维护各占一个文件，730 行 `move` 闭包的捕获变量收进 `Ctx` 结构体，分支中间的 `continue` 提进方法后变 `return`）；工作线程 → `tray/engine/` 按命令性质切（switch 切屏执行、probe 探测、clip 剪贴板传输、beat 心跳协作各占一个文件，`engine_loop` 的 4 个参数加 4 个跨分支局部状态收进 `Ctx`，11 个 `Command` 分支提成 `on_*` 方法，嵌套函数 `push` 改成 `Ctx` 方法只留 `(target, text)`；4 个查询助手留在 `status.rs` 做自由函数 —— `tray::switch` 也要用 `sync_own`，方法化反而要把 `Ctx` 暴露过去）；面板动作 → `tray/actions/` 按「改一件事要动几个文件」切（配对码 pair / 共用键鼠总控 kvm / 链路摆位 link / 系统开关与杂项 system 各占一个文件，21 个 `Action` 分支提成 `on_*` 方法，`on_panel` 只留分发骨架，`_ => {}` 兜底 Switch / Rescan 那几个「不用回主线程」的变体）；抓取线程 → `kvm/capture/` 按 match 分支切（begin 撞边进门、input 转发、claim 抢占认领、end 松手收尾、hop 改指向各占一个文件，600 行 `move` 闭包的 18 个参数加 17 个跨分支循环状态收进 `Ctx` 结构体，5 个 `Captured` 分支提成 `on_*` 方法，Note / PasteIntent 留分发骨架内联）。
 
@@ -83,7 +83,7 @@
 
 零新增依赖是硬约束：网络走系统 `curl` 子进程（Win10 1803+ / macOS 自带），摘要用已在依赖里的 `sha2`，版本比较自己写（`manifest::is_newer`）。**不要再引 `ureq`/`reqwest`** —— 当前 `rustls` 默认加密后端是 `aws-lc-rs`，需要 C 工具链，「交叉编译到 Windows 不需要 C 工具链」的前提会当场破功。
 
-分期：P0 检查（已完成，`inputswitch-cli update` 可无界面验证整条链路）→ P1 下载/进度 → P2 安装/重启 → P3 面板 UI → P4 发布流水线。
+分期：P0 检查（已完成，`inputswitch-cli update` 可无界面验证整条链路）→ P1 下载/进度/摘要校验（已完成，`update --download` 落到临时目录并校验）→ P2 安装/重启 → P3 面板 UI → P4 发布流水线。
 
 **体量棘轮**（存量文件只准变小不准变大；新增文件上限 Rust 800 行 / 面板 400 行）：
 
@@ -213,7 +213,7 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 |---|---|---|
 | 编译 | `cargo check --bins` | ✅ 通过 |
 | 构建 | `cargo build --bins` | ✅ 通过（两 exe 均链接成功） |
-| 单元测试 | `cargo test --lib -- --test-threads=1` | 83/85 通过（2026-10-27 实测，新增 `update` 模块 30 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
+| 单元测试 | `cargo test --lib -- --test-threads=1` | 99/99 通过（2026-10-27 实测，`update` 模块 44 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
 | 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 50 条全过 |
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
 | fmt | `cargo fmt --check` | 🔴 46 个文件有 diff（2026-10-26 实测；`kvm/recv/`、`tray/engine/`、`tray/actions/`、`kvm/capture/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48，actions.rs 删掉后 48 → 47，capture.rs 删掉后 47 → 46 —— 旧 capture.rs 自带 1 处存量，删除即消账） |

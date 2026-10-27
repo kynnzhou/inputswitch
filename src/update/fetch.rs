@@ -66,9 +66,7 @@ impl std::error::Error for FetchError {}
 /// 取一个文本资源（清单）。
 pub fn get_text(url: &str, timeout: Duration) -> Result<String, FetchError> {
     // 清单是远端给的，不能信；只允许 https，别的一律不碰
-    if !url.starts_with("https://") {
-        return Err(FetchError::Http(format!("拒绝非 https 地址：{url}")));
-    }
+    ensure_https(url)?;
     match run(url, timeout, false) {
         Ok(s) => Ok(s),
         Err(proxy_err) => {
@@ -83,6 +81,60 @@ pub fn get_text(url: &str, timeout: Duration) -> Result<String, FetchError> {
             }
         }
     }
+}
+
+/// 只放行 https。清单和安装包地址都是远端给的，`http://` / `file://`
+/// 会让「HTTPS + 摘要」这个安全模型直接失效（同一条链路上随便改）。
+///
+/// 唯一的例外是**单测**里的 `http://127.0.0.1:端口`：真跑一遍下载链路需要
+/// 一个能控内容的服务器，给单测起 TLS + 自签证书不值得。`cfg(test)` 只在
+/// `cargo test` 时编译进来，正式二进制里根本不存在这条分支。
+pub(crate) fn ensure_https(url: &str) -> Result<(), FetchError> {
+    if url.starts_with("https://") && url.len() > "https://".len() {
+        return Ok(());
+    }
+    #[cfg(test)]
+    if url.starts_with("http://127.0.0.1:") {
+        return Ok(());
+    }
+    Err(FetchError::Http(format!("拒绝非 https 地址：{url}")))
+}
+
+/// 构造一条 curl 命令，**不含 URL 本体**（调用方可能还要加 `-o`/`-D`）。
+///
+/// 抽出来是为了让清单拉取和安装包下载共用同一套策略：超时、UA、证书
+/// 吊销、`--max-filesize` 上限。两处各写一套必然漂移——典型事故是只在
+/// 其中一处加了 `--ssl-no-revoke`，于是「检查能过、下载报证书错误」。
+pub(crate) fn command(timeout: Duration, no_proxy: bool, max_bytes: u64) -> Command {
+    let mut cmd = Command::new("curl");
+    cmd.arg("-fsSL") // 静默但保留错误、失败时非 0 退出码、跟随重定向
+        .arg("--connect-timeout")
+        .arg(CONNECT_TIMEOUT_SECS.to_string())
+        .arg("--max-time")
+        .arg(timeout.as_secs().max(1).to_string())
+        .arg("--max-filesize")
+        .arg(max_bytes.to_string())
+        .arg("-A")
+        .arg(USER_AGENT);
+    if no_proxy {
+        cmd.arg("--noproxy").arg("*");
+    }
+    // Windows 的 curl 走 Schannel，默认要查证书吊销（CRL/OCSP）。国内网络到
+    // 吊销服务器经常不可达，于是握手直接失败、报 0x80092013
+    // （CRYPT_E_REVOCATION_OFFLINE）——本机访问 raw.githubusercontent.com 就是
+    // 这么挂的，而 github.com 能通。仓库根的 `~/.cargo/config.toml` 也为同一个
+    // 原因关掉了 cargo 的 check-revoke。
+    //
+    // 不查吊销换来的风险由「https + 清单里的 SHA-256」兜底：攻击者要利用，
+    // 得同时控制证书链和摘要，比吊销检查失效本身难得多。
+    #[cfg(windows)]
+    cmd.arg("--ssl-no-revoke");
+    cmd
+}
+
+/// 给已经跑完的 curl 生成一个分类过的错误。
+pub(crate) fn failure(status: std::process::ExitStatus, stderr: &[u8]) -> FetchError {
+    classify(status.code(), &stderr_text(stderr))
 }
 
 /// 环境里是否配了代理。curl 认大小写两种写法，这里都看。
@@ -103,29 +155,7 @@ fn has_proxy_env() -> bool {
 }
 
 fn run(url: &str, timeout: Duration, no_proxy: bool) -> Result<String, FetchError> {
-    let mut cmd = Command::new("curl");
-    cmd.arg("-fsSL") // 静默但保留错误、失败时非 0 退出码、跟随重定向
-        .arg("--connect-timeout")
-        .arg(CONNECT_TIMEOUT_SECS.to_string())
-        .arg("--max-time")
-        .arg(timeout.as_secs().max(1).to_string())
-        .arg("--max-filesize")
-        .arg(MAX_TEXT_BYTES.to_string())
-        .arg("-A")
-        .arg(USER_AGENT);
-    if no_proxy {
-        cmd.arg("--noproxy").arg("*");
-    }
-    // Windows 的 curl 走 Schannel，默认要查证书吊销（CRL/OCSP）。国内网络到
-    // 吊销服务器经常不可达，于是握手直接失败、报 0x80092013
-    // （CRYPT_E_REVOCATION_OFFLINE）——本机访问 raw.githubusercontent.com 就是
-    // 这么挂的，而 github.com 能通。仓库根的 `~/.cargo/config.toml` 也为同一个
-    // 原因关掉了 cargo 的 check-revoke。
-    //
-    // 不查吊销换来的风险由「https + 清单里的 SHA-256」兜底：攻击者要利用，
-    // 得同时控制证书链和摘要，比吊销检查失效本身难得多。
-    #[cfg(windows)]
-    cmd.arg("--ssl-no-revoke");
+    let mut cmd = command(timeout, no_proxy, MAX_TEXT_BYTES as u64);
     // `--` 之后的参数一律当 URL：清单地址是远端可控的，若以 `-` 开头
     // 会被 curl 当选项解析（`Command::arg` 不经 shell，所以不是命令注入，
     // 但仍然是选项注入）
@@ -149,8 +179,7 @@ fn run(url: &str, timeout: Duration, no_proxy: bool) -> Result<String, FetchErro
         return String::from_utf8(out.stdout)
             .map_err(|_| FetchError::Http("响应不是合法 UTF-8".into()));
     }
-    let stderr = stderr_text(&out.stderr);
-    Err(classify(out.status.code(), &stderr))
+    Err(failure(out.status, &out.stderr))
 }
 
 /// Windows 上 curl 的错误消息来自系统 API，编码是当前代码页（简中系统是
