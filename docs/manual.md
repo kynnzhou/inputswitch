@@ -847,13 +847,14 @@ src/
 │   ├── net.rs    局域网与配对：status / pair / send
 │   ├── kvm.rs    共用键鼠：kvm / kvm-probe / inject-probe
 │   ├── service.rs   常驻与服务项：daemon / autostart / clip
-│   └── update.rs    自动更新：update / update --download（唯一要联网的命令）
-├── update/       自动更新（检查 / 下载 / 校验 / 安装，零新增依赖）
+│   └── update.rs    自动更新：update / update --download / update --install（唯一要联网的命令）
+├── update/       自动更新（检查 / 下载 / 校验 / 安装 / 重启，零新增依赖）
 │   ├── mod.rs    七态状态机 + check_blocking / start_blocking + 进程级状态（面板轮询读）
 │   ├── manifest.rs  updater.json 解析 + 版本比较（自己写，不引 semver）
 │   ├── source.rs    候选源 ghproxy → GitHub 两级 + 退避重试 + 错误分类
 │   ├── fetch.rs     网络层：系统 curl 封装（死代理兜底、Windows 不查证书吊销）
-│   └── download.rs  下载到临时目录：250ms 轮询算进度 + SHA-256 校验 + .part 改名
+│   ├── download.rs  下载到临时目录：250ms 轮询算进度 + SHA-256 校验 + .part 改名
+│   └── install.rs   安装：NSIS 静默安装 / .app 替换 + helper 脚本等本进程退出 + 8 秒重启倒计时
 └── ddc/
     ├── mod.rs    后端 trait
     ├── mac.rs    IOKit IOAVService（纯 FFI，无第三方绑定）

@@ -14,7 +14,7 @@ use std::time::Duration;
 use inputswitch::update::{self, Phase};
 
 /// 返回进程退出码：0 = 完成（有无新版都算完成），1 = 失败。
-pub fn cmd_update(download: bool) -> i32 {
+pub fn cmd_update(download: bool, install: bool) -> i32 {
     println!("当前版本：v{}", inputswitch::VERSION);
     let urls = update::source::manifest_urls();
     for (i, u) in urls.iter().enumerate() {
@@ -38,12 +38,20 @@ pub fn cmd_update(download: bool) -> i32 {
             }
             println!("安装包：{}", s.url);
             println!("  SHA-256：{}", s.checksum);
-            if !download {
+            if !download && !install {
                 println!();
-                println!("（加 --download 可下载并校验；安装能力在下一期接）");
+                println!("（加 --download 下载并校验，--install 还要装上并重启）");
                 return 0;
             }
-            download_and_report()
+            // --install 隐含下载：CLI 是一次性进程，不可能有上一次下好的包
+            let code = download_and_report();
+            if code != 0 {
+                return code;
+            }
+            if install {
+                return install_and_exit();
+            }
+            0
         }
         Phase::UpToDate => {
             println!("已是最新（v{}）", s.current);
@@ -54,6 +62,24 @@ pub fn cmd_update(download: bool) -> i32 {
             // Checking 不该出现在这里（check_blocking 是阻塞的，返回时已经出结果）
             println!("状态：{other:?}");
             0
+        }
+    }
+}
+
+/// 安装并退出。helper 脚本会等本进程消失后跑安装器、再拉起新版本，
+/// 所以这里 spawn 完就要立刻退 —— 晚一步退出，安装器就撞上还在运行的 exe。
+fn install_and_exit() -> i32 {
+    println!();
+    println!("正在安装并重启…");
+    match update::install::install_now() {
+        Ok(()) => {
+            println!("安装脚本已启动，本进程即将退出");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("安装失败：{}", e.message);
+            eprintln!("  错误分类：{}", e.code);
+            1
         }
     }
 }
