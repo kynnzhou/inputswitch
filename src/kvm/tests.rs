@@ -229,6 +229,22 @@ use super::session::EdgeSim;
         assert_eq!(anchor_target(center.0, center.1, 0.0, 0.0, (0.0, 0.0)), None);
     }
 
+    /// 出门锚点必须落在**对面那一侧**：接收端从出门侧的对面进门，
+    /// 锚点是它屏幕上的比例。写成出门侧本机比例时，Mac 右推出门
+    /// 的第一颗锚点（fx=1.0）会把 Windows 上刚落在左缘的光标拽到
+    /// 右缘 ——「鼠标一到对端就漂到出门方向那一侧」。
+    #[test]
+    fn anchor_at_entry_lands_on_the_opposite_side() {
+        use super::event::Side;
+        // 我从右出 ⇒ 对端左缘进门（x=0），出门高度比例直传
+        assert_eq!(anchor_at_entry(Side::Right, 0.25), (0.0, 0.25));
+        // 我从左出 ⇒ 对端右缘进门
+        assert_eq!(anchor_at_entry(Side::Left, 0.75), (1.0, 0.75));
+        // 上下门同理：门轴维（x）用出门比例，法轴维贴对面
+        assert_eq!(anchor_at_entry(Side::Top, 0.4), (0.4, 1.0));
+        assert_eq!(anchor_at_entry(Side::Bottom, 0.6), (0.6, 0.0));
+    }
+
     /// 对面交还：起点不是它 → 改指向回起点；起点就是它 → 常规收回。
     #[test]
     fn takeback_returns_to_root() {

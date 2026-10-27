@@ -83,6 +83,23 @@ pub(super) fn entry_spot(inject: &plat::Inject, side: Side, along: u16) -> (f64,
     }
 }
 
+/// 推边出门那一刻，虚拟光标（锚点）的初始位置。
+///
+/// 锚点表达的是**接收端光标在接收端屏幕**上的比例，而接收端从
+/// 出门侧的**对面**进门（拓扑定理）：我从右出 ⇒ 它左缘进门 ⇒ x=0。
+/// 曾经写成出门侧的本机比例（Right ⇒ 1.0），对端按自己屏宽一乘，
+/// 第一颗补发锚点就把刚落在左缘的光标拽到右缘 —— 症状是
+/// 「鼠标一到对端就漂到出门方向那一侧」，每次都得往回拉几百点。
+/// 门轴维用出门高度比例 `along`（两边比例直传，同 `entry_spot`）。
+pub(super) fn anchor_at_entry(side: Side, along: f64) -> (f64, f64) {
+    match side {
+        Side::Left => (1.0, along),
+        Side::Right => (0.0, along),
+        Side::Top => (along, 1.0),
+        Side::Bottom => (along, 0.0),
+    }
+}
+
 /// 锚点校正的判定：该不该把光标摆到锚点上。
 ///
 /// 返回 `Some((x, y))` = 偏差超过阈值，该摆；`None` = 在容差内，别动

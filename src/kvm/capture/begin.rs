@@ -12,7 +12,7 @@ use crate::kvm::event::{Event, Side};
 use crate::kvm::link::pick_retarget;
 use crate::kvm::state::{Mode, State};
 use crate::kvm::tuning::PEER_ALIVE_MS;
-use crate::kvm::util::now_ms;
+use crate::kvm::util::{anchor_at_entry, now_ms};
 
 use super::Ctx;
 
@@ -126,20 +126,14 @@ impl Ctx {
         // 并按两屏比例缩放位移（不然两块屏分辨率不同时，
         // 一边的 delta 到另一边会被放大/缩小得不成样子）
         let (sw, sh) = self.capture_ref.screen();
-        // 锚点起点 = 接收端的落点（门口那侧 + 出门时的高度比例），
-        // 不是本机光标位置 —— 两边要对齐的是"接收端光标在哪"。
-        // along 未知（0xFFFF）时按居中算。
+        // 锚点起点 = 接收端的落点（**进门那侧** = 出门侧的对面 + 出门时
+        // 的高度比例），不是本机光标位置 —— 详见 `anchor_at_entry` 的注释。
         let af = if along == 0xFFFF {
             0.5
         } else {
             along as f64 / 65535.0
         };
-        self.anchor_pos = Some(match side {
-            Side::Left => (0.0, af),
-            Side::Right => (1.0, af),
-            Side::Top => (af, 0.0),
-            Side::Bottom => (af, 1.0),
-        });
+        self.anchor_pos = Some(anchor_at_entry(side, af));
         self.anchor_at = 0; // 下一笔输入立刻补一发锚点，把落点钉死
                             // Enter 双发：丢一包对端就收不到开工信号（好在
                             // Pong 状态自愈 2.5s 兜底，双发把卡顿窗口压到最小）
