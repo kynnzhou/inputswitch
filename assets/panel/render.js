@@ -93,6 +93,7 @@ function render() {
   if (!snap) return;
   document.getElementById('node').textContent = snap.node || '';
   renderHeader();
+  renderUpdate();
 
   const banner = document.getElementById('pairBanner');
   if (snap.paired && snap.peer_verified > 0) {

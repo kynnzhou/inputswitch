@@ -527,3 +527,52 @@ html.dragging, html.dragging * {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ── 自动更新：徽章 / 弹窗 / 重启过渡层 ─────────────────────────
+   徽章缝在顶栏「更新」按钮上（position 相对它自己）；弹窗和过渡层是
+   fixed 全屏遮罩，z-index 压过玻璃卡片（.wrap 里没有 z-index，默认
+   都比 40 小）。两处都跟着 prefers-color-scheme 走令牌，不写死颜色。 */
+.upd-btn { position: relative; }
+/* 红点：只有「有新版本且没忽略」才显示（update.js 加 .on）。
+   用 --red 而不是 --green：这是"有事发生"，不是"正常状态"。 */
+.upd-dot { display: none; position: absolute; top: 6px; right: 6px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--red); box-shadow: 0 0 0 3px rgba(209,52,58,.16); }
+.upd-dot.on { display: block; }
+
+.modal-mask { position: fixed; inset: 0; z-index: 40; padding: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20,26,40,.42); }
+.modal { width: 430px; max-width: 100%; max-height: 84vh; overflow: auto;
+  background: var(--card-solid); border: 1px solid var(--edge);
+  border-radius: 14px; box-shadow: var(--shadow); padding: 16px 20px 18px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.modal-head b { font-size: 15px; font-weight: 650; }
+.modal-x { height: 26px; width: 26px; padding: 0; font-size: 17px; line-height: 1;
+  border-color: transparent; background: transparent; box-shadow: none; color: var(--muted); }
+.modal-x:hover { background: rgba(120,130,150,.12); color: var(--text); }
+/* 版本迁移那一行：当前 → 最新。目标版本加粗，别整行一样重 */
+.upd-ver { font-size: 13px; color: var(--muted); margin-top: 10px; }
+.upd-ver b { color: var(--text); }
+.upd-hint { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+/* 更新说明：清单里带换行的原文，pre-line 保留；限高 + 内部滚动 ——
+   说明写长了不许把弹窗顶出屏幕 */
+.upd-notes { white-space: pre-line; word-break: break-word;
+  font-size: 13px; line-height: 1.55; color: var(--text);
+  background: var(--chip); border: 1px solid var(--edge-2);
+  border-radius: 8px; padding: 10px 12px; margin-top: 10px;
+  max-height: 180px; overflow: auto; }
+.upd-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.upd-row > .primary { flex: 1; min-width: 132px; }
+
+/* 重启过渡层：比弹窗更"重"（遮得更暗、z-index 更高）—— 它出现时
+   整个程序马上就要没了，视觉上必须压过一切 */
+.restart-mask { position: fixed; inset: 0; z-index: 50; padding: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(14,18,30,.68); }
+.restart-box { text-align: center; padding: 26px 38px 28px; border-radius: 16px;
+  background: var(--card-solid); border: 1px solid var(--edge); box-shadow: var(--shadow); }
+.restart-num { font-size: 56px; font-weight: 700; line-height: 1.05; color: var(--blue);
+  font-variant-numeric: tabular-nums; }
+.restart-tip { font-size: 15px; font-weight: 550; margin-top: 2px; }
+.restart-sub { font-size: 12.5px; color: var(--muted); margin: 10px 0 16px; max-width: 300px; }

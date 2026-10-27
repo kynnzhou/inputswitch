@@ -1,6 +1,6 @@
 // 基础层：共享状态（snap / busy / codeDirty / editingPort / flashUntil）、
 // 取数通道（api / post / pull）和两个小工具（esc / flash）。
-// 其余三个脚本都依赖这里的全局变量与函数。
+// 其余四个脚本都依赖这里的全局变量与函数。
 let snap = null;
 let busy = false;
 /// 用户动过输入框就别再被后台轮询覆盖，否则清空的码会自己弹回来
@@ -34,6 +34,21 @@ async function pull() {
   } catch (e) {
     document.getElementById('pairBanner').textContent = '控制台与主程序失联了';
   }
+}
+
+/// 轮询节奏：平时 1.2 秒；下载更新期间临时提到 250ms。
+/// 后端下载进度就是每 250ms 采一次样（download.rs 的 TICK），节奏不跟上，
+/// 进度条会一跳一跳地走。自调度而不是 setInterval：间隔要随状态变。
+function pullInterval() {
+  const u = (snap && snap.update) || {};
+  return u.phase === 'downloading' ? 250 : 1200;
+}
+
+function schedulePull() {
+  setTimeout(() => {
+    pull();
+    schedulePull();
+  }, pullInterval());
 }
 
 function esc(text) {

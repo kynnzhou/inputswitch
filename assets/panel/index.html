@@ -22,6 +22,9 @@
       <!-- 主按钮：**永远显示**，不能切时换文案 + .is-off，但位置形状不变。
            实心蓝只留给它一个 —— 输入口列表里的「切换」全是描边小按钮。 -->
       <button id="mainSwitch" class="primary btn-lg" onclick="quickSwitch()">切换画面</button>
+      <!-- 更新入口：常驻描边按钮，有新版本时右上角亮红点（见 update.js）。
+           不放维护那三个里 —— 它是"装新版本"，不是"排查本机"。 -->
+      <button id="updateBtn" class="btn-lg upd-btn" onclick="openUpdate()">更新<i class="upd-dot" id="updateDot"></i></button>
       <div class="spacer"></div>
       <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。 -->
       <div class="flat-group">
@@ -192,11 +195,35 @@
     </div>
   </details>
 </div>
+
+<!-- 更新弹窗：顶栏「更新」点开。内容按 snap.update.phase 现算（update.js），
+     这里只放骨架 —— 和摆位图一个路子，DOM 结构固定、文字每次轮询刷新。 -->
+<div class="modal-mask" id="updateModal" style="display:none">
+  <div class="modal glass" role="dialog" aria-label="更新">
+    <div class="modal-head">
+      <b id="updateTitle">更新</b>
+      <button class="modal-x" onclick="closeUpdate()" aria-label="关闭">×</button>
+    </div>
+    <div id="updateBody"></div>
+  </div>
+</div>
+
+<!-- 重启过渡层：倒计时中盖住全屏。装的过程本程序会退出、画面会闪，
+     必须明说"正在发生什么"，并给一个显眼的取消。 -->
+<div class="restart-mask" id="restartOverlay" style="display:none">
+  <div class="restart-box glass">
+    <div class="restart-num" id="restartNum">8</div>
+    <div class="restart-tip">秒后重启并安装更新</div>
+    <div class="restart-sub">安装过程中本程序会退出，装完自动拉起新版本。取消可以继续用当前版本。</div>
+    <button class="btn-lg" onclick="updateAction('cancel')">取消重启</button>
+  </div>
+</div>
 <script src="/core.js"></script>
 <script src="/render.js"></script>
 <script src="/kvm.js"></script>
+<script src="/update.js"></script>
 <script src="/actions.js"></script>
 <!-- 自测注入点：headless 截图 / fetch 桩自测时，把注入用的 <script> 插在这一行之后
-     （此时上面四个脚本都已加载完，覆盖 window.fetch 再调一次 pull() 即可）。 -->
+     （此时上面五个脚本都已加载完，覆盖 window.fetch 再调一次 pull() 即可）。 -->
 </body>
 </html>
