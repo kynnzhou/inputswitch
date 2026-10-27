@@ -1,0 +1,101 @@
+# 发版流水线：推 v* tag 后自动构建双端产物、生成 updater.json、建 GitHub Release。
+#
+# 质量门禁不在这里 —— ci.yml 在 push/PR 已经跑过（编译/测试/面板断言），发布
+# 只负责「把 tag 对应的代码变成可下载的包」。tag 推错版本由 publish job 第一步
+# 拦：tag 名必须和 Cargo.toml 的 version 一致（版本真源，见 CLAUDE.md §2）。
+#
+# 触发：git push origin v0.6.90（本地也可以 node tools/release.js tag --yes）
+# 产物：InputSwitch_<版本>_x64-setup.exe（NSIS 安装器，自动更新装的就是它）
+#       InputSwitch-macOS-arm64.zip（.app 打包）
+#       updater.json（自动更新清单；checksum 是现算的，不是手填的）
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # gh release create / upload 需要
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # NSIS 不打在 runner 镜像里。安装器脚本见 packaging/windows/InputSwitch.nsi
+      - name: 安装 NSIS
+        run: choco install nsis -y --no-progress
+      - name: 编译（CLI 不带 tray：不链接 WebView2，单文件分发）
+        run: |
+          cargo build --release --bin inputswitch-cli --no-default-features
+          cargo build --release --bin InputSwitch
+      - name: 打 NSIS 安装器
+        run: node tools/pack-windows.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # build.sh：编译 → .app → ad-hoc 签名 → 装进 /Applications → 打分发 zip。
+      # runner 是干净机器，没有旧进程要杀；ad-hoc 签名在 runner 上可用
+      - name: 构建 .app 与分发 zip
+        run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/InputSwitch-macOS-arm64.zip
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0：更新说明要从上一个 tag 的 git log 范围攒，浅克隆拿不到
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 校验 tag 与 Cargo.toml 版本一致
+        run: |
+          V=$(sed -n 's/^version = "\([0-9][0-9.]*\)".*/\1/p' Cargo.toml | head -1)
+          if [ "v$V" != "$GITHUB_REF_NAME" ]; then
+            echo "::error ::tag $GITHUB_REF_NAME 与 Cargo.toml 的 v$V 不一致"
+            exit 1
+          fi
+      - name: 汇总双端产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 攒更新说明（上一个 tag 以来的提交）
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then RANGE="$PREV..$GITHUB_REF_NAME"; else RANGE="$GITHUB_REF_NAME"; fi
+          git log --pretty=format:'- %s' $RANGE > dist/notes.md
+          echo "更新说明（$RANGE）："; cat dist/notes.md
+      - name: 生成 updater.json（SHA-256 现算）
+        run: node tools/gen-updater-json.js dist --notes-file dist/notes.md --out dist/updater.json
+      - name: 建 Release 并上传
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 重跑 workflow 时 release 可能已建好：create 失败就退成 upload --clobber，
+          # 保证同一份产物重复跑不会卡死（tag 对应的代码没变，包就是幂等的）
+          gh release create "$GITHUB_REF_NAME" \
+            dist/InputSwitch_*_x64-setup.exe \
+            dist/InputSwitch-macOS-*.zip \
+            dist/updater.json \
+            --title "$GITHUB_REF_NAME" --notes-file dist/notes.md \
+          || gh release upload "$GITHUB_REF_NAME" \
+            dist/InputSwitch_*_x64-setup.exe \
+            dist/InputSwitch-macOS-*.zip \
+            dist/updater.json --clobber

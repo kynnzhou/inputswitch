@@ -29,7 +29,7 @@
 
 ## 3. 打包 exe 前必须问用户
 
-`build.ps1`（Windows）/ `build.sh`（macOS）跑 release + LTO + `codegen-units=1`，要几分钟，用户确认后再跑。
+`build.ps1`（Windows）/ `build.sh`（macOS）跑 release + LTO + `codegen-units=1`，要几分钟，用户确认后再跑。Windows 分发安装器还要 `node tools/pack-windows.js`（stage 产物 → makensis → `dist/windows/InputSwitch_<版本>_x64-setup.exe`，本机需装 NSIS；CI 里由 release.yml 的 choco 步骤提供）。
 
 编译前先关掉正在运行的 `InputSwitch.exe`：Windows 会锁住 exe 导致链接失败，且托盘程序常驻，很容易忘。
 
@@ -83,7 +83,7 @@
 
 零新增依赖是硬约束：网络走系统 `curl` 子进程（Win10 1803+ / macOS 自带），摘要用已在依赖里的 `sha2`，版本比较自己写（`manifest::is_newer`）。**不要再引 `ureq`/`reqwest`** —— 当前 `rustls` 默认加密后端是 `aws-lc-rs`，需要 C 工具链，「交叉编译到 Windows 不需要 C 工具链」的前提会当场破功。
 
-分期：P0 检查（已完成，`inputswitch-cli update` 可无界面验证整条链路）→ P1 下载/进度/摘要校验（已完成，`update --download` 落到临时目录并校验）→ P2 安装/重启（已完成，`update --install` 等本进程退出的静默安装 + 8 秒重启倒计时可取消）→ P3 面板 UI（已完成，徽章/更新说明弹窗/重启过渡层 + `/api/state` 的 `update` 字段 + `/api/update` 单入口五动作；`UpdateState` 直接嵌进面板 `Snapshot`，没再抄一份 view）→ P4 发布流水线。
+分期：P0 检查（已完成，`inputswitch-cli update` 可无界面验证整条链路）→ P1 下载/进度/摘要校验（已完成，`update --download` 落到临时目录并校验）→ P2 安装/重启（已完成，`update --install` 等本进程退出的静默安装 + 8 秒重启倒计时可取消）→ P3 面板 UI（已完成，徽章/更新说明弹窗/重启过渡层 + `/api/state` 的 `update` 字段 + `/api/update` 单入口五动作；`UpdateState` 直接嵌进面板 `Snapshot`，没再抄一份 view）→ P4 发布流水线（已完成，`packaging/windows/InputSwitch.nsi` + `tools/pack-windows.js` 出 NSIS 安装器，`tools/gen-updater-json.js` 扫产物现算 SHA-256 生成清单，`.github/workflows/release.yml` 推 tag 自动构建双端并建 Release，`tools/release.js` 本地编排与预检，`tools/fake-update-server.js` 本地 HTTPS 假源联调）。
 
 **体量棘轮**（存量文件只准变小不准变大；新增文件上限 Rust 800 行 / 面板 400 行）：
 
@@ -197,10 +197,15 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 
 ## 发版流程（以 `CONTRIBUTING.md` 为准，此处只补执行顺序）
 
-1. 改 `src/tray/mod.rs` 的 `构建=vX.Y.Z` + `assets/badge-release.svg` 里的版本号（**两处都要改**，徽章是静态 SVG，不会自动同步）
-2. 双端打包：`./build.sh`（macOS，出 .app + zip）/ `.\build.ps1`（Windows）/ `./cross-build-windows.sh`（mac 交叉编 Windows）
-3. `dist/windows` 打 zip（`InputSwitch.exe` + `inputswitch-cli.exe` + `WebView2Loader.dll` + `README.txt`）
-4. 提交 + 打 tag + push + `gh release create vX.Y.Z dist/*.zip`
+1. 改 `Cargo.toml` 的 `version` + `assets/badge-release.svg` 里的 `vX.Y.Z`（**两处都要改**，徽章是静态 SVG，不会自动同步）
+2. 提交，PR 合进 `main`（protect-main），本地切到最新 `main`
+3. `node tools/release.js check` 预检：工作区干净 / tag 未占用 / gh 已登录 / 徽章版本与 Cargo.toml 一致
+4. `node tools/release.js tag --yes` 打 annotated tag 并推送（链路探测：直连与代理 7897 轮流挂，谁通走谁）
+5. `.github/workflows/release.yml` 接手：Windows job（choco 装 NSIS → 编译 → `pack-windows.js`）/ macOS job（`build.sh` 出 zip）/ publish job（**校验 tag 与 Cargo.toml 一致** → 汇总产物 → git log 攒 notes → `gen-updater-json.js` 现算 SHA-256 → `gh release create`，重跑时退成 `upload --clobber` 保证幂等）
+
+本地手工路径（补包用）：`node tools/gen-updater-json.js <目录> --notes-file notes.md` + `node tools/release.js publish <目录> --yes`。`release.js` 所有子命令默认 dry-run。
+
+**tag 名必须等于 `v<Cargo.toml version>`** —— 这是唯一能被机器校验的约定，publish job 第一步就查，不一致直接红。
 
 **每一步前先问用户**，第 2 步前先跑门禁。
 
@@ -219,6 +224,8 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
 | fmt | `cargo fmt --check` | 🔴 46 个文件有 diff（2026-10-26 实测；`kvm/recv/`、`tray/engine/`、`tray/actions/`、`kvm/capture/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48，actions.rs 删掉后 48 → 47，capture.rs 删掉后 47 → 46 —— 旧 capture.rs 自带 1 处存量，删除即消账） |
 | 体量 | `node tools/check-size.js` | ✅ 通过，基线已是最紧（tray/ 与 kvm/ 拆分后逐批收紧） |
+| 发版预检 | `node tools/release.js check` | ✅ P4 实测：正确拦截未提交改动与 tag 占用、核对徽章版本、dry-run 不碰任何东西（gh 登录状态本机已具备） |
+| 发布产物自检 | `node tools/gen-updater-json.js <目录> --check` | ✅ P4 实测：重算 SHA-256 与清单逐平台比对，防手改 |
 
 **纪律**：
 - **`--test-threads=1` 不是可选项**，并行跑会 SIGABRT，这不是 bug。
