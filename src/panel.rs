@@ -6,10 +6,11 @@
 //! 顺手做成 HTTP 之后，命令行、脚本、别的进程甚至手机都能用同一套接口，
 //! 也保住了"窗口开不出来就退回浏览器"的退路。
 //!
-//! 页面源码在 `assets/panel/` 下按职责拆成 6 件（index.html 骨架 / style.css /
-//! core.js / render.js / kvm.js / actions.js），本文件各自 `include_str!` 后
-//! 按路由吐出。不做"拼装回单文件"那一步：`include_str!` 的依赖 Cargo 本来就
-//! 自动跟踪，改任何一个源件 `cargo build` 直接生效，不需要先跑脚本再编译。
+//! 页面源码在 `assets/panel/` 下按职责拆成 7 件（index.html 骨架 / style.css /
+//! core.js / render.js / kvm.js / actions.js / update.js），本文件各自
+//! `include_str!` 后按路由吐出。不做"拼装回单文件"那一步：`include_str!`
+//! 的依赖 Cargo 本来就自动跟踪，改任何一个源件 `cargo build` 直接生效，
+//! 不需要先跑脚本再编译。
 //! 全部响应都带 `Cache-Control: no-store`，WebView 每次都拿最新的一份。
 //!
 //! 服务只绑 127.0.0.1，外网连不进来。
@@ -69,6 +70,11 @@ pub struct Snapshot {
     /// 而 GUI 实际是通的（2026-10-20 据此误判过好几次）。
     /// 排查权限一律看这里。
     pub perms: PermsView,
+    /// 自动更新状态。`update` 模块的快照直接嵌进来 —— 那份结构本来就是
+    /// 按「序列化进 /api/state」设计的（见 `UpdateState` 的文档），再抄
+    /// 一份 view 只是多一处要同步的地方。徽章 / 弹窗 / 重启过渡层全读它。
+    #[serde(default)]
+    pub update: crate::update::UpdateState,
 }
 
 /// 两个权限的实际状态。抓取=辅助功能，注入=辅助功能/PostEvent。
@@ -253,6 +259,18 @@ pub enum Action {
     /// 勾上以后，已经在跑的进程照样报"没权限"，点「开启共用键鼠」只会再弹
     /// 一次设置页 —— 看起来像"勾选无效 / 装错版本"。唯一解法是重启进程。
     RestartApp,
+    /// 检查更新。阻塞调用，dispatch 侧丢后台线程（`update` 模块自带单飞闸）。
+    UpdateCheck,
+    /// 下载并校验安装包。同上，后台线程。
+    UpdateDownload,
+    /// 安装更新：先进 8 秒重启倒计时（可取消），归零即装。倒计时线程由
+    /// `install::begin_restart_countdown` 自己起，不用主线程掺和。
+    UpdateInstall,
+    /// 取消重启倒计时，回到 `ready`（包还在，随时能再装）。
+    UpdateCancelRestart,
+    /// 忽略这个版本。**版本号由后端从当前状态取**，不信客户端传的 ——
+    /// 否则能忽略一个压根不存在的版本。再点一次 = 撤销忽略。
+    UpdateDismiss,
 }
 
 pub type State = Arc<Mutex<Snapshot>>;
@@ -374,6 +392,12 @@ fn handle(
             200,
             "application/javascript; charset=utf-8",
             PANEL_ACTIONS,
+        ),
+        ("GET", "/update.js") => respond(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            PANEL_UPDATE,
         ),
         ("GET", "/api/state") => {
             let snap = state.lock().unwrap().clone();
@@ -626,6 +650,37 @@ fn handle(
             dispatch(Action::RestartApp);
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
+        // 自动更新：一个入口五个动作。检查和下载都是阻塞调用（curl 子进程），
+        // dispatch 侧负责丢后台线程，面板下一轮轮询自己会看到新状态 ——
+        // 这里只负责收下意图，和别的动作接口一样回 ok:true。
+        // 阶段合法性由 update 模块自己守（单飞闸 + phase 前置判断），
+        // 竞态调用最坏只是原样返回当前状态，不会坏事。
+        ("POST", "/api/update") => match param_str(&query, "action").as_deref() {
+            Some("check") => {
+                dispatch(Action::UpdateCheck);
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            Some("download") => {
+                dispatch(Action::UpdateDownload);
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            Some("install") => {
+                dispatch(Action::UpdateInstall);
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            Some("cancel") => {
+                dispatch(Action::UpdateCancelRestart);
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            Some("dismiss") => {
+                dispatch(Action::UpdateDismiss);
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            _ => respond_json(
+                &mut stream,
+                r#"{"ok":false,"error":"action 只能是 check/download/install/cancel/dismiss"}"#,
+            ),
+        },
         _ => respond(&mut stream, 404, "text/plain; charset=utf-8", "not found"),
     }?;
 
@@ -736,7 +791,7 @@ pub fn open_in_browser(port: u16) -> bool {
     cmd.spawn().is_ok()
 }
 
-// 面板的 6 个源件（见本文件开头的说明）。include_str! 的文件依赖
+// 面板的 7 个源件（见本文件开头的说明）。include_str! 的文件依赖
 // Cargo 自动跟踪：改了任何一个，下次 cargo build 一定会重新编译进二进制。
 const PANEL_INDEX: &str = include_str!("../assets/panel/index.html");
 const PANEL_CSS: &str = include_str!("../assets/panel/style.css");
@@ -744,3 +799,28 @@ const PANEL_CORE: &str = include_str!("../assets/panel/core.js");
 const PANEL_RENDER: &str = include_str!("../assets/panel/render.js");
 const PANEL_KVM: &str = include_str!("../assets/panel/kvm.js");
 const PANEL_ACTIONS: &str = include_str!("../assets/panel/actions.js");
+const PANEL_UPDATE: &str = include_str!("../assets/panel/update.js");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 面板快照必须带 `update` 字段：P3 的徽章 / 弹窗 / 重启过渡层全读它。
+    /// 顺带验 round-trip —— `Snapshot` derive 了 `Deserialize`，`UpdateState`
+    /// 补上 `Deserialize` 就是为了这一刻；字段漏一个这里就炸。
+    #[test]
+    fn snapshot_carries_update_field_round_trip() {
+        let mut snap = Snapshot::default();
+        snap.update.phase = crate::update::Phase::Available;
+        snap.update.latest = "0.6.90".to_string();
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains("\"update\""), "快照里没有 update 字段：{json}");
+        assert!(
+            json.contains("\"phase\":\"available\""),
+            "update 阶段没按 snake_case 序列化：{json}"
+        );
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.update.phase, crate::update::Phase::Available);
+        assert_eq!(back.update.latest, "0.6.90");
+    }
+}

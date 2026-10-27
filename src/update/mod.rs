@@ -16,14 +16,16 @@
 //! - **P1（`download.rs`）**：下载到临时文件、进度、摘要校验
 //! - **P2（`install.rs`）**：安装（Windows NSIS 静默安装 / macOS `.app` 替换）
 //!   + 8 秒重启倒计时 + helper 脚本负责「等本进程退出 → 装 → 拉起」
-//! - P3：面板 UI（徽章 / 更新说明弹窗 / 重启过渡层）+ `/api/update` 动作接口
+//! - **P3（面板 UI）**：徽章 / 更新说明弹窗 / 重启过渡层（`assets/panel/update.js`）
+//!     + `/api/state` 的 `update` 字段 + `/api/update` 单入口五动作（check/download/install/cancel/dismiss）
 //!
 //! 状态放在一个进程级 `Mutex` 里。面板线程只读（`snapshot`），检查线程只写。
 //! 不用 channel 是因为读写两端都不关心「变化了几次」，只关心「现在是什么」。
 //!
 //! 下载进度也是同一份状态：`download.rs` 每 250ms 回调一次，直接写进
-//! `downloaded`/`total`/`bytes_per_sec`。面板本来就在 1.2s 轮询，P3 只需要
-//! 在 `downloading` 时把间隔临时调小，不需要额外的事件通道。
+//! `downloaded`/`total`/`bytes_per_sec`。面板平时 1.2s 轮询，`downloading`
+//! 时前端把间隔临时调到 250ms（`core.js` 的 `pullInterval`）—— 节奏和采样
+//! 对齐，进度条才不会一跳一跳。
 
 pub mod download;
 pub mod fetch;
@@ -48,7 +50,10 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// 七态，与 cc-bridge 的 `UpdateContext` 一一对应，方便两边对照排查。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+///
+/// `Deserialize` 是为面板 `Snapshot` 的 derive 补的：`UpdateState` 直接嵌进
+/// `Snapshot`（见 `panel.rs`），那边反序列化时要用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// 还没查过
@@ -74,7 +79,10 @@ pub enum Phase {
 ///
 /// 字段用空串表示「不适用」而不是 `Option`：面板是手写 JS，`null` 的判空
 /// 到处都要写，空串直接 `if (v)` 就行。
-#[derive(Clone, Debug, Default, serde::Serialize)]
+///
+/// P3 起它**直接嵌进面板的 `Snapshot`**（字段名 `update`）—— 这份结构本来
+/// 就是按「序列化进 /api/state」设计的，再抄一份 view 只是多一处要同步的地方。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct UpdateState {
     pub phase: Phase,
     /// 本机版本（= `crate::VERSION`）

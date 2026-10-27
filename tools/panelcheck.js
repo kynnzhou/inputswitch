@@ -14,8 +14,9 @@ const path = require('path');
 const vm = require('vm');
 
 // 源目录模式下 JS 的加载顺序 —— 必须和 index.html 里 <script src> 的顺序一致
-//（core 的全局变量要让后面三个文件看得见）。
-const JS_ORDER = ['core.js', 'render.js', 'kvm.js', 'actions.js'];
+//（core 的全局变量要让后面几个文件看得见；update.js 要在 actions.js 之前，
+// 这样 actions.js 启动时调的 pull() → render() → renderUpdate() 一定有定义）。
+const JS_ORDER = ['core.js', 'render.js', 'kvm.js', 'update.js', 'actions.js'];
 
 const target = process.argv[2] || 'assets/panel';
 let html, code;
@@ -133,6 +134,13 @@ const snap = {
   ],
   inputs: [], inputs_hidden: [], perms: { capture: true, inject: true },
   autostart: true, clipboard: true,
+  // 自动更新：available 是徽章唯一该亮的阶段
+  update: {
+    phase: 'available', current: '0.6.89', latest: '0.6.90',
+    notes: '修复了切换后键鼠不回本机的问题', pub_date: '2026-10-27T00:00:00Z',
+    url: '', checksum: '', error: '', code: '', skipped: '',
+    checked_at: 0, downloaded: 0, total: 0, bytes_per_sec: 0, auto_restart_in: 0,
+  },
 };
 
 ctx.snap = snap;
@@ -251,9 +259,15 @@ ok((html.match(/onclick="post\('\/api\/check'\)"/g) || []).length === 1, '「检
 const topbar = (html.split('<header class="topbar glass">')[1] || '').split('</header>')[0];
 ok((topbar.match(/class="[^"]*primary/g) || []).length === 1, '顶栏只有主按钮一个是实心蓝');
 ok(/id="mainSwitch"[^>]*class="primary btn-lg"/.test(topbar), '实心蓝那个就是 mainSwitch');
-// 18b. 全页也只有这一个实心蓝（v0.6.85）：配对卡的「保存并连接」和共用键鼠的
+// 18b. 全页也只许这一个实心蓝（v0.6.85）：配对卡的「保存并连接」和共用键鼠的
 //      「开启」以前也是 primary，一屏三个蓝块，主按钮的焦点地位被稀释。
-ok((html.match(/class="[^"]*\bprimary\b/g) || []).length === 1, '全页只有一个实心蓝按钮');
+//      P3 例外：更新弹窗/过渡层里的主操作。遮罩盖上时顶栏主按钮根本看不见，
+//      「任何一刻屏上只有一个蓝块」的约定没破 —— 破的只是"蓝按钮只能出现在
+//      静态骨架里"这个实现细节。判据按行算：带 primary 的行必须同时带
+//      mainSwitch（静态那一个）或 updateAction（弹窗动态生成的那些）。
+const blueLines = html.split('\n').filter(l => /class="[^"]*\bprimary\b/.test(l));
+ok(blueLines.length >= 1 && blueLines.every(l => /mainSwitch|updateAction/.test(l)),
+  '实心蓝只有顶栏主按钮和更新弹窗主操作（弹窗开着时顶栏那个被遮住）');
 ok(/id="supportLine"/.test(topbar), '支持性说明在顶栏（只在不是 ✓ 时出现）');
 // 19. 对端行用 grid（名字长了不会把「发文件」挤到中间）
 ok(/\.peerrow/.test(html), '对端行是 grid 布局');
@@ -288,6 +302,82 @@ const liveRow = (rowsHtml.split('<div class="port').find(r => r.startsWith('"'))
   || '').split(/<div class="port/)[0] || '';
 ok(/HDMI-1/.test(liveRow) && (liveRow.match(/disabled/g) || []).length === 0,
   '有信号的口两个按钮都能点');
+
+// ---- 自动更新：徽章 / 弹窗 / 重启过渡层（P3）----
+// 第一幕（fixture 原样：available）：徽章亮、弹窗画出更新说明、过渡层藏着
+ok(made['updateDot'].classList.contains('on'), '有新版本时顶栏徽章亮');
+ok(made['restartOverlay'].style.display === 'none', '不在倒计时时过渡层藏掉');
+const updBody = made['updateBody'].innerHTML;
+ok(made['updateTitle'].textContent === '发现新版本 v0.6.90', '弹窗标题写清新版本号');
+ok(/0\.6\.89 → <b>v0\.6\.90<\/b>/.test(updBody), '弹窗写出 当前 → 最新');
+ok(/修复了切换后键鼠不回本机的问题/.test(updBody), '更新说明原样进弹窗');
+ok(/发布于 2026-10-27/.test(updBody), '发布日期取日期段（不带时间戳）');
+ok(/onclick="updateAction\('download'\)"/.test(updBody), 'available 给「下载并安装」');
+ok(/onclick="updateAction\('dismiss'\)"/.test(updBody), 'available 给「忽略本次」');
+// openUpdate 要真的把遮罩显示出来（否则点了没反应）
+try { vm.runInContext('openUpdate()', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('openUpdate 报错：', e.message); process.exit(1); }
+ok(made['updateModal'].style.display === '', 'openUpdate 打开弹窗');
+try { vm.runInContext('closeUpdate()', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('closeUpdate 报错：', e.message); process.exit(1); }
+ok(made['updateModal'].style.display === 'none', 'closeUpdate 关掉弹窗');
+// 五个动作都走同一个入口，页面里不许有第二种拼法
+ok((html.match(/onclick="updateAction\('/g) || []).length >= 5,
+  '弹窗里五类动作都走 updateAction()');
+
+// 第二幕：up_to_date —— 徽章灭，弹窗说"已是最新"
+// （弹窗只在打开时刷新内容，所以每幕都先 openUpdate —— 和真实用法一致）
+const snapB = JSON.parse(JSON.stringify(snap));
+snapB.update = { phase: 'up_to_date', current: '0.6.89', latest: '0.6.89',
+  notes: '', pub_date: '', skipped: '', downloaded: 0, total: 0, bytes_per_sec: 0, auto_restart_in: 0 };
+ctx.__fixture = snapB;
+try { vm.runInContext('snap = __fixture; render(); openUpdate();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('第二幕 render 报错：', e.message); process.exit(1); }
+ok(!made['updateDot'].classList.contains('on'), '已是最新时徽章不亮');
+ok(/已是最新/.test(made['updateBody'].innerHTML), '已是最新时弹窗说实话');
+ok(made['restartOverlay'].style.display === 'none', 'up_to_date 也不该有过渡层');
+
+// 第三幕：downloading —— 进度条按字节数算宽，轮询临时加速
+const snapC = JSON.parse(JSON.stringify(snapB));
+snapC.update = { phase: 'downloading', current: '0.6.89', latest: '0.6.90',
+  notes: '', pub_date: '', skipped: '', downloaded: 25 * 1024 * 1024, total: 100 * 1024 * 1024,
+  bytes_per_sec: 3 * 1024 * 1024, auto_restart_in: 0 };
+ctx.__fixture = snapC;
+try { vm.runInContext('snap = __fixture; render(); openUpdate();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('第三幕 render 报错：', e.message); process.exit(1); }
+ok(/width:25%/.test(made['updateBody'].innerHTML), '下载进度按已下载/总数算宽');
+ok(/25\.0 MB \/ 100 MB/.test(made['updateBody'].innerHTML), '进度写成人话（MB）');
+ok(/3\.0 MB\/s/.test(made['updateBody'].innerHTML), '瞬时速率一起显示');
+ok(/SHA-256/.test(made['updateBody'].innerHTML), '下载中说清"通过了才能装"');
+ok(vm.runInContext('pullInterval()', ctx) === 250, '下载中轮询临时提到 250ms');
+ok(!made['updateDot'].classList.contains('on'), '下载中徽章不亮（弹窗在说这事）');
+
+// 第四幕：restarting —— 过渡层盖住，倒计时数字是后端给的秒数
+const snapD = JSON.parse(JSON.stringify(snapC));
+snapD.update = { phase: 'restarting', current: '0.6.89', latest: '0.6.90',
+  notes: '', pub_date: '', skipped: '', downloaded: 100 * 1024 * 1024, total: 100 * 1024 * 1024,
+  bytes_per_sec: 0, auto_restart_in: 5 };
+ctx.__fixture = snapD;
+try { vm.runInContext('snap = __fixture; render(); openUpdate();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('第四幕 render 报错：', e.message); process.exit(1); }
+ok(made['restartOverlay'].style.display === '', '倒计时中过渡层显示');
+// 桩不做 textContent 的字符串强转（浏览器会），所以这里自己 String() 一下
+ok(String(made['restartNum'].textContent) === '5', '过渡层显示后端剩的秒数（5）');
+ok(/onclick="updateAction\('cancel'\)"/.test(made['updateBody'].innerHTML),
+  '弹窗里也能取消重启');
+ok(!made['updateDot'].classList.contains('on'), '倒计时中徽章不亮');
+
+// 第五幕：available + 已忽略 —— 徽章灭，但弹窗里仍能装、能撤销忽略
+const snapE = JSON.parse(JSON.stringify(snap));
+snapE.update.skipped = '0.6.90';
+ctx.__fixture = snapE;
+try { vm.runInContext('snap = __fixture; render(); openUpdate();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('第五幕 render 报错：', e.message); process.exit(1); }
+ok(!made['updateDot'].classList.contains('on'), '忽略了这个版本徽章就不亮');
+ok(/已忽略这个版本/.test(made['updateBody'].innerHTML), '弹窗说明"已忽略"');
+ok(/恢复提示/.test(made['updateBody'].innerHTML), '忽略过的人给「恢复提示」（再点一次撤销）');
+ok(/onclick="updateAction\('download'\)"/.test(made['updateBody'].innerHTML),
+  '忽略过也仍然能装（用户可能改主意）');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

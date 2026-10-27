@@ -160,6 +160,9 @@ pub(super) fn update_snapshot(
     };
     snap.transfer = transfer_note.to_string();
     snap.identity = profile_key.to_string();
+    // 自动更新：update 模块自己管状态（自带锁和单飞闸），这里只把快照
+    // 搬进面板。徽章 / 弹窗 / 重启过渡层全读这一份，前端不自己推阶段
+    snap.update = crate::update::snapshot();
     snap.display = config
         .profile_for(profile_key)
         .map(|p| p.name.clone())

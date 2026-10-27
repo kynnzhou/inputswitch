@@ -304,12 +304,20 @@ fn countdown_loop() {
         }
         // 到点。装不上要**复位**而不是停在 restarting：卡在「正在重启」
         // 的用户除了杀进程没别的办法
-        if let Err(e) = install_now() {
-            let mut s = lock();
-            s.phase = Phase::Ready;
-            s.auto_restart_in = 0;
-            s.error = e.message;
-            s.code = e.code.to_string();
+        match install_now() {
+            // helper 已经起来、正在等本进程退出。**必须真的退** ——
+            // 运行中的 exe 不能被覆盖（见文件头说明），晚一步退出安装器
+            // 就撞上还在跑的进程。CLI 不走倒计时（它 install_now 完自己退），
+            // 所以这里退只影响面板这条路径。测试也到不了这一格：都立刻取消，
+            // 否则 exit(0) 会把测试进程本身干掉。
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                let mut s = lock();
+                s.phase = Phase::Ready;
+                s.auto_restart_in = 0;
+                s.error = e.message;
+                s.code = e.code.to_string();
+            }
         }
         return;
     }

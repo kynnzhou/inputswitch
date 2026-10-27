@@ -231,7 +231,18 @@ inputswitch-cli pair                 # 看当前状态和密钥指纹
 最上面那条常驻栏是"我现在在哪台"和"下一步点哪里"：本机 / 画面 / 键鼠 / 对端四个事实，
 左边一个主按钮（切到下一个口，或请对端把画面切回来），右边三个维护动作
 （重新检测 / 扫描输入口 / 检测能否切换）。主按钮**永远在**——不能切的时候它变成灰蓝，
-点一下会说清为什么，而不是消失。
+点一下会说清为什么，而不是消失。主按钮右边是「更新」，见下面。
+
+### 更新（v0.6.90 起）
+
+顶栏「更新」平时是个描边按钮；**启动时程序会自己查一次**，发现有新版时按钮右上角
+亮一个红点。点开是更新弹窗：当前版本 → 最新版本、更新说明、发布日期。
+
+- **下载并安装**：下的时候有进度条和速率。安装包下完会**先校验 SHA-256**，通过了才能装 —— 校验不过会当次失败并清掉半成品，不会留下一个看起来完整的坏包。
+- **安装并重启**：点完进入 8 秒倒计时，全屏过渡层盖住界面，随时可以取消。倒计时归零后本程序会退出几十秒（安装器在跑），装完自动拉起新版本。取消随时能再装，包还在。
+- **忽略本次**：徽章不再亮，但弹窗里仍能装、也能「恢复提示」。忽略按版本号记，下个版本照样提醒。
+
+命令行也能走同一条路：`inputswitch-cli update`（只查）、`--download`（顺带下载校验）、`--install`（装完并重启）。
 
 窗口用的是系统自带的 WebView，不额外打包浏览器内核：
 
@@ -840,6 +851,8 @@ src/
 │   └── 其余      session / state / watchdog / rx / link / linker / handle / opts / tuning / util / tests
 ├── gui.rs        托盘入口（windows 子系统）
 ├── main.rs       CLI 入口：clap 定义 + 分发表（console 子系统）
+├── panel.rs      控制面板后端：本机 HTTP 服务 + Snapshot（含 update 快照）+ /api/* 动作路由
+├── panelwin.rs   面板窗口（macOS WKWebView / Windows WebView2，开不出来退回浏览器）
 ├── cli/          子命令实现，按「会不会真的改动屏幕」分文件
 │   ├── mod.rs    切分轴说明 + display/act 共用的排查建议
 │   ├── display.rs   只读诊断：probe / selftest / raw / info / menu / check
@@ -863,3 +876,8 @@ src/
 ```
 
 加新平台只需实现 `ddc::Backend` 的 `list_displays` / `get_vcp` / `set_vcp` 三个方法。
+
+面板前端在 `assets/panel/`，七件：`index.html`（骨架）+ `style.css` + 五段 JS
+（`core` 取数通道 / `render` 渲染 / `kvm` 共用键鼠 / `update` 自动更新 / `actions` 动作）。
+由 `panel.rs` 各自 `include_str!` 按路由内嵌进 exe —— **改完必须重编，没有热更新**。
+改动的离线门禁是 `node tools/panelcheck.js assets/panel`（渲染断言 + 界面铁律）。

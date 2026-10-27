@@ -294,6 +294,33 @@ pub fn run() -> ! {
             Action::AskPeer(value) => {
                 let _ = tx_panel.send(Command::AskPeerSwitch { value });
             }
+            // 自动更新：五件事全在 update 模块内部闭环（自带单飞闸和自己的
+            // 状态锁），既不用引擎线程也不用回主线程。检查和下载是阻塞调用
+            // （curl 子进程），丢后台线程；倒计时线程由 begin_restart_countdown
+            // 自己起。面板下一轮轮询把新状态读走，不需要任何回执。
+            Action::UpdateCheck => {
+                std::thread::spawn(|| {
+                    crate::update::check_blocking();
+                });
+            }
+            Action::UpdateDownload => {
+                std::thread::spawn(crate::update::start_blocking);
+            }
+            Action::UpdateInstall => {
+                std::thread::spawn(crate::update::install::begin_restart_countdown);
+            }
+            Action::UpdateCancelRestart => {
+                crate::update::install::cancel_restart();
+            }
+            Action::UpdateDismiss => {
+                // 再点一次 = 撤销忽略。版本号从后端状态取，不信客户端传的
+                let s = crate::update::snapshot();
+                if !s.latest.is_empty() && s.skipped == s.latest {
+                    crate::update::dismiss("");
+                } else {
+                    crate::update::dismiss(&s.latest);
+                }
+            }
             // 其余的要在主线程做（开对话框、改配置、起浏览器）
             other => {
                 let _ = proxy_panel.send_event(UserEvent::Panel(other));
@@ -307,6 +334,14 @@ pub fn run() -> ! {
             Err(err) => log_line(&format!("控制面板启动失败：{err}")),
         }
     }
+
+    // 启动时查一次更新：徽章、弹窗全读这一份状态，不查就永远是「还没检查过」。
+    // 每次启动只查一次（见 update::CHECK_INTERVAL 的说明）；用户手点
+    // 「检查更新」走 /api/update?action=check，两条路有单飞闸隔着，
+    // 不会同时起两份 curl。阻塞调用在后台线程里跑，不拖慢启动。
+    std::thread::spawn(|| {
+        crate::update::check_blocking();
+    });
 
     // 文件接收服务
     let inbox_shared: Arc<Mutex<PathBuf>> =

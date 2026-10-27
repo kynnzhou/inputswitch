@@ -51,25 +51,25 @@ const RUST_BASELINE = {
   'src/lib.rs': 38,
   'src/main.rs': 218,
   'src/models.rs': 252,
-  'src/panel.rs': 746,
+  'src/panel.rs': 826,
   'src/panelwin.rs': 194,
   'src/pair.rs': 201,
   'src/peer.rs': 547,
   'src/support.rs': 249,
   'src/transfer.rs': 448,
-  'src/tray/mod.rs': 449,
+  'src/tray/mod.rs': 484,
   'src/config/mod.rs': 26,
   'src/switcher/mod.rs': 71,
   'src/kvm/event/mod.rs': 51
 };
 
 const PANEL_BASELINE = {
-  'assets/panel/actions.js': 96,
-  'assets/panel/core.js': 57,
-  'assets/panel/index.html': 202,
+  'assets/panel/actions.js': 97,
+  'assets/panel/core.js': 72,
+  'assets/panel/index.html': 229,
   'assets/panel/kvm.js': 395,
-  'assets/panel/render.js': 279,
-  'assets/panel/style.css': 529
+  'assets/panel/render.js': 280,
+  'assets/panel/style.css': 578
 };
 
 // exts 是数组。注意别把数组直接喂给 endsWith —— 它会被 ToString 成

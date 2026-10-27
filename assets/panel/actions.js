@@ -92,5 +92,6 @@ function recHotkey() {
   });
 }
 
+// 启动：先拉一次，之后自调度轮询（节奏随下载状态变，见 core.js）
 pull();
-setInterval(pull, 1200);
+schedulePull();
