@@ -105,11 +105,13 @@
              不放维护那三个里 —— 它是"装新版本"，不是"排查本机"。 -->
         <button id="updateBtn" class="upd-btn" onclick="openUpdate()"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>更新<i class="upd-dot" id="updateDot"></i></button>
         <div class="spacer"></div>
-        <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。 -->
+        <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。
+             探测类动作跑动中三个一起禁用（render.js 跟 snap.maint_busy），
+             扫描输入口多一道确认 —— 它会真的逐个切口，屏幕会黑几次。 -->
         <div class="flat-group">
-          <button onclick="post('/api/rescan')"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重新检测</button>
-          <button onclick="post('/api/scan')"><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg>扫描输入口</button>
-          <button onclick="post('/api/check')"><svg class="icon" aria-hidden="true"><use href="#i-check-circle"/></svg>检测能否切换</button>
+          <button id="maintRescan" onclick="post('/api/rescan')"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重新检测</button>
+          <button id="maintScan" onclick="openScanModal()"><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg>扫描输入口</button>
+          <button id="maintCheck" onclick="post('/api/check')"><svg class="icon" aria-hidden="true"><use href="#i-check-circle"/></svg>检测能否切换</button>
         </div>
         <!-- 帮助入口：和维护三件同一套弱化样式，但不进 flat-group ——
              那三个是"排查本机"的动作，帮助不是。切换遇到问题从帮助弹窗里转去。 -->
@@ -183,59 +185,114 @@
         <div class="quick-transfer">
           <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>
           <p><strong>顺手传个文件</strong><span>，接着在另一台处理。</span></p>
-          <button class="btn-sm" onclick="post('/api/send');showPage('transfers')"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>发送文件</button>
+          <!-- 走 sendFilesTo() 而不是直接 post：没对端 / 对端要求配对时
+               后端会拒，提前在面板上说清（canSend 门禁，actions.js） -->
+          <button class="btn-sm" onclick="sendFilesTo()"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>发送文件</button>
           <button class="btn-sm ghost" title="去文件传输页" onclick="showPage('transfers')"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
         </div>
       </section>
 
-      <!-- ② 设备与布局：配对（第一步）+ 局域网对端 + 摆位。
-           配完才谈得上后面的摆位和切屏；对端和摆位左右并排。 -->
+      <!-- ② 设备与布局：设计稿 renderDevices 的生产版 —— devices-layout
+           左名册列（本机行 + 已知设备紧凑行 + 添加入口 + 配对摘要）+ 右详情列
+           （两个 pane：摆位布局 / 配对表单，showDevicePane 切）。
+           和生产旧结构（页首配对大卡 + 双栏卡）的区别：
+           ① 配对从"页首一张大卡"收成名册列常驻摘要 + 详情列的一个 pane；
+           ② 对端从富信息大卡收成名册紧凑行 —— snap.peers 全是在线对端
+              （ui.rs live_peers），行内状态说"键鼠开没开"而不是在线与否；
+              地址/配对警示等详细信息搬进 selected-detail，选中一台才展开。
+           保留的全部既有 ID：#code / #unpairBtn / #kvmGrid / #kvmLoose /
+           #kvmLooseBox / #kvmGridHint / #kvmFlash / #kvmLinks。
+           pane 默认态由 showPage('devices') 按配对态选（未配对→配对表单）。 -->
       <section id="devicesView" class="page-view" aria-label="设备与布局" hidden>
-        <section class="card">
-          <h2>配对</h2>
-          <div class="pairrow">
-            <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
-            <button onclick="genCode()">随机生成</button>
+        <div class="devices-layout">
+          <div class="device-list">
+            <p class="list-label">这台电脑</p>
+            <div class="device-row local-row">
+              <svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>
+              <span><strong id="deviceLocalName">本机</strong><small>本机</small></span>
+            </div>
+            <p class="list-label">已知设备 · <span id="deviceListCount">0</span></p>
+            <div id="deviceRows"></div>
+            <button class="add-device" onclick="showDevicePane('pair', true)" title="连接新设备">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>连接新设备
+            </button>
+            <div class="pair-summary">
+              <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+              <span id="pairSummaryText">尚未配对</span>
+              <button class="ghost" onclick="showDevicePane('pair', true)">管理配对</button>
+            </div>
           </div>
-          <div class="btnrow" style="margin-top:10px">
-            <button onclick="savePair()">保存并连接</button>
-            <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
-          </div>
-          <div class="hint">两台填同一个码。码越长越安全；换码后两边的键鼠会重连一次。</div>
-        </section>
 
-        <div class="grid2">
-          <section class="card">
-            <h2>局域网对端</h2>
-            <div class="empty-fill" id="peers"><div class="empty" style="text-align:center">还没有发现其他机器</div></div>
-            <div class="hint">对端也在运行本程序时会自动出现在这里。</div>
-          </section>
+          <div class="device-detail">
+            <div id="deviceLayoutPane">
+              <div class="detail-heading">
+                <div>
+                  <h2>按桌面上的位置摆放</h2>
+                  <p>选一台设备，再点方向。支持拖动、方向键和撤销。</p>
+                </div>
+                <span class="tag plain">一台一格</span>
+              </div>
+              <div id="kvmGrid" class="grid"></div>
 
-          <!-- 摆位（各有一块屏 / 共用一块屏） -->
-          <section class="card">
-            <h2>摆位 <span class="tag plain">一台一格</span></h2>
-            <div id="kvmGrid" class="grid"></div>
+              <!-- 两种卡片停在这里，标签**必须分开**：
+                   「共用一块屏」= 已配成跟随画面；
+                   「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
+              <div id="kvmLoose" class="loosetray" data-drop="loose">
+                <div class="loosehead">共用一块屏 · 拖/点到这里：切画面时键鼠跟着走</div>
+                <div id="kvmLooseBox" class="loosebox"></div>
+              </div>
 
-            <!-- 两种卡片停在这里，标签**必须分开**：
-                 「共用一块屏」= 已配成跟随画面；
-                 「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
-            <div id="kvmLoose" class="loosetray" data-drop="loose">
-              <div class="loosehead">共用一块屏 · 拖/点到这里：切画面时键鼠跟着走</div>
-              <div id="kvmLooseBox" class="loosebox"></div>
+              <div class="gridhint" id="kvmGridHint"></div>
+              <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
+                   因为 #kvmGridHint 每次重绘都会被重写 -->
+              <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
+
+              <!-- 选中态提示 + 选中设备详情（设计稿 placement-note /
+                   selected-detail）：名册点一台，这里说清"选中了谁、下一步
+                   点什么、它的地址和键鼠状态"。旧 #peers 大卡的信息收在这里。 -->
+              <div class="placement-note" id="placementNote"></div>
+              <div class="selected-detail" id="selectedDetail"></div>
+
+              <!-- 键鼠链路行（P4 从工作台搬来）：每台对端一行状态 + 一个
+                   交接动作（转给它 / 交给它）。和上面摆位图是同一份 links
+                   数据的两个视角 —— 图管"画面怎么走"，这里管"键鼠交给谁"，
+                   分开放对照不起来。 -->
+              <div class="rowlabel">键鼠交接</div>
+              <div id="kvmLinks"></div>
             </div>
 
-            <div class="gridhint" id="kvmGridHint"></div>
-            <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
-                 因为 #kvmGridHint 每次重绘都会被重写 -->
-            <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
-
-            <!-- 键鼠链路行（P4 从工作台搬来）：每台对端一行状态 + 一个
-                 交接动作（转给它 / 交给它）。和上面摆位图是同一份 links
-                 数据的两个视角 —— 图管"画面怎么走"，这里管"键鼠交给谁"，
-                 分开放对照不起来。 -->
-            <div class="rowlabel">键鼠交接</div>
-            <div id="kvmLinks"></div>
-          </section>
+            <div id="devicePairPane" hidden>
+              <!-- 配对表单（设计稿 pairingForm 的生产版）。包 form 只为回车
+                   提交（onsubmit 里 preventScroll + savePair）；保存/随机/
+                   返回/取消都是 type="button" —— 桩环境不派发 submit，
+                   行为和旧 onclick 入口完全一致。 -->
+              <form class="pair-form" id="pairForm" onsubmit="event.preventDefault();savePair()">
+                <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                <h2>连接另一台电脑</h2>
+                <p>两台电脑接入同一局域网并打开 InputSwitch，填入相同配对码。</p>
+                <div>
+                  <label class="field-label" for="code">配对码</label>
+                  <div class="input-line">
+                    <input id="code" type="text" maxlength="32" placeholder="输入双方约定的配对码"
+                           autocomplete="off" spellcheck="false" aria-describedby="pairHelp"
+                           oninput="codeDirty = true">
+                    <button type="button" onclick="genCode()">随机生成</button>
+                  </div>
+                  <!-- 文案由 renderDevicePane 按配对态写：idle（最多 32
+                       字符）/ waiting（码已保存等对端确认，输入框只读、
+                       主钮禁用 + aria-busy）。空码拦截的提示走 flash
+                       （savePair 里那句「先填一个配对码」）。 -->
+                  <p class="field-help" id="pairHelp"></p>
+                </div>
+                <div class="form-actions">
+                  <button type="button" class="primary" id="pairSaveBtn" onclick="savePair()">保存并连接</button>
+                  <button type="button" class="ghost" onclick="showDevicePane('layout', true)">返回布局</button>
+                  <button type="button" class="ghost" id="unpairBtn" style="display:none" onclick="unpair()">取消配对</button>
+                </div>
+                <p class="field-help">两台填同一个码。码越长越安全；换码后两边的键鼠会重连一次。</p>
+              </form>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -309,6 +366,10 @@
             <div class="setting-ctrl">
               <span class="setting-value" id="hotkey">—</span>
               <button class="btn-sm" onclick="recHotkey()">改键</button>
+              <!-- 恢复默认：录了个和别的软件冲突的组合后，唯一的回头路
+                   以前是手改 config.json（后端 /api/hotkey-reset 重新注册
+                   默认键并保存，前端 resetHotkey 在 actions.js） -->
+              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">恢复默认</button>
             </div>
           </div>
           <div class="setting-row">
@@ -434,8 +495,8 @@
 
 <!-- 更新弹窗：顶栏「更新」点开。内容按 snap.update.phase 现算（update.js），
      这里只放骨架 —— 和摆位图一个路子，DOM 结构固定、文字每次轮询刷新。 -->
-<div class="modal-mask" id="updateModal" style="display:none">
-  <div class="modal glass" role="dialog" aria-label="更新">
+<div class="modal-mask" id="updateModal" style="display:none" onclick="if(event.target===this)closeModal('updateModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="更新">
     <div class="modal-head">
       <b id="updateTitle">更新</b>
       <button class="modal-x" onclick="closeUpdate()" aria-label="关闭">×</button>
@@ -447,8 +508,8 @@
 <!-- 帮助弹窗：顶栏问号图标点开。快捷键表里的热键位是活的 ——
      render.js 每轮轮询把 snap.hotkey 写进 #helpHotkey（后端改键后
      这里自动跟上，不写死）。「切换遇到问题？」转去排查弹窗。 -->
-<div class="modal-mask" id="helpModal" style="display:none">
-  <div class="modal glass" role="dialog" aria-label="帮助">
+<div class="modal-mask" id="helpModal" style="display:none" onclick="if(event.target===this)closeModal('helpModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="帮助">
     <div class="modal-head">
       <b>让设备协同起来</b>
       <button class="modal-x" onclick="closeHelp()" aria-label="关闭">×</button>
@@ -471,8 +532,8 @@
 <!-- 排查弹窗：帮助弹窗里转来。画面切不动的四个最常见原因，
      都是用户在自己机器上能核对的事；本机的实际检测结果在顶栏
      「检测能否切换」。 -->
-<div class="modal-mask" id="diagModal" style="display:none">
-  <div class="modal glass" role="dialog" aria-label="排查">
+<div class="modal-mask" id="diagModal" style="display:none" onclick="if(event.target===this)closeModal('diagModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="排查">
     <div class="modal-head">
       <b>切换遇到问题？</b>
       <button class="modal-x" onclick="closeDiagnostics()" aria-label="关闭">×</button>
@@ -495,8 +556,8 @@
      生产版）。改名 + 设为热键都在这儿；行由 renderPortsModal 按
      snap.inputs 现算，轮询会重画它（"已设为热键"要点完就看到），但聚焦
      输入框时让路（editingPorts，和 codeDirty / editingPort 同一套路）。 -->
-<div class="modal-mask" id="portsModal" style="display:none">
-  <div class="modal glass" role="dialog" aria-label="管理显示器输入源">
+<div class="modal-mask" id="portsModal" style="display:none" onclick="if(event.target===this)closeModal('portsModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="管理显示器输入源">
     <div class="modal-head">
       <b>管理显示器输入源</b>
       <button class="modal-x" onclick="closePortsModal()" aria-label="关闭">×</button>
@@ -508,6 +569,27 @@
       <div class="modal-actions">
         <button onclick="closePortsModal()">取消</button>
         <button class="primary" onclick="savePorts()">保存名称</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 扫描确认弹窗：顶栏「扫描输入口」点开。扫描真的会逐个切输入口
+     （probe.rs on_scan_ports：有对端在线且配对通畅才物理试探，否则
+     只汇总已知信息不切屏），屏幕可能黑几次 —— 先问一句再扫，别让
+     人莫名其妙看黑屏。设计稿 maintain('scan') 同款。 -->
+<div class="modal-mask" id="scanModal" style="display:none" onclick="if(event.target===this)closeModal('scanModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="扫描显示器输入源">
+    <div class="modal-head">
+      <b>扫描显示器输入口</b>
+      <button class="modal-x" onclick="closeModal('scanModal')" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>扫描会逐个尝试输入口，屏幕可能短暂变黑几次。请先保存正在编辑的内容。</p>
+      <div class="modal-note">扫描结束后会试着把画面切回本机输入口；没能切回时面板会告诉你怎么手动切回来。局域网里没有对端在线时只汇总已知信息，不切屏。</div>
+      <div class="modal-actions">
+        <button onclick="closeModal('scanModal')">暂不扫描</button>
+        <button class="primary" onclick="confirmScan()">开始扫描</button>
       </div>
     </div>
   </div>

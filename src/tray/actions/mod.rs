@@ -59,6 +59,7 @@ impl Ui {
             Action::RestartApp => self.on_restart_app(),
             Action::KvmTakeBack => self.on_kvm_take_back(),
             Action::RecordHotkey => self.on_record_hotkey(),
+            Action::ResetHotkey => self.on_reset_hotkey(),
             Action::OpenConfigDir => self.on_open_config_dir(),
             _ => {}
         }

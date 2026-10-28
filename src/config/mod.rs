@@ -21,6 +21,8 @@ mod state;
 mod store;
 
 pub use paths::{config_dir, default_node};
-pub use schema::{Clipboard, Config, Kvm, LinkConfig, Network, Pair, Transfer, CONFIG_VERSION};
+pub use schema::{
+    default_hotkey, Clipboard, Config, Kvm, LinkConfig, Network, Pair, Transfer, CONFIG_VERSION,
+};
 pub use state::RuntimeState;
 pub use store::now_secs;

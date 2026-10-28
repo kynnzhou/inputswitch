@@ -99,12 +99,22 @@ function renderKvmLinks(k) {
 }
 
 function handOverTo(node) {
+  flash('正在把键鼠交给 ' + node, '光标推到屏幕边缘就能过去，Ctrl+Alt+Esc 收回');
   api('/api/kvm-handover?node=' + encodeURIComponent(node)).then(pull);
 }
 // 点名发文件给这一台。不带 node 时后端会退回"握着键鼠的那台"，
 // 多台在线又没会话就直接拒绝 —— 多机时猜人必然猜错。
 // 发完跳到传输页：接下来要看的是传输记录，不是还留在设备页。
 function sendTo(node) {
+  // 对端设了配对码而本机没设：文件会被它在握手处拒掉（transfer.rs 的
+  // receive_one：key 不匹配直接返回"配对码不一致，已拒绝"）。后端拒绝只
+  // 写进它自己的状态行，用户点完「发文件」跳出系统对话框、选完文件看着
+  // 它静默失败 —— 提前说清，并给一条去配对的路。
+  const peer = (snap.peers || []).find(p => p.node === node);
+  if (peer && peer.needs_pair) {
+    return flash('对端设了配对码，本机没设', '文件会被它拒绝 —— 两边填同一个码再发',
+      { text: '去配对', fn: () => showPage('devices') });
+  }
   api('/api/send?node=' + encodeURIComponent(node)).then(pull);
   showPage('transfers');
 }
@@ -128,6 +138,10 @@ const SIDE_NAME = { right: '右侧', left: '左侧', top: '上方', bottom: '下
 // 拖动中的状态。面板每 400ms 全量重绘一次（innerHTML 替换），
 // 拖到一半被重绘 = 手里的卡片凭空消失，所以重绘期间必须让路。
 let dragState = null;
+// 点击放置的选中态（第一下点哪台选哪台，第二下点空格子落位）。
+// 设计稿 state.selectedPeer 同款；两套摆位图共用一份 —— 设备页选中一台，
+// 工作台多屏场景里那台也同样亮着（同一份数据的两个视角）。
+let kvmSelected = null;
 
 function screenCard(node, o) {
   const tag = o.active ? '<span class="stag">键鼠在这台</span>'
@@ -142,8 +156,9 @@ function screenCard(node, o) {
   // 于是用户看到「两台都在共用屏里」，以为程序认定它们共用一块屏 ——
   // 实际那只是"你还没告诉我它放哪"。
   const label = o.fresh ? '未摆位' : (o.side ? SIDE_NAME[o.side] : '共用一块屏');
-  return `<div class="screen" data-node="${esc(node)}" data-side="${esc(o.side || '')}"
-      tabindex="0" role="button" title="${esc(node)} · ${label}（可拖动，方向键也能移动）"
+  const sel = kvmSelected === node;
+  return `<div class="screen${sel ? ' sel' : ''}" data-node="${esc(node)}" data-side="${esc(o.side || '')}"
+      tabindex="0" role="button" aria-pressed="${sel ? 'true' : 'false'}" title="${esc(node)} · ${label}（点选后点方向放下，也可拖动）"
       aria-label="${esc(node)}，${label}">
     ${icon('monitor')}<span class="dot${o.alive ? ' on' : ''}"></span>
     <span class="sname">${esc(node)}</span>${tag}${rootTag}</div>`;
@@ -196,10 +211,13 @@ function renderKvmGrid(k) {
       return '<div class="cell corner" data-drop="corner">—</div>';
     }
     const taken = bySide[slot];
+    // 选中了一台对端：空格子亮起来（aim），文案从「拖到这里」换成「放到这里」
+    // —— 点击放置的第二半，用户看得见该点哪（设计稿 app.js:146 同款）
+    const aim = kvmSelected && !taken ? ' aim' : '';
     const inner = taken
       ? screenCard(taken.node, taken)
-      : '<span class="dropzone">拖到这里</span>';
-    return `<div class="cell" data-drop="${slot}"><span class="sideslot">${SIDE_NAME[slot]}</span>${inner}</div>`;
+      : '<span class="dropzone">' + (kvmSelected ? '放到这里' : '拖到这里') + '</span>';
+    return `<div class="cell${aim}" data-drop="${slot}"><span class="sideslot">${SIDE_NAME[slot]}</span>${inner}</div>`;
   };
   box.innerHTML = GRID_ROWS.map(row => row.map(cell).join('')).join('');
 
@@ -208,8 +226,11 @@ function renderKvmGrid(k) {
     : '<span class="dropzone">（没有待摆位的对端）</span>';
 
   const fresh = loose.filter(x => x.fresh).map(x => x.node);
-  // 说明压到一句：图上已经能看出摆位，多余的重复说明只会把卡片撑高
-  const parts = ['把对端拖到某个方向，或点它再点格子。一个格子只放一台。'];
+  // 说明压到一句：图上已经能看出摆位，多余的重复说明只会把卡片撑高。
+  // 文案必须和能做的事一一对应 —— 2026-10-28 差距审查时这里写着
+  // 「或点它再点格子」，而点击放置根本没实现（pointerup 的 !moved 分支
+  // 是"什么都不做"），是一句兑现不了的承诺。批2 补上点击放置后才对得上。
+  const parts = ['点一台对端选中它，再点方向放下；也可以直接拖动。一个格子只放一台。'];
   if (fresh.length) parts.push(`还没摆位：${fresh.join('、')}。`);
   if (dup.length) parts.push(`⚠ ${dup.join('、')} 也摆在同一侧，推过去会落到哪台不确定。`);
   hint.textContent = parts.join(' ');
@@ -270,10 +291,12 @@ function renderWorkspaceTopology(k) {
         + '<strong>本机</strong><small>' + esc(snap.node || '—') + '</small></div>';
     }
     const taken = bySide[slot];
+    // 同 renderKvmGrid 的 cell()：选中一台后空槽亮 aim、文案变「点这里放下」
+    const aim = kvmSelected && !taken ? ' aim' : '';
     const inner = taken
       ? screenCard(taken.node, taken)
-      : '<span class="slothint">' + SIDE_NAME[slot] + '<br>放置设备</span>';
-    return '<div class="topology-slot' + (taken ? ' occupied' : '') + ' slot-' + slot
+      : '<span class="slothint">' + (kvmSelected ? '点这里放下' : SIDE_NAME[slot] + '<br>放置设备') + '</span>';
+    return '<div class="topology-slot' + (taken ? ' occupied' : '') + aim + ' slot-' + slot
       + '" data-drop="' + slot + '">' + inner + '</div>';
   };
   box.innerHTML = WS_SLOTS.map(slotHtml).join('');
@@ -294,18 +317,24 @@ function renderWorkspaceTopology(k) {
 //
 // 先乐观改本地快照再发请求：否则松手后卡片会先弹回旧位置，等 400ms 后那次
 // 轮询回来再跳到新位置，手感像"放不进去"。
+//
+// 放完给一个反悔窗口（设计稿 placePeer 的 undo toast，6500ms）：拖错方向是
+// 高频误操作 —— 格子挨得近，而"原来在哪"用户不一定记得。撤销把自己放回
+// 原位、被顶走的那台归回本格；只此一次，撤销动作本身不再挂撤销。
 async function placeOn(side, node) {
   if (!snap) return;
   const k = snap.kvm || (snap.kvm = {});
   const links = k.links || (k.links = []);
   const posts = [];
   const prev = links.find(l => l.side === side && l.node !== node);
+  const me = links.find(l => l.node === node);
+  const back = me ? (me.side || '') : '';      // 撤销要回到的位置
+  const bumped = prev ? prev.node : '';        // 被顶走的那台，撤销时归位
   if (prev) {
     prev.side = '';
     if (prev.mode === 'edge') prev.mode = 'follow';   // 后端：无门的 edge 自动降级
     posts.push(linkApi(prev.node, ''));
   }
-  const me = links.find(l => l.node === node);
   if (me) {
     me.side = side;
     // 有没有门 = 模式，这两个字段是绑定的（后端也会做同样的纠正）
@@ -318,6 +347,15 @@ async function placeOn(side, node) {
   posts.push(linkApi(node, side));
   await Promise.all(posts);
   pull();
+  if (side !== back || bumped) {
+    const where = side ? SIDE_NAME[side] : '共用一块屏';
+    flash(node + ' 已放到' + where,
+      side ? '键鼠推到那条边就会过去' : '切画面时键鼠跟着走',
+      { text: '撤销', fn: () => {
+        if (side !== back) placeOn(back, node);
+        if (bumped) linkApi(bumped, side).then(pull);
+      } });
+  }
 }
 
 function linkApi(node, side) {
@@ -387,7 +425,25 @@ document.addEventListener('pointermove', (e) => {
 document.addEventListener('pointerup', (e) => {
   const d = dragState;
   if (!d || e.pointerId !== d.id) return;
-  if (!d.moved) { dragState = null; document.documentElement.classList.remove('dragging'); return; }   // 没移动 = 点击，什么都不做
+  if (!d.moved) {
+    // 没移动 = 点击。pointerdown 里 preventDefault 掐掉了 click 事件，卡片
+    // 点击只能在这里做：点哪台选哪台，再点自己取消（设计稿 data-peer 分支
+    // 同款语义）。以前这里是"什么都不做"—— 提示文案却写着「点它再点格子」，
+    // 是一句兑现不了的承诺（2026-10-28 差距审查 B 层，批2 补上）。
+    const node = d.node;
+    if (kvmSelected === node) {
+      kvmSelected = null;
+      finishDrag(null);
+      renderDevicePane();   // 名册高亮/三块文字跟手变，不等 1.2s 轮询
+      flashGrid('已取消选中。');
+      return;
+    }
+    kvmSelected = node;
+    finishDrag(null);
+    renderDevicePane();
+    flashGrid(`已选中 ${node}：点一个方向放下，点别处取消。`);
+    return;
+  }
   const hit = dropTargetAt(e.clientX, e.clientY);
   const slot = hit ? hit.dataset.drop : null;
   if (slot && slot !== 'corner' && slot !== 'self') {
@@ -401,6 +457,45 @@ document.addEventListener('pointerup', (e) => {
 
 document.addEventListener('pointercancel', () => finishDrag(null), true);
 
+// 点击放置的第二半：点空格子把选中的对端放进去。卡片自己的点击走上面
+// pointerup 的 !moved 分支（pointerdown 里 preventDefault 掐掉了 click），
+// 格子空白处没有卡片、click 事件正常发得出 —— 放这里。
+// 语义照设计稿（app.js:575-576）：点卡片 = 选哪台；点空格 = 放置。
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (!t || !t.closest) return;
+  if (t.closest('.screen')) return;   // 卡片点击归 pointerup 管
+  const slot = t.closest('[data-drop]');
+  if (!slot) {
+    // 点到不相干的地方 = 取消选中：不然 stale 选择留着，回去一看格子全亮着
+    if (kvmSelected) { kvmSelected = null; paintKvm(); renderDevicePane(); }
+    return;
+  }
+  const where = slot.dataset.drop;
+  if (where === 'corner') return flashGrid('斜角不能放，只支持上下左右四个方向。');
+  if (where === 'self') return flashGrid('本机格不用放；共用一块屏请点托盘那一栏。');
+  if (!kvmSelected) return flashGrid('先点一台对端选中它，再点方向放下。');
+  const picked = kvmSelected;
+  kvmSelected = null;
+  placeOn(where === 'loose' ? '' : where, picked);
+});
+
+/// 两套摆位图都重画（选中态 / aim 高亮变化时用）。
+function paintKvm() {
+  renderKvmGrid(snap.kvm || {});
+  renderWorkspaceTopology(snap.kvm || {});
+}
+
+// 名册列点选（设计稿 deviceRow data-peer 的生产版）：和摆位图卡片共用
+// 同一份 kvmSelected。切完即时刷名册高亮、placement-note 和
+// selected-detail，不等下一轮 1.2s 轮询 —— 选中是纯本地状态，
+// 没有请求要发，让用户盯着"点了没反应"的界面等一秒毫无道理。
+function selectDevice(node) {
+  kvmSelected = kvmSelected === node ? null : node;
+  paintKvm();
+  renderDevicePane();
+}
+
 function finishDrag(then) {
   const d = dragState;
   dragState = null;
@@ -411,8 +506,7 @@ function finishDrag(then) {
   d.el.removeAttribute('style');
   if (d.moved) d.el.remove();   // 已经被挪到 body 下，重绘会重建整张图
   // 两套摆位图都重画：拖拽可能发生在任一容器里（设备页 / 工作台多屏场景）
-  renderKvmGrid(snap.kvm || {});
-  renderWorkspaceTopology(snap.kvm || {});
+  paintKvm();
   if (then) then();
 }
 
@@ -431,9 +525,10 @@ document.addEventListener('keydown', (e) => {
   const card = e.target.closest && e.target.closest('.screen');
   if (!card) return;
   const dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'top', ArrowDown: 'bottom' }[e.key];
-  if (dir) { e.preventDefault(); placeOn(dir, card.dataset.node); return; }
+  if (dir) { e.preventDefault(); kvmSelected = null; placeOn(dir, card.dataset.node); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
+    kvmSelected = null;
     placeOn('', card.dataset.node);
   }
 });

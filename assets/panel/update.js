@@ -165,15 +165,17 @@ function renderUpdate() {
 
 /// 打开弹窗。从没查过（或上次查失败）就顺手查一次 —— 用户点开这个
 /// 对话框本身就是"我想知道有没有新版"，让他再点一次按钮是多余的。
+/// 开合走 core.js 的 openModal/closeModal：Esc 关、点遮罩关、开时
+/// 焦点进框、关时还给更新钮（见 core.js 弹窗那一节的注释）。
 function openUpdate() {
-  document.getElementById('updateModal').style.display = '';
+  openModal('updateModal');
   renderUpdateDialog(updateState());
   const phase = updateState().phase;
   if (phase === 'idle' || phase === 'error') updateAction('check');
 }
 
 function closeUpdate() {
-  document.getElementById('updateModal').style.display = 'none';
+  closeModal('updateModal');
 }
 
 /// 更新动作唯一出口。check/download 是阻塞调用，后端丢后台线程跑，

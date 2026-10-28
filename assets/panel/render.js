@@ -86,7 +86,7 @@ function renderSceneAlert() {
     // 注意这档显示器是**接着的**（has_display 为真才会进这里）—— 说的是
     // "一个可切换的口都没读到"，别说成"没接显示器"，用户会去查线
     html = alertInline('info', '这台显示器上没有读到可切换的输入口，扫描一次再认。',
-      '<button onclick="post(\'/api/scan\')">去扫描</button>');
+      '<button onclick="openScanModal()">去扫描</button>');
   } else if (snap.support && !snap.support.startsWith('✓')) {
     html = alertInline('info', esc(snap.support),
       '<button onclick="openDiagnostics()">排查</button>', true);
@@ -128,6 +128,7 @@ function singleSceneHtml() {
 
   const localCard = '<div class="computer">'
     + '<button class="computer-display' + (blind ? '' : ' active') + '" onclick="wsSwitch(\'local\')"'
+    + ' data-scene-focus="local"'
     + ' aria-pressed="' + (blind ? 'false' : 'true') + '" aria-label="本机，' + (blind ? '画面在另一台机器上' : '当前画面') + '"'
     + ' title="' + (blind ? '点它请对端把画面切回本机' : '画面已经在本机') + '">'
     + '<span class="screen-content">' + icon('windows') + '<span>本机</span></span></button>'
@@ -138,6 +139,7 @@ function singleSceneHtml() {
 
   const peerCard = '<div class="computer">'
     + '<button class="computer-display' + (blind ? ' active' : '') + '" onclick="wsSwitch(\'peer\')"'
+    + ' data-scene-focus="peer"'
     + ' aria-pressed="' + (blind ? 'true' : 'false') + '" aria-label="对端，' + (blind ? '当前画面' : '切换画面到对端') + '"'
     + ' title="' + (blind ? '画面已经在对端' : (peerPort ? '点它把画面切到对端' : '没有检测到对端在哪个输入口')) + '"'
     + (!blind && !peerPort ? ' disabled' : '') + '>'
@@ -161,10 +163,11 @@ function singleSceneHtml() {
       : (!i.current && i.presence === 'occupied') ? ' · 有主机'
       : (!i.current && i.presence === 'idle') ? ' · 无信号' : '';
     strip += '<button class="source-button' + (i.current ? ' current' : '') + '" onclick="switchTo(' + i.value + ')"'
+      + ' data-scene-focus="src-' + i.value + '"'
       + (dead || i.current ? ' disabled' : '') + (why ? ' title="' + why + '"' : '') + '>'
       + (i.current ? icon('check') : '') + esc(i.label) + suffix + '</button>';
   });
-  strip += '<button class="btn-sm ghost port-manage" onclick="openPortsModal()">管理</button></div>';
+  strip += '<button class="btn-sm ghost port-manage" data-scene-focus="ports" onclick="openPortsModal()">管理</button></div>';
 
   return '<div class="scene-panel"><div class="scene-panel-head"><span>' + icon('monitor')
     + '共用显示器 <strong>' + esc(snap.display || '—') + '</strong></span>' + tag + '</div>'
@@ -182,17 +185,17 @@ function multiSceneHtml() {
   const links = k.links || [];
   const handUseless = k.follow_link || !!k.active || !links.some(l => l.alive);
   const handBtn = handUseless ? ''
-    : '<button class="btn-sm ghost port-manage" onclick="wsHandOver()"'
+    : '<button class="btn-sm ghost port-manage" data-scene-focus="handover" onclick="wsHandOver()"'
     + ' title="光标推到屏幕边缘就过去，按 Ctrl+Alt+Esc 收回">把键鼠交给对端 ' + icon('arrow') + '</button>';
   return '<div class="scene-panel">'
     + '<div class="scene-panel-head"><span>' + icon('screens') + '多屏布局</span>'
-    + '<button class="btn-sm ghost" onclick="showPage(\'devices\')">管理布局 ' + icon('chevron') + '</button></div>'
+    + '<button class="btn-sm ghost" data-scene-focus="layout" onclick="showPage(\'devices\')">管理布局 ' + icon('chevron') + '</button></div>'
     + '<div class="multi-topology">'
     + '<div class="topology" id="wsTopology" role="group" aria-label="设备摆位图：拖动设备到某个方向，或点它后用方向键"></div>'
     + '<div class="multi-explainer"><h3>鼠标越过边缘，<br>工作自然接续。</h3>'
     + '<p>按真实位置摆放设备。<br>直接拖动，或点它后用方向键。</p></div>'
     + '</div>'
-    + '<div class="shared-screen-tray" data-drop="loose"><span>共用一块屏 · 键鼠跟随</span><div class="loosebox" id="wsLooseBox"></div></div>'
+    + '<div class="shared-screen-tray' + (kvmSelected ? ' aim' : '') + '" data-drop="loose"><span>共用一块屏 · 键鼠跟随</span><div class="loosebox" id="wsLooseBox"></div></div>'
     + '<div class="source-strip"><span>' + icon('keyboard') + '</span>'
     + '<span class="multi-summary">键鼠当前在 <strong>' + esc(k.active || '本机') + '</strong></span>' + handBtn + '</div>'
     + '</div>';
@@ -202,6 +205,13 @@ function multiSceneHtml() {
 /// 常驻 DOM，只画当前场景（设计稿 renderWorkspace 同款 —— 整页重画，
 /// 生产保留静态骨架，只填场景这一段）。摆位图的数据填充在 kvm.js 的
 /// renderWorkspaceTopology（render() 末尾的 renderKvm 会调它）。
+/// 场景面板的两次渲染缓存 + 焦点保持：面板里全是按钮（切源 / 双机卡片 /
+/// 管理），轮询 1.2 秒整段重画一次 —— 不还焦点，键盘用户点一下就被打回
+/// 页首。套路和传输列表的 renderTransferList 相同（缓存 + 锚点还焦），
+/// 另外缓存还顺带保住 switchTo 挂上的 .is-switching（动画放一半被重绘
+/// 会闪断）。
+let sceneCache = { single: null, multi: null };
+
 function renderWorkspaceScene() {
   const single = document.getElementById('sceneSingle');
   const multi = document.getElementById('sceneMulti');
@@ -215,8 +225,8 @@ function renderWorkspaceScene() {
     b.classList.toggle('selected', v === workspaceUi.scene);
     b.setAttribute('aria-pressed', String(v === workspaceUi.scene));
   });
-  if (isMulti) multi.innerHTML = multiSceneHtml();
-  else single.innerHTML = singleSceneHtml();
+  if (isMulti) paintScene(multi, multiSceneHtml, 'multi');
+  else paintScene(single, singleSceneHtml, 'single');
   // 共享条：开关态 + 一句状态文案（设计稿 sharing-strip 的 copy）
   const k = snap.kvm || {};
   flip('kvmSwitch', k.on);
@@ -227,6 +237,24 @@ function renderWorkspaceScene() {
   flip('clipBtn', snap.clipboard);
   const cc = document.getElementById('clipCopy');
   if (cc) cc.textContent = snap.clipboard ? '文字只同步到当前使用的设备' : '已关闭，保留各自的剪贴板';
+}
+
+/// 场景面板的"没变就不碰 DOM"绘制。data-scene-focus 是锚点：重绘前记下
+/// 焦点所在那枚钮的锚，画完把焦点还回去（桩里 activeElement 为 null、
+/// contains/querySelector 不存在，整段静默跳过）。
+function paintScene(box, htmlFn, key) {
+  const html = htmlFn();
+  if (html === sceneCache[key]) return;
+  const focused = document.activeElement;
+  const anchor = focused && focused.closest && box.contains && box.contains(focused)
+    ? focused.closest('[data-scene-focus]')
+    : null;
+  box.innerHTML = html;
+  sceneCache[key] = html;
+  if (anchor && anchor.dataset) {
+    const again = box.querySelector('[data-scene-focus="' + anchor.dataset.sceneFocus + '"]');
+    if (again && again.focus) again.focus({ preventScroll: true });
+  }
 }
 
 /// 管理输入源弹窗的行（设计稿 ports 动作）：改名输入框 + 口状态 +
@@ -264,6 +292,8 @@ function renderPortsModal() {
 
 function render() {
   if (!snap) return;
+  // snap 到位后补选设备页 pane（showPage 可能跑在 pull 之前，见 core.js）
+  autoDevicePane();
   document.getElementById('node').textContent = snap.node || '';
   // P2：侧栏底部的本机名跟顶栏「本机」是同一个值。收成图标栏时这行字
   // 会被 CSS 藏掉（.compact-nav .local-machine > div），展开时才看得见。
@@ -315,6 +345,9 @@ function render() {
   main.className = 'primary btn-lg';
   main.disabled = false;
   main.removeAttribute('title');
+  // 切换进行态由 switchTo / askPeer 挂上（aria-busy + 场景面板 is-switching），
+  // 轮询把按钮文案换回正常态时一并摘掉 —— 摘不掉的话读屏软件会永远念"忙"
+  main.removeAttribute('aria-busy');
   main.onclick = quickSwitch;
 
   if (blind) {
@@ -357,46 +390,10 @@ function render() {
   const pm = document.getElementById('portsModal');
   if (pm && pm.style.display !== 'none' && !editingPorts) renderPortsModal();
   renderKvm();
-
-  // 对端
-  const peers = document.getElementById('peers');
-  if (!(snap.peers || []).length) {
-    peers.innerHTML = '<div class="empty" style="text-align:center">还没有发现其他机器</div>';
-  } else {
-    peers.innerHTML = snap.peers.map(p => {
-      // 对端报过来的口名可能是它自己那边的匿名名（`输入源 0x12`）——
-      // 那种时候只写十六进制。有名字就只写名字：两套编号各算各的
-      // （见上面主按钮那段注释），拼成「DP（这台 Windows）（0x10）」
-      // 既会折行，也会让人以为这个 0x10 和左边列表里的是同一个口。
-      const rawLabel = (p.label || p.input || '').trim();
-      const hex = `0x${(p.value || 0).toString(16).toUpperCase().padStart(2, '0')}`;
-      const shown = rawLabel && !/^输入源/.test(rawLabel) ? rawLabel : hex;
-      const label = p.knows_port
-        ? `它那块屏现在在 ${shown}`
-        : '口未知（它的画面现在不在它那边）';
-      // 对面设了码而本机没设：它会把我们发过去的指令全丢掉，
-      // 表现为"点了没反应"，不说清楚会一直找不到原因
-      const blocked = p.needs_pair
-        ? '<div class="meta warn">对端设了配对码、本机没设，发给它的指令会被丢掉。请两边填同一个码。</div>'
-        : '';
-      // 程序在线、但共用键鼠关着：表现和"对面关机"一模一样（心跳不来）。
-      // 不在这里点破，用户会去查网线。
-      const kvmOff = p.kvm_on
-        ? '<span class="tag green">共用键鼠已开</span>'
-        : '<span class="tag warn">共用键鼠没开</span>';
-      // 地址单独一行：和中文混排时 word-break:break-all 会把 "0x10）" 拆开
-      return `<div class="peerrow">
-        <span class="dot ${p.knows_port ? 'on' : 'off'}"></span>
-        <div>
-          <div class="name">${esc(p.node)} ${p.paired ? '<span class="tag green">已配对</span>' : '<span class="tag">未配对</span>'} ${kvmOff}</div>
-          <div class="meta">${label}</div>
-          <div class="addr">${esc(p.addr)}</div>
-          ${blocked}
-        </div>
-        <button class="btn-sm" onclick="sendTo('${esc(p.node)}')">${icon('upload')}发文件</button>
-      </div>`;
-    }).join('');
-  }
+  // 设备页：名册列 + 三块随选中态/配对态变的文字（设计稿 renderDevices
+  // 的生产版）。旧的 #peers 富卡片块已废 —— 对端信息收成名册紧凑行，
+  // 详细地址和配对警示搬进 selected-detail（选中一台才展开）。
+  renderDevicePane();
 
   // P3：传输页（选择器 / 拖放区标题 / 徽标 / 接收目录 / 传输记录列表）
   renderTransfers();
@@ -441,6 +438,133 @@ function render() {
       ? '自动恢复不会一开机就抢键鼠：等对端上线后才接，失败会自动重试。'
       : '自动恢复已关闭：每次启动都要手动点一次「开启」。没接键鼠的那台建议打开。';
   }
+  // 维护三钮（重新检测 / 扫描输入口 / 检测能否切换）：后端引擎线程串行
+  // 跑探测类动作，一个没跑完别接第二个（连点两次只是白排队，扫描还会
+  // 多黑几次屏）。跟 snap.maint_busy 一起禁用，动作结束自动恢复 ——
+  // 设计稿 app.js:113 的 data-maintain 同款。主切换按钮"永远显示"的
+  // 铁律不适用这三个：它们是排查动作，不是主路径。
+  const maintBusy = !!snap.maint_busy;
+  ['maintRescan', 'maintScan', 'maintCheck'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = maintBusy;
+  });
+}
+
+/// 设备页名册列 + 详情列三块随选中态/配对态变的文字（设计稿
+/// renderDevices / deviceRow / selected-detail / placement-note /
+/// pair-summary 的生产版）。布局 pane 的摆位图（#kvmGrid / #kvmLoose /
+/// #kvmLinks）归 kvm.js 的 renderKvm 管，这里只画名册和这几块文字。
+///
+/// 和已废除的 #peers 富卡片的分工：snap.peers 全是在线对端（ui.rs 的
+/// live_peers），名册行因此不再标注"在不在线"—— 行内状态说键鼠开没开
+/// （不开时心跳不来，表现和关机一模一样，不点破用户会去查网线）；
+/// 地址、口未知、配对警示这些详细信息搬进 selected-detail，选中一台
+/// 才展开，名册保持 59px 一台的紧凑度。
+function renderDevicePane() {
+  const peers = snap.peers || [];
+  const k = snap.kvm || {};
+
+  // ---- 名册列：本机行 / 已知设备数 / 紧凑行 ----
+  const localName = document.getElementById('deviceLocalName');
+  if (localName) localName.textContent = snap.node || '本机';
+  const known = document.getElementById('deviceListCount');
+  if (known) known.textContent = String(peers.length);
+
+  // 重绘会重建节点，焦点会丢。记住名册里 focused 的那台，画完还给它的
+  // 新节点（同 renderKvmGrid 的套路）—— 键盘用户 Tab 进行列选中一台，
+  // 不该被 1.2s 一轮的轮询打回 body。
+  const rowsBox = document.getElementById('deviceRows');
+  const focusedPeer = document.activeElement && document.activeElement.dataset
+    && document.activeElement.dataset.peer ? document.activeElement.dataset.peer : null;
+  if (rowsBox) {
+    rowsBox.innerHTML = peers.length ? peers.map(p => {
+      const link = (k.links || []).find(l => l.node === p.node);
+      const side = link
+        ? (link.side ? ({ right: '右侧', left: '左侧', top: '上方', bottom: '下方' })[link.side] : '共用一块屏')
+        : '未摆位';
+      const sel = kvmSelected === p.node;
+      return `<button class="device-row${sel ? ' selected' : ''}" data-peer="${esc(p.node)}"`
+        + ` aria-pressed="${sel ? 'true' : 'false'}" onclick="selectDevice('${esc(p.node)}')">`
+        + icon('monitor')
+        + `<span><strong>${esc(p.node)}</strong>`
+        + `<small>${side}${p.kvm_on ? '' : ' · 键鼠没开'}</small></span>`
+        + `<i class="status-dot${p.kvm_on ? '' : ' off'}"></i>`
+        + `</button>`;
+    }).join('') : '<div class="empty">还没有发现在线的对端</div>';
+    if (focusedPeer) {
+      const again = rowsBox.querySelector('[data-peer="' + focusedPeer + '"]');
+      if (again && typeof again.focus === 'function') again.focus();
+    }
+  }
+
+  // ---- 名册列底：配对摘要（设计稿 pair-summary）----
+  const pst = document.getElementById('pairSummaryText');
+  if (pst) {
+    pst.textContent = snap.paired
+      ? (snap.peer_verified > 0 ? '设备身份已验证' : '配对码已填 · 等对端确认')
+      : '尚未配对';
+  }
+
+  // ---- 摆位提示（设计稿 placement-note）----
+  const pn = document.getElementById('placementNote');
+  if (pn) {
+    pn.innerHTML = icon('info') + '<span>'
+      + (kvmSelected
+        ? '已选 ' + esc(kvmSelected) + ' · 点方向放置，Delete 移回未摆位'
+        : '共用一块屏与多屏布局可以同时使用。')
+      + '</span>';
+  }
+
+  // ---- 选中详情（设计稿 selected-detail）----
+  const sd = document.getElementById('selectedDetail');
+  if (sd) {
+    const p = kvmSelected ? peers.find(x => x.node === kvmSelected) : null;
+    if (p) {
+      // 它那块屏现在在哪个口：沿用旧 #peers 卡片的口名逻辑 —— 对端报的
+      // 可能是匿名名（"输入源 0x12"），那时只写十六进制；没验过口就写
+      // "口未知"，别拿对端自报的编号冒充本机可见的口（见 render() 注释）。
+      const rawLabel = (p.label || p.input || '').trim();
+      const hex = '0x' + (p.value || 0).toString(16).toUpperCase().padStart(2, '0');
+      const portLine = p.knows_port
+        ? (rawLabel && !/^输入源/.test(rawLabel) ? rawLabel : hex)
+        : '口未知（它的画面现在不在它那边）';
+      // 对端设了码而本机没设：指令和文件都会被它在握手处拒掉。选中这台
+      // 时必须说清，否则用户对着"点了没反应"查网线。
+      const blocked = p.needs_pair
+        ? '<div style="color:var(--danger)">对端设了配对码、本机没设，先填同一个码。</div>'
+        : '';
+      sd.innerHTML = '<div><strong>' + esc(p.node) + '</strong><br>'
+        + esc(p.addr) + ' · ' + esc(portLine) + ' · '
+        + (p.kvm_on ? '共用键鼠已开' : '共用键鼠没开') + blocked + '</div>'
+        + '<button class="btn-sm" onclick="sendTo(\'' + esc(p.node) + '\')">'
+        + icon('upload') + '发文件</button>';
+    } else {
+      sd.innerHTML = '<div><strong>选择一台设备</strong><br>查看连接信息、调整位置</div>'
+        + '<span class="tag ' + (snap.paired ? 'green' : 'warn') + '">'
+        + (snap.paired ? '已配对' : '未配对') + '</span>';
+    }
+  }
+
+  // ---- 配对表单文案（设计稿 pairingForm 的 pairHelp）----
+  // waiting：本机填了码、对端还没验过身份。输入框只读 + 主钮禁用 +
+  // aria-busy —— 这段时候改码只会让两边更不一致，想改码走取消配对。
+  // 空码保存的拦截提示走 flash（savePair 里那句「先填一个配对码」），
+  // 不占 field-help 位。
+  const waiting = !!snap.paired && snap.peer_verified === 0;
+  const help = document.getElementById('pairHelp');
+  if (help) {
+    help.className = 'field-help';
+    help.textContent = waiting
+      ? '配对码已保存，正在等待对端确认身份…'
+      : '最多 32 个字符。建议使用较长的配对码。';
+  }
+  const code = document.getElementById('code');
+  if (code) {
+    if (waiting) { code.setAttribute('readonly', ''); code.setAttribute('aria-busy', 'true'); }
+    else { code.removeAttribute('readonly'); code.removeAttribute('aria-busy'); }
+  }
+  const save = document.getElementById('pairSaveBtn');
+  if (save) save.disabled = waiting;
 }
 
 // ── P3 传输页：选择器 / 拖放区 / 传输记录列表 ──────────────────────

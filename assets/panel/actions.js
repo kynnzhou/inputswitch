@@ -6,9 +6,20 @@ function switchTo(value) {
   // 切换中是"进行态"：图标换 refresh + busy-icon（旋转），跟设计稿一致。
   // innerHTML 而不是 textContent —— 后者会把 render() 画上去的图标抹掉。
   main.innerHTML = icon('refresh', 'busy-icon') + '<span>切换中…</span>';
+  // aria-busy：读屏软件靠它念"正在忙"，点下去没下文会被当成没点到
+  main.setAttribute('aria-busy', 'true');
+  // 场景面板进 .is-switching：信号动画跑起来、两台显示器描边高亮
+  // （设计稿同款，CSS 在 P5 批1 落地）。轮询把按钮文案换回正常态时
+  // render() 会摘掉它；这期间场景内容没变（snap 没更新），paintScene
+  // 的缓存不会重绘，动画不会放一半被擦掉。
+  const flow = document.querySelector('.screen-flow');
+  if (flow) flow.classList.add('is-switching');
   api('/api/switch?value=' + value).then(() => setTimeout(pull, 700));
 }
-function setTarget(value) { api('/api/target?value=' + value).then(pull); }
+function setTarget(value) {
+  flash('已设为热键目标', '按切屏热键就会切到这个口');
+  api('/api/target?value=' + value).then(pull);
+}
 
 function quickSwitch() {
   const main = document.getElementById('mainSwitch');
@@ -31,16 +42,33 @@ function askPeer(value) {
   // 同样是进行态：refresh + busy-icon。innerHTML（同 switchTo）。
   main.innerHTML = icon('refresh', 'busy-icon') + '<span>已请对端切换…</span>';
   main.disabled = true;
+  main.setAttribute('aria-busy', 'true');
   api('/api/ask-peer?value=' + value).then(() => setTimeout(pull, 1500));
 }
 function genCode() {
   const code = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
-  document.getElementById('code').value = code;
+  const input = document.getElementById('code');
+  input.value = code;
+  // 生成的码也是"用户动过的码"：标 dirty，否则下一轮轮询把它冲掉；
+  // 顺手聚焦 —— 生成完用户下一步八成是改两位或直接保存，焦点在码位上。
+  codeDirty = true;
+  input.focus();
 }
 function savePair() {
   const code = document.getElementById('code').value.trim();
+  // 空码直发 = 解除配对（后端 Action::Pair("") 的语义）—— 点「保存并连接」
+  // 却把配对拆了，用户根本没想到这一步。空码在这里必须拦下来，并给一条
+  // 去取消配对的直路（unpair 自己有确认弹窗，说清了后果）。
+  if (!code) {
+    codeDirty = true;   // 别让轮询把用户刚清空的输入框填回旧码
+    return flash('先填一个配对码', '两台填同一个码；想解除配对走下面的按钮',
+      { text: '去取消配对', fn: () => unpair() });
+  }
   codeDirty = false;
-  api('/api/pair', { code }).then(pull);
+  api('/api/pair', { code }).then(() => {
+    flash('配对码已保存', '等对端填同一个码，连上后页脚会显示已连接');
+    pull();
+  });
 }
 function unpair() {
   const ok = confirm(
@@ -55,6 +83,9 @@ function unpair() {
 }
 function toggleKvm() {
   const on = snap && snap.kvm && snap.kvm.on;
+  // 回执先行：开关翻面要等下一轮轮询，中间这一秒多按钮看起来"没反应"
+  flash(on ? '正在关闭共用键鼠…' : '正在开启共用键鼠…',
+    on ? '键鼠会留在本机' : '连上后就能把键鼠交给对端');
   api('/api/kvm?on=' + (on ? 'false' : 'true')).then(pull);
 }
 // 模式已下沉到每台对端（由摆位决定），面板上不再有全局模式开关。
@@ -62,29 +93,56 @@ function toggleKvm() {
 // 只影响一句状态文案（v0.6.68）。/api/kvm-role 保留给 CLI 与老调用方。
 
 // 接收位移倍率。后端会重建共用键鼠实例（先把键鼠交还再停），所以点完
-// 会话会断一下 —— 面板轮询会把新状态刷回来。
-function setKvmScale(v) { api('/api/kvm-scale?value=' + v).then(pull); }
+// 会话会断一下 —— 面板轮询会把新状态刷回来。回执里说清"要断一下"，
+// 否则用户看着光标卡住会以为程序挂了。
+function setKvmScale(v) {
+  flash('光标速度已设为 ×' + Number(v).toFixed(1), '键鼠会话会重连一次，光标不动');
+  api('/api/kvm-scale?value=' + v).then(pull);
+}
 
-function toggleAutostart() { api('/api/autostart', { on: !snap.autostart }).then(pull); }
+function toggleAutostart() {
+  const on = !snap.autostart;
+  flash(on ? '已开启开机自启' : '已关闭开机自启');
+  api('/api/autostart', { on }).then(pull);
+}
 // 输入口改名走工作台「管理输入源」弹窗的批量保存（savePorts，见 P4 组）——
 // 行内 contenteditable 那套（saveLabel / editingPort）随旧 #ports 列表一起删了。
 function toggleAutoResume() {
-  api('/api/kvm-autoresume', { on: !((snap.kvm || {}).auto_resume) }).then(pull);
+  const on = !((snap.kvm || {}).auto_resume);
+  flash(on ? '对端上线后会自动恢复共用键鼠' : '自动恢复已关闭，启动后要手动点一次「开启」');
+  api('/api/kvm-autoresume', { on }).then(pull);
 }
 function toggleKeepAlive() {
-  api('/api/kvm-keepalive', { on: !((snap.kvm || {}).keep_alive) }).then(pull);
+  const on = !((snap.kvm || {}).keep_alive);
+  flash(on ? '崩溃后会自动重启' : '崩溃守护已关闭');
+  api('/api/kvm-keepalive', { on }).then(pull);
 }
 // 副机模式：三项一起开/关。判据用 auto_resume（它是这个组合里最"专有"的一项）。
 function toggleSubmachine() {
-  api('/api/submachine', { on: !((snap.kvm || {}).auto_resume) }).then(pull);
+  const on = !((snap.kvm || {}).auto_resume);
+  flash(on ? '副机模式开启中…' : '副机模式已关闭',
+    on ? '开机自启 + 自动恢复 + 崩溃重启一次配好' : '不再自启、不再自动恢复、不再守护');
+  api('/api/submachine', { on }).then(pull);
 }
-function toggleClipboard() { api('/api/clipboard', { on: !snap.clipboard }).then(pull); }
+function toggleClipboard() {
+  const on = !snap.clipboard;
+  flash(on ? '剪贴板同步已开启' : '剪贴板同步已关闭');
+  api('/api/clipboard', { on }).then(pull);
+}
 // 改键：网页里只能收到"焦点在这个页面上"的按键，录不出全局热键，
 // 所以让主程序弹它自己的小窗口来收，录完这里轮询会自动刷新。
 function recHotkey() {
   api('/api/hotkey-record').then(() => {
     document.getElementById('hotkey').textContent = '请到刚弹出的窗口里按…';
   });
+  flash('请到刚弹出的窗口里按组合键', 'Esc 取消；只按修饰键不算');
+}
+// 恢复默认热键（ctrl+alt+s，schema.rs 的 default_hotkey）。
+// 改键录完只写配置、没有反悔入口 —— 用户录了个和其他软件冲突的组合，
+// 只能去手改 config.json。后端 /api/hotkey-reset 重新注册默认键并保存。
+function resetHotkey() {
+  flash('正在恢复默认热键…', 'Ctrl + Alt + S');
+  api('/api/hotkey-reset').then(pull);
 }
 
 // ── P4 工作台场景（设计稿 data-scene / data-switch-to / ports 的生产版）──
@@ -149,11 +207,23 @@ function wsHandOver() {
 function openPortsModal() {
   editingPorts = false;
   renderPortsModal();
-  document.getElementById('portsModal').style.display = '';
+  openModal('portsModal');
 }
 function closePortsModal() {
   editingPorts = false;
-  document.getElementById('portsModal').style.display = 'none';
+  closeModal('portsModal');
+}
+
+/// 扫描输入口先确认再扫。扫描真的会逐个切输入口，屏幕会黑几次
+/// （probe.rs on_scan_ports：有对端在线且配对通畅才物理试探，否则只
+/// 汇总已知信息不切屏）—— 不确认就扫，用户只会莫名其妙看黑屏。
+/// 设计稿 maintain('scan') 同款先弹确认。
+function openScanModal() {
+  openModal('scanModal');
+}
+function confirmScan() {
+  closeModal('scanModal');
+  post('/api/scan');
 }
 
 /// 保存改名：只打改过的口，全部回来再拉一次。没改动也关弹窗，
@@ -199,11 +269,33 @@ function setTransferRecipient(node) {
   transferUi.recipient = node;
   renderTransfers();
 }
+/// 发送前的门禁。后端 resolve_peer 会拒三种情况（没对端 / 点名的那台不在线 /
+/// 多台在线又没选），拒绝只写进后端状态行 —— 用户点完「选择文件」跳出系统
+/// 对话框，选完文件看着它静默失败，比提前说清更烦。所以发之前先问两句。
+/// 注意**不**拦"两边都没配对码"：传输层只在对面设了码而本机没设时才拒
+/// （transfer.rs receive_one：key 为空就不校验），两边都没码是能发的。
+function canSend() {
+  const peers = snap.peers || [];
+  if (!peers.length) {
+    flash('还没有在线的对端', '另一台电脑也运行本程序，同一网段会自动出现',
+      { text: '查看设备', fn: () => showPage('devices') });
+    return false;
+  }
+  const sel = document.getElementById('recipient');
+  const who = (sel && sel.value) || transferUi.recipient || peers[0].node;
+  const peer = peers.find(p => p.node === who);
+  if (peer && peer.needs_pair) {
+    flash('对端设了配对码，本机没设', '文件会被它拒绝 —— 两边填同一个码再发',
+      { text: '去配对', fn: () => showPage('devices') });
+    return false;
+  }
+  return true;
+}
 /// 三个发送入口。发完都跳到传输页 —— 接下来要看的是列表，不是还停在
 /// 拖放区（设计稿 startTransfers 里的 navigate('transfers') 同款）。
-function sendFilesTo() { post('/api/send' + transferNode()); showPage('transfers'); }
-function sendFolderTo() { post('/api/send-folder' + transferNode()); showPage('transfers'); }
-function sendTestTo() { post('/api/send-test' + transferNode()); showPage('transfers'); }
+function sendFilesTo() { if (!canSend()) return; post('/api/send' + transferNode()); showPage('transfers'); }
+function sendFolderTo() { if (!canSend()) return; post('/api/send-folder' + transferNode()); showPage('transfers'); }
+function sendTestTo() { if (!canSend()) return; post('/api/send-test' + transferNode()); showPage('transfers'); }
 /// 传输列表控制：暂停/继续/取消/重试。阶段合法性由后端注册表自己判
 /// （对终态任务的操作返回 false，前端看到的就是"点了没反应"——
 /// 那种任务本就不可操作，比假回 ok:true 诚实）。
@@ -261,20 +353,22 @@ function transferPage(delta) {
   });
 })();
 
-// 帮助 / 排查弹窗：静态内容，开合只切遮罩的 display（和 update.js 的
-// openUpdate/closeUpdate 同一个路子）。两个都是 body 级 fixed 遮罩，
-// z-index 40 自然盖过壳体；同一时刻只开一个，帮助转排查时先关帮助。
+// 帮助 / 排查弹窗：静态内容，开合走 core.js 的 openModal/closeModal
+// （Esc 关、点遮罩关、开时进框、关时还焦，见那里的注释）。两个都是
+// body 级 fixed 遮罩，z-index 40 自然盖过壳体；同一时刻只开一个，
+// 帮助转排查时先关帮助（关 Help 会把焦点还给帮助钮，排查的 opener
+// 记的正是它 —— 排查关掉焦点回帮助钮，符合"从哪来回哪去"）。
 function openHelp() {
-  document.getElementById('helpModal').style.display = '';
+  openModal('helpModal');
 }
 function closeHelp() {
-  document.getElementById('helpModal').style.display = 'none';
+  closeModal('helpModal');
 }
 function openDiagnostics() {
-  document.getElementById('diagModal').style.display = '';
+  openModal('diagModal');
 }
 function closeDiagnostics() {
-  document.getElementById('diagModal').style.display = 'none';
+  closeModal('diagModal');
 }
 
 // 启动：先拉一次，之后自调度轮询（节奏随下载状态变，见 core.js）

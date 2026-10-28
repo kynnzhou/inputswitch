@@ -75,20 +75,31 @@ function icon(name, extra) {
   return '<svg class="icon' + (extra ? ' ' + extra : '') + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
 }
 
-/// 一句轻提示（放在顶栏状态行里，3 秒后淡出）。
+/// 一句轻提示（放在顶栏状态行里，默认 3.2 秒后淡出；带动作钮 6.5 秒 ——
+/// 要留给用户"读完再点一下"的时间，设计稿 toast undo 同款 6500ms）。
 /// 以前这里静默 return，点了没反应 —— 用户分不清"程序坏了"和"确实切不了"。
-function flash(title, sub) {
+/// action = { text, fn } 时在提示行里挂一个动作钮：撤销摆位、去配对这类
+/// "刚做完的事还能反悔"的场景（设计稿 app.js toast 的 undo 分支）。
+/// fn 是闭包，不能走 onclick 字符串，挂到节点上。
+function flash(title, sub, action) {
   const line = document.getElementById('status');
-  line.textContent = sub ? `${title} · ${sub}` : title;
+  const text = sub ? `${title} · ${sub}` : title;
+  line.innerHTML = esc(text) + (action && action.text
+    ? ' <button type="button" class="toast-action">' + esc(action.text) + '</button>'
+    : '');
+  // DOM 桩里 querySelector 返回 null，跳过接线不报错
+  const btn = line.querySelector && line.querySelector('button.toast-action');
+  if (btn && action && typeof action.fn === 'function') btn.onclick = action.fn;
   line.style.display = '';
+  const life = action && action.text ? 6500 : 3200;
   // 轮询 1.2s 一次，会把这一行改回后端状态 —— 记下截止时间让 pull() 让路
-  flashUntil = Date.now() + 3200;
+  flashUntil = Date.now() + life;
   clearTimeout(flash.timer);
   flash.timer = setTimeout(() => {
-    line.textContent = '';
+    line.innerHTML = '';
     line.style.display = 'none';
     flashUntil = 0;
-  }, 3200);
+  }, life);
 }
 
 /// ── P2 壳层：四页切换 ──────────────────────────────────────────
@@ -125,6 +136,54 @@ function showPage(page) {
   // 换页把滚动位置带回顶部：上一页滚到一半，下一页接着那个位置很违和。
   const box = document.getElementById('viewContainer');
   if (box) box.scrollTop = 0;
+  // 进设备页按配对态选默认 pane：没配对（或码已填、对端还没验过）的人
+  // 第一件事是填码 → 配对表单；已连接的人多半是来摆位的 → 布局。
+  // renderSceneAlert 的「去配对」因此自动落到表单上，不用每个入口各写一遍。
+  // snap 可能还没拉到（启动首次导航就跑在 pull() 之前）—— 那时不选，
+  // 只挂欠账（devicePaneAuto），render() 首跑后 autoDevicePane() 补选。
+  if (page === 'devices') {
+    if (snap) {
+      devicePaneAuto = false;
+      showDevicePane(snap.paired && snap.peer_verified > 0 ? 'layout' : 'pair');
+    } else {
+      devicePaneAuto = true;
+    }
+  }
+}
+
+/// 设备页详情列的两个 pane：'layout'（摆位，默认）/ 'pair'（配对表单）。
+/// 页内状态 —— 切页不重置它，只有**进入**设备页时按配对态挑默认的
+/// （见 showPage 末尾）。名册列的「连接新设备 / 管理配对」和表单里的
+/// 「返回布局」手动切。设计稿 state.devicePane 同款。
+/// byUser = 用户手动切的入口（三个 onclick）—— 销掉自动选择的欠账，
+/// 之后的轮询 render 不再按配对态抢回用户特意切看的 pane。
+let devicePane = 'layout';
+let devicePaneAuto = false;
+
+function showDevicePane(pane, byUser) {
+  devicePane = pane === 'pair' ? 'pair' : 'layout';
+  if (byUser) devicePaneAuto = false;
+  const layout = document.getElementById('deviceLayoutPane');
+  const pair = document.getElementById('devicePairPane');
+  if (layout) layout.hidden = devicePane !== 'layout';
+  if (pair) pair.hidden = devicePane !== 'pair';
+  if (devicePane === 'pair') {
+    // 这个 pane 唯一的动作就是填码：打开就把焦点送进码位
+    const code = document.getElementById('code');
+    if (code && typeof code.focus === 'function') code.focus({ preventScroll: true });
+  }
+}
+
+/// pull() 到位后补一次按配对态选 pane。挂在 render() 里调 —— 1.2s 一轮的
+/// 轮询每次都过，但欠账一命中就销，实际只跑一次；用户手动切过（已销账）
+/// 时静默跳过。修的是时序坑：showPage('devices') 常比首次 pull() 先跑
+/// （启动导航、场景警示的「去配对」都是这个顺序），那时 snap 还是 null
+/// 选不了 pane，而 pull 完成后没有任何地方补刀 —— 未配对的人打开面板
+/// 会停在摆位页，要去填码还得自己找到「管理配对」。
+function autoDevicePane() {
+  if (!devicePaneAuto || !snap) return;
+  devicePaneAuto = false;
+  showDevicePane(snap.paired && snap.peer_verified > 0 ? 'layout' : 'pair');
 }
 
 /// 侧栏宽档：窗口 < 950px 收成 65px 图标栏（.compact-nav），
@@ -218,3 +277,65 @@ function toggleReduceMotion() {
   try { localStorage.setItem(MOTION_KEY, on ? '0' : '1'); } catch (e) { /* 存不进去也当场生效 */ }
   applyReduceMotion();
 }
+
+/// ── 弹窗可访问性：Esc 关、点遮罩关、开时进框、关时还焦 ──────────
+/// 设计稿用原生 <dialog>：showModal() 自带焦点圈禁和 Esc，close 事件里
+/// 还焦，点遮罩按 rect 判界（app.js:406-417）。生产是 div 遮罩 —— 轮询
+/// 刷新和 panelcheck 的 DOM 桩都围着 style.display 转，换成 <dialog>
+/// 要动整套刷新逻辑。不换结构，把这三件事手工补上，行为对齐。
+/// modalStack 是栈不是单值：帮助弹窗能转去排查弹窗（先关帮助再开排查），
+/// Esc 一次只关最上面那个，关完焦点按打开顺序逐层还回去。
+const modalStack = [];
+
+/// 打开遮罩。记下打开者（关闭时还焦），把焦点送进框里 —— 键盘用户和
+/// 读屏软件靠它知道"现在在这个对话框里"，不会还在背景页上乱跳。
+function openModal(id) {
+  const mask = document.getElementById(id);
+  // 已经开着就别重复入栈：重复 push 会让 Esc 关一次还剩一层鬼影
+  if (!mask || mask.style.display === '') return;
+  modalStack.push({ id: id, opener: document.activeElement });
+  mask.style.display = '';
+  const box = mask.querySelector && mask.querySelector('.modal');
+  const first = box && box.querySelector
+    ? box.querySelector('button, input, select, textarea, [href]') : null;
+  if (first && typeof first.focus === 'function') first.focus({ preventScroll: true });
+  else if (box && typeof box.focus === 'function') box.focus({ preventScroll: true });
+}
+
+/// 关闭遮罩，焦点还给打开它的那枚钮（节点还在文档树上的话；
+/// 打开者已被轮询重画掉就还不了，静默跳过）。
+function closeModal(id) {
+  const mask = document.getElementById(id);
+  if (!mask) return;
+  mask.style.display = 'none';
+  // 按 id 摘栈，不是无脑 pop 栈顶：旧路数（直接改 display 关的）会在栈里
+  // 留下不匹配的残留，pop 错层会把别层 opener 的焦点还到错误的地方。
+  let entry = null;
+  for (let i = modalStack.length - 1; i >= 0; i--) {
+    if (modalStack[i].id === id) { entry = modalStack.splice(i, 1)[0]; break; }
+  }
+  if (entry && entry.opener && typeof entry.opener.focus === 'function'
+    && entry.opener.isConnected !== false) {
+    entry.opener.focus({ preventScroll: true });
+  }
+}
+
+/// 栈顶那个还开着的遮罩。关掉的条目可能残留在栈里（直接改 display 的
+/// 老路数），逐层往下找第一个真开着的。
+function topModal() {
+  for (let i = modalStack.length - 1; i >= 0; i--) {
+    const m = document.getElementById(modalStack[i].id);
+    if (m && m.style.display !== 'none') return modalStack[i].id;
+  }
+  return null;
+}
+
+// Esc 关最上面的弹窗。没有弹窗开着时直接返回 —— 不抢热键录制里的 Esc
+// （录制逻辑自己消费它），也不碰别处对 Escape 的处理。
+document.addEventListener('keydown', e => {
+  if (!e || e.key !== 'Escape') return;
+  const id = topModal();
+  if (!id) return;
+  e.preventDefault();
+  closeModal(id);
+});

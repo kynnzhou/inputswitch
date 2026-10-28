@@ -49,6 +49,11 @@ pub struct Snapshot {
     pub own_value: u16,
     /// 上一次「重新检测显示器」的结论
     pub port_note: String,
+    /// 探测类维护动作（重新检测 / 扫描输入口 / 检测能否切换）是否正在跑。
+    /// 引擎线程串行执行，一个没完别接第二个 —— 面板据此禁用顶栏那三个钮，
+    /// 动作结束（含 panic）自动复位。设计稿 data-maintain 的同款状态。
+    #[serde(default)]
+    pub maint_busy: bool,
     pub autostart: bool,
     pub clipboard: bool,
     pub inbox: String,
@@ -230,6 +235,12 @@ pub enum Action {
     /// 弹出原生录制窗口让用户按一下新的组合键。
     /// 放不到网页里做：网页只收得到"焦点在页面上"的按键，按不出全局热键。
     RecordHotkey,
+    /// 把切屏热键恢复成默认组合键（`ctrl+alt+s`）。
+    ///
+    /// 录制窗只"写新值"，没有反悔入口 —— 用户录了个和其他软件冲突的组合，
+    /// 以前只能手改 config.json。这个动作重新注册默认键并保存，
+    /// 和录制成功那条路（ui.rs 的 apply_hotkey + save）走同一套机制。
+    ResetHotkey,
     /// 在文件管理器里打开配置目录
     OpenConfigDir,
     /// 本机读不到 DDC（画面在对面），请对端替我把画面切到指定口
@@ -499,6 +510,10 @@ fn handle(
         }
         ("POST", "/api/hotkey-record") => {
             dispatch(Action::RecordHotkey);
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        ("POST", "/api/hotkey-reset") => {
+            dispatch(Action::ResetHotkey);
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
         ("POST", "/api/open-config") => {

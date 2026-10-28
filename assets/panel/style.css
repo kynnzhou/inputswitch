@@ -35,6 +35,7 @@
   color-scheme: light;
   /* ── 设计令牌（移植自 DESIGN.md / design/interactive/app.css :root）── */
   --stage: #e9ecf1;          /* 窗口底色（内容区之外的画布） */
+  --sidebar: #f4f5f8;        /* 侧栏/页脚底（设计稿 --sidebar：比 surface 退一档） */
   --surface: #ffffff;        /* 卡片 / 顶栏 / 弹窗的实底 */
   --subtle: #f6f7f9;         /* 悬停 / 内衬 / 分段控件底 */
   --canvas: #f9fafc;         /* 比 surface 再退一档的填充 */
@@ -85,6 +86,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --stage: #131720;
+  --sidebar: #1b2029;
   --surface: #20252f;
   --subtle: #292f3a;
   --canvas: #1c212b;
@@ -133,42 +135,43 @@ h1, h2, h3, p { margin: 0; }
   height: 100dvh; min-height: 520px;
   display: grid; grid-template-columns: 178px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  overflow: hidden; background: var(--stage);
+  overflow: hidden; background: var(--sidebar);
 }
 .app.compact-nav { grid-template-columns: 65px minmax(0, 1fr); }
 
-/* 侧栏：导航 + 底部本机信息。底色比主区退一档（--stage），
-   主区是白纸面 --surface —— "导航在窗外，内容在纸上"。 */
+/* 侧栏：导航 + 底部本机信息。底色用设计稿 --sidebar（比主区 surface
+   退一档、比画布 stage 亮一档）—— "导航在窗外，内容在纸上"。 */
 .sidebar {
-  background: var(--stage); padding: 14px 12px 12px;
+  background: var(--sidebar); padding: 23px 12px 12px;
   display: flex; flex-direction: column; min-height: 0; gap: 4px;
 }
-.main-nav { display: flex; flex-direction: column; gap: 4px; }
+.main-nav { display: flex; flex-direction: column; gap: 7px; }
 .nav-item {
-  justify-content: flex-start; gap: 11px; min-height: 38px; padding: 8px 12px;
+  justify-content: flex-start; gap: 11px; min-height: 40px; padding: 9px 12px;
   background: transparent; border: 0; color: var(--muted);
-  font-size: 12.5px; border-radius: 8px;
+  border-radius: 8px;
 }
 .nav-item:hover { background: var(--subtle); color: var(--text); }
 .nav-item.selected { color: var(--accent-ink); background: var(--accent-soft); font-weight: 600; }
 .nav-item .icon { width: 18px; height: 18px; }
 .nav-count {
-  margin-left: auto; font-size: 11px; padding: 0 5px; border-radius: 5px;
-  background: var(--line); color: var(--muted);
+  margin-left: auto; font-size: 11px; padding: 0 4px;
+  color: var(--muted);
 }
 .sidebar-bottom { margin-top: auto; }
 .local-machine {
-  border-top: 1px solid var(--line); margin-top: 8px; padding: 12px 3px 2px;
+  border-top: 1px solid var(--line); margin-top: 12px; padding: 17px 3px 1px;
   display: flex; gap: 9px; align-items: center; min-width: 0;
 }
 .local-machine > .icon { width: 20px; height: 20px; color: var(--muted); flex: none; }
 .local-machine strong { display: block; font-size: 11px; font-weight: 600; }
-.local-machine span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.local-machine span { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .local-machine .status-dot { margin-left: auto; width: 5px; height: 5px; flex: none; }
 .status-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex: none;
-  background: var(--success); box-shadow: 0 0 0 3px var(--success-soft);
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--success);
 }
+.status-dot.off { background: var(--muted); }
 /* 图标栏档：只留图标，文字全收（和设计稿 ≤950px 的行为一致）。
    title 属性还在，悬停仍看得到页名。 */
 .compact-nav .nav-item { justify-content: center; padding-inline: 8px; gap: 0; }
@@ -178,6 +181,10 @@ h1, h2, h3, p { margin: 0; }
 .compact-nav .local-machine > div { display: none; }
 .compact-nav .local-machine .status-dot { display: none; }
 .compact-nav .sidebar { padding-inline: 8px; }
+.compact-nav .main-nav { gap: 9px; }
+.compact-nav .command-bar, .compact-nav .topbar { padding-inline: 23px; }
+.compact-nav .view-container { padding: 20px 23px 16px; }
+.compact-nav .statusline { gap: 6px 13px; }
 
 /* 主区：命令栏钉顶，内容区自己滚。 */
 .app-main {
@@ -186,7 +193,7 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 12px 0 0 0; overflow: hidden;
 }
 .command-bar, .topbar {
-  flex: none; padding: 12px 18px 10px;
+  flex: none; padding: 17px 24px 10px;
   background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .statusline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; }
@@ -208,17 +215,31 @@ h1, h2, h3, p { margin: 0; }
   background: transparent; border: 1px solid var(--line); box-shadow: none;
 }
 .flat-group button:hover { background: var(--subtle); border-color: var(--line-strong); color: var(--text); }
+/* 探测类动作跑动中三个一起禁用（render.js 跟 snap.maint_busy）。
+   置灰 + 禁光标，但别加 opacity 动画 —— 禁用是状态，不是装饰。 */
+.flat-group button:disabled { color: var(--faint); cursor: default; }
+.flat-group button:disabled:hover { background: transparent; border-color: var(--line); color: var(--faint); }
 .flat-group .icon { width: 13px; height: 13px; }
 /* 状态行：只有"需要你知道"的一句话。没有就整行消失。 */
 .nextstep { margin-top: 10px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
 .nextstep:empty { display: none; }
 .nextstep .arrow { color: var(--faint); }
 .toast { margin-top: 8px; font-size: 12px; color: var(--muted); min-height: 17px; }
+/* 提示行里的动作钮（撤销摆位 / 去配对）：core.js flash() 第三参渲染。
+   小号描边，不抢主按钮的视觉权重；撤销要活 6.5 秒（flash 的 action 档）。 */
+.toast .toast-action {
+  font-size: 11px; line-height: 1; min-height: 22px; padding: 5px 10px;
+  margin-left: 7px; border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--surface); color: var(--accent); cursor: pointer;
+  transition: border-color .14s, background .14s;
+}
+.toast .toast-action:hover { border-color: var(--accent); background: var(--accent-soft); }
+.toast .toast-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* 内容区：四页只显示一页，内部滚。页与页之间用 gap 呼吸，
    组件自己的 margin-bottom 在这一层清零（否则 gap + margin 双倍）。 */
-.view-container { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 16px; }
-.page-view { display: flex; flex-direction: column; gap: 12px; }
+.view-container { flex: 1; min-height: 0; overflow: auto; padding: 23px 26px 18px; }
+.page-view { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
 .page-view.view-enter { animation: view-in 180ms var(--ease); }
 @keyframes view-in { from { transform: translateY(4px); } to { transform: translateY(0); } }
 .page-view .card, .page-view .banner, .page-view .grid2 { margin-bottom: 0; }
@@ -229,7 +250,7 @@ h1, h2, h3, p { margin: 0; }
 
 /* 页脚：通栏一条，11px 弱化字。左边配对状态、中间热键、右边紧急断开。 */
 .app-footer {
-  grid-column: 1 / -1; background: var(--stage);
+  grid-column: 1 / -1; background: var(--sidebar);
   display: flex; gap: 16px; align-items: center; padding: 0 14px;
   font-size: 11px; color: var(--muted); min-width: 0; min-height: 30px;
   border-top: 1px solid var(--line);
@@ -266,11 +287,6 @@ h1, h2, h3, p { margin: 0; }
 .grid2.equal { align-items: stretch; }
 .grid2.equal > .card { display: flex; flex-direction: column; }
 .grid2.equal > .card > .hint:last-child { margin-top: auto; }
-/* 空态垂直居中：靠 margin-top:auto 把说明压到底部会留出一大块空白 */
-.grid2.equal > .card > .empty-fill {
-  flex: 1; display: flex; flex-direction: column; justify-content: center;
-  min-height: 64px;
-}
 .grid2 > .card { margin-bottom: 12px; }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
 
@@ -314,8 +330,8 @@ button {
 button:hover { background: var(--subtle); border-color: var(--muted); }
 /* 焦点环跟设计稿：2px 实线 + 3px 偏移。不用 box-shadow 环 ——
     Outline 不占布局、深色底下也不会和按钮底色糊在一起。 */
-button:focus-visible, .screen:focus-visible, [tabindex]:focus-visible,
-.sw:focus-visible, .rename:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible,
+.screen:focus-visible, [tabindex]:focus-visible, .sw:focus-visible, .rename:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 3px;
 }
 .btn-sm { min-height: 28px; padding: 3px 10px; font-size: 12px; gap: 6px; }
@@ -324,6 +340,7 @@ button.primary {
   color: #fff; border-color: transparent;
   background: var(--accent);
   font-weight: 600; min-width: 170px;
+  min-height: 37px; padding: 7px 16px;
 }
 button.primary:hover { background: var(--accent-hover); border-color: transparent; }
 /* 实心蓝只留给顶栏那一个主按钮（更新弹窗里的主操作是唯一例外：
@@ -366,17 +383,22 @@ button.is-off, button.is-off:hover {
 .sw:hover { background: var(--muted); }
 .sw.on:hover { background: var(--accent-hover); }
 
-input[type=text] {
+input, select {
   font: inherit; padding: 6px 10px; border-radius: 6px; font-size: 13px;
   border: 1px solid var(--line-strong); background: var(--surface); color: var(--text);
   accent-color: var(--accent); caret-color: var(--accent);
-  min-width: 0; width: 150px;
+  min-height: 34px; min-width: 0; width: 150px;
 }
-/* 配对卡：输入框要有边（以前边框是半透明白，落在白卡上等于没有） */
-.pairrow { display: flex; gap: 8px; align-items: center; }
-.pairrow input[type=text] { flex: 1; width: auto; }
-.pairrow > button { flex: none; }
-
+select { cursor: pointer; }
+input::placeholder { color: var(--muted); opacity: 1; }
+::selection { color: var(--accent-ink); background: var(--accent-soft); }
+button[aria-busy='true'] { cursor: progress; }
+kbd {
+  font: 11px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  border: 1px solid var(--line-strong); border-bottom-width: 2px;
+  border-radius: 4px; padding: 1px 5px; color: var(--muted);
+  background: var(--surface); white-space: nowrap;
+}
 /* ── 输入口行 / 对端行 / 链路行 ──────────────────────────────── */
 .ports { display: flex; flex-direction: column; gap: 2px; }
 .port {
@@ -414,24 +436,60 @@ input[type=text] {
 .tag.warn { color: var(--warning); background: var(--warning-soft); }
 .tag.plain { color: var(--muted); background: var(--subtle); }
 
-/* 对端行：左点 / 中间信息 / 右按钮。用 grid 而不是 flex-wrap ——
-   名字长了会把「发文件」挤到中间，看着像错位（2026-10-22 截图）。
-   P1 起行底不再铺实色：悬停时一抹 --subtle 即画出行的范围。 */
-.peerrow {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px; align-items: center;
-  padding: 9px 10px; border-radius: 8px; border: 1px solid transparent;
-  transition: background-color .12s;
+/* ══════════════════════════════════════════════════════════════
+   设备页（设计稿 renderDevices 的生产版，度量照 app.css:212-260）
+
+   左名册列 195px + 右详情列。名册列是"有哪些设备"的常驻路标；
+   详情列两个 pane（摆位布局 / 配对表单）由 showDevicePane 切 hidden。
+   旧的"页首配对大卡 + 对端富卡片 + 摆位卡"三栏结构已废除 ——
+   对端信息收成名册紧凑行，详细信息搬进 selected-detail。 */
+.devices-layout { display: grid; grid-template-columns: 195px minmax(0,1fr); gap: 22px; flex: 1; min-height: 0; }
+.device-list { border-right: 1px solid var(--line); padding-right: 17px; min-height: 0; }
+.list-label { font-size: 11px; color: var(--muted); margin: 3px 0 10px; }
+/* 59px 行：图标 + 两行文字 + 右端点。选中态 --accent-soft 实底。
+   本地那行（local-row）是同款式的 div，只是不可点、没有选中态。 */
+.device-row {
+  display: flex; justify-content: flex-start; gap: 10px; width: 100%;
+  padding: 11px 10px; margin-bottom: 6px;
+  background: transparent; border: 1px solid transparent;
+  text-align: left; min-height: 59px; white-space: normal;
 }
-.peerrow:hover { background: var(--subtle); }
-.peerrow + .peerrow { margin-top: 2px; }
-.peerrow > .dot { align-self: start; margin-top: 6px; }
-.peerrow .name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; }
-.peerrow .meta { color: var(--faint); font-size: 12px; margin-top: 3px; }
-/* 地址单独一行：和中文混排时 word-break:break-all 会把 "0x10）" 拆成 "0x1 / 0)" */
-.peerrow .addr { color: var(--faint); font-size: 11.5px; margin-top: 2px;
-  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.peerrow .meta.warn { color: var(--warning); }
+.device-row.selected { background: var(--accent-soft); border-color: var(--accent-soft); }
+.device-row > .icon { width: 20px; height: 20px; color: var(--muted); }
+.device-row.selected > .icon { color: var(--accent-ink); }
+.device-row strong { display: block; font-size: 12px; font-weight: 600; }
+.device-row small { display: block; color: var(--muted); margin-top: 3px; font-size: 11px; }
+.device-row .status-dot { margin-left: auto; width: 5px; height: 5px; }
+.add-device { width: 100%; justify-content: flex-start; color: var(--muted); font-size: 11px; margin-top: 9px; padding-left: 10px; }
+.pair-summary { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; color: var(--muted); font-size: 11px; }
+.pair-summary > .icon { width: 13px; height: 13px; vertical-align: -2px; }
+.pair-summary .ghost { font-size: 11px; min-height: 26px; margin-top: 3px; padding-left: 0; }
+.device-detail { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.detail-heading h2 { font-size: 15px; font-weight: 650; color: var(--ink); }
+.detail-heading p { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.placement-note { font-size: 11px; color: var(--muted); display: flex; gap: 6px; align-items: center; min-height: 25px; }
+.placement-note .icon { width: 13px; height: 13px; }
+.selected-detail {
+  border-top: 1px solid var(--line); padding-top: 9px;
+  display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  flex: none; font-size: 11px; color: var(--muted);
+}
+.selected-detail strong { font-size: 11px; font-weight: 600; color: var(--ink); }
+.selected-detail .btn-sm { font-size: 11px; min-height: 24px; }
+/* 配对 pane：380px 居中窄栏（设计稿 pair-form）。margin:auto 在
+   device-detail 的 flex 列里做水平居中，纵向自然堆在顶部。 */
+.pair-form { width: min(100%,380px); margin: auto; display: flex; flex-direction: column; gap: 15px; }
+.pair-form > .icon { width: 32px; height: 32px; color: var(--accent-ink); }
+.pair-form h2 { font-size: 19px; }
+.pair-form > p { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.field-label { display: block; font-size: 12px; margin-bottom: 7px; font-weight: 600; }
+.input-line { display: flex; gap: 8px; }
+.input-line input { flex: 1; width: 100%; }
+.field-help { color: var(--muted); font-size: 11px; margin-top: 6px; min-height: 17px; }
+.field-help.error { color: var(--danger); }
+.form-actions { display: flex; align-items: center; gap: 10px; }
+.form-actions .primary { flex: none; }
 
 /* 链路行：一台对端一行。
    卡片只有半屏宽，名字和状态横排会互相挤 —— 状态那串徽标不许换行、名字又
@@ -505,6 +563,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .grid .cell.corner { border-style: dashed; color: var(--faint); opacity: .45; }
 .grid .cell.hit { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 .grid .cell.bad { border-color: var(--danger); border-style: solid; background: var(--danger-soft); }
+/* 选中一台对端后，空格子亮起来告诉用户"可以点了"（点击放置的第二半）。
+   设计稿 app.js:146 的 aim 类：selectedPeer 非空且格子为空时挂。 */
+.grid .cell.aim { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 /* 对端 = 一块可拖的"屏幕" */
 .screen {
   display: flex; align-items: center; gap: 6px; width: 100%;
@@ -517,6 +578,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 }
 .screen:hover { border-color: var(--accent); }
 .screen:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 点击放置的选中态（第一下：点哪台选哪台）。设计稿 topology-slot.selected
+   同款 —— 选中后空格子亮 aim，这张卡自己也要看得出"被选了"。 */
+.screen.sel { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
 /* 拖动中用 fixed 跟手；pointer-events:none 是必须的 ——
    否则 elementFromPoint 永远命中卡片自己，判不出落点。 */
 .screen.dragging {
@@ -610,6 +674,7 @@ html.dragging, html.dragging * {
   color: var(--muted); font-size: 12px; gap: 6px; border-radius: 5px;
 }
 .segmented button:hover { background: rgba(255,255,255,.55); color: var(--text); }
+.segmented .icon { width: 15px; height: 15px; }
 .segmented button.selected {
   background: var(--surface); color: var(--ink);
   box-shadow: 0 1px 4px #15274713; font-weight: 600;
@@ -633,13 +698,13 @@ html.dragging, html.dragging * {
    ③ 深色靠令牌切换，无写死颜色；响应式按生产窗口（默认 820、最窄
       600×520）移植设计稿的容器查询两档。 */
 .view-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex: none; }
-.view-heading h1 { font-size: 17px; font-weight: 650; letter-spacing: .01em; }
+.view-heading h1 { font-size: 24px; font-weight: 650; letter-spacing: -.03em; line-height: 1.35; }
 .view-heading p { font-size: 12px; color: var(--muted); margin-top: 5px; }
 /* 场景面板：上下 1px 线夹住的实底区域（设计稿同款），内部三段 */
 .scene-panel {
   border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
   background: var(--canvas); display: flex; flex-direction: column;
-  min-height: 205px;
+  min-height: 205px; flex: 1; position: relative;
 }
 .scene-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 18px 0; flex: none; }
 .scene-panel-head > span { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
@@ -688,6 +753,9 @@ html.dragging, html.dragging * {
 .connection-line::before { left: 0; }
 .connection-line::after { right: 0; }
 .signal { height: 4px; width: 26px; position: absolute; top: -1px; left: 0; background: var(--accent); border-radius: 4px; opacity: 0; }
+.is-switching .signal { opacity: 1; animation: signal-travel 650ms var(--ease) infinite; }
+.is-switching .computer-display { border-color: var(--accent); }
+@keyframes signal-travel { from { left: 0; } to { left: calc(100% - 26px); } }
 .flow-connection > .icon { color: var(--accent-ink); width: 20px; height: 20px; }
 /* 输入源条：场景面板底部一条，真实输入口 + 管理入口 */
 .source-strip { border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; padding: 10px 16px; flex: none; flex-wrap: wrap; }
@@ -744,6 +812,8 @@ html.dragging, html.dragging * {
 /* 拖拽 feedback：kvm.js 的 paintTarget 往 [data-drop] 上挂这两个类 */
 .topology-slot.hit { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 .topology-slot.bad { border-color: var(--danger); border-style: solid; background: var(--danger-soft); }
+/* 选中一台对端后空槽亮起（点击放置，同 .grid .cell.aim 的语义） */
+.topology-slot.aim { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 /* 槽位类名必须跟链路 side 一致（top/left/self/right/bottom —— kvm.js 的
    WS_SLOTS 直接拿 side 当类名与 data-drop），写成了 up/down 上下两槽就会
    丢掉 grid-area 掉进自动排列（2026-10-28 实测抓到的脱钩）。 */
@@ -753,12 +823,15 @@ html.dragging, html.dragging * {
 .multi-explainer { width: 145px; display: flex; justify-content: center; flex-direction: column; gap: 9px; flex: none; padding-right: 12px; }
 .multi-explainer h3 { line-height: 1.6; font-size: 12px; }
 .multi-explainer p { color: var(--muted); font-size: 11px; line-height: 1.8; }
-/* 共用一块屏托盘（设计稿 shared-screen-tray）：无门对端住这里 */
+/* 共用一块屏托盘（设计稿 shared-screen-tray）：无门对端住这里。
+   虚线放置框 + .aim 拖入高亮（设计稿 app.css:239-242）。 */
 .shared-screen-tray {
   display: flex; align-items: center; gap: 9px; padding: 8px 11px;
-  border-top: 1px solid var(--line); font-size: 11px; color: var(--muted);
-  min-height: 41px; flex: none;
+  border: 1px dashed var(--line-strong); border-radius: 7px;
+  font-size: 11px; color: var(--muted);
+  min-height: 41px; flex: none; margin: 0 18px 10px;
 }
+.shared-screen-tray.aim { border-color: var(--accent); background: var(--accent-soft); }
 .shared-screen-tray > span { margin-right: auto; white-space: nowrap; }
 .shared-screen-tray .loosebox { display: flex; flex-wrap: wrap; gap: 6px; }
 .shared-screen-tray.hit { background: var(--accent-soft); }
@@ -798,6 +871,48 @@ html.dragging, html.dragging * {
   .computer-display { width: 100%; max-width: 112px; }
   .multi-explainer { display: none; }
   .topology { max-width: 100%; }
+}
+/* 设备页窄窗（设计稿 @container 720 的设备规则，批4 页面新建时补）：
+   名册行压到 48px、本机行 42px，「连接新设备」让位 —— 配对入口还有
+   名册列底部的「管理配对」，不会没路可走；摆位托盘压矮，详情列说明
+   收行。工作台/传输/设置部分的 720 规则是前几批的移植范围，不在这里扩权。 */
+@media (max-width: 720px) {
+  .pair-form { gap: 9px; }
+  .pair-form > .icon { display: none; }
+  .list-label { margin-bottom: 6px; }
+  .pair-summary { margin-top: 9px; padding-top: 7px; }
+  .device-row.local-row { min-height: 42px; padding-block: 5px; }
+  .device-list .device-row { min-height: 48px; }
+  .device-list .add-device { display: none; }
+  .placement-note { min-height: 17px; }
+  .selected-detail { padding-top: 6px; }
+  .detail-heading p { display: none; }
+  .loosetray { min-height: 32px; padding-block: 3px; }
+}
+/* 最窄一档的设备页（设计稿 @container 520 规则，按生产最小窗宽 600 落地）：
+   名册列横排成一条设备带 —— 本机行/标签/配对摘要让位，对端行压成 39px
+   纯文字（图标和状态点都隐），「连接新设备」收成 30px 图标钮；
+   选中详情整块让位，placement-note 那一行还在，选中态不丢提示。 */
+@media (max-width: 600px) {
+  .devices-layout { grid-template-columns: 1fr; gap: 9px; }
+  .device-list { display: flex; gap: 6px; align-items: center; flex: none; border: 0; border-bottom: 1px solid var(--line); padding: 0 0 8px; }
+  /* 横排要落到 #deviceRows 上 —— .device-list 的直接子元素是这层容器，
+     只把 .device-list 设成 flex 横排的是"整块行容器"，三个设备行在它
+     内部依然竖排（实测 left 全同、top 递增）。行本身 width:auto + flex:none
+     防被基础规则的 width:100% 挤缩。 */
+  #deviceRows { display: flex; gap: 6px; align-items: center; }
+  .device-list .list-label, .device-list .local-row, .pair-summary { display: none; }
+  .device-row { padding: 5px; min-height: 39px; margin: 0; width: auto; flex: none; }
+  .device-row > .icon { display: none; }
+  .device-row small { font-size: 11px; }
+  .device-row .status-dot { display: none; }
+  .device-row strong { font-size: 11px; }
+  /* + 钮选择器必须带 .device-list 前缀：720 档的"让位"是
+     .device-list .add-device { display: none }（具体性 0,2,0），600 档只写
+     .add-device（0,1,0）压不过它 —— 两个档在 ≤600 同时匹配，+ 钮会被
+     720 档的隐藏吃掉。横排带子里 30px 图标钮放得下，显式恢复显示。 */
+  .device-list .add-device { display: inline-flex; margin: 0; width: 30px; padding: 3px; font-size: 0; }
+  .add-device .icon { width: 15px; height: 15px; }
 }
 /* 矮窗（设计稿 @container 620 / 550 的移植）：场景面板压高度，
    摆位图收窄，把纵向空间让给输入源条和共享条。 */

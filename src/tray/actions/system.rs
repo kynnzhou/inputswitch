@@ -189,6 +189,32 @@ impl Ui {
         log_line(&self.status);
     }
 
+    /// 恢复默认热键。和录制成功那条路（ui.rs 窗口事件里的 apply_hotkey +
+    /// save）走同一套机制：先注册新的再注销旧的，失败时旧键还在。
+    pub(super) fn on_reset_hotkey(&mut self) {
+        let spec = crate::config::default_hotkey();
+        match crate::tray::hotkey::apply_hotkey(
+            &mut self.hotkey_manager,
+            &mut self.current_hotkey,
+            &mut self.hotkey_id,
+            &spec,
+        ) {
+            Ok(()) => {
+                self.config.hotkey = spec.clone();
+                let _ = self.config.save();
+                self.status = format!(
+                    "热键已恢复默认 {}",
+                    crate::tray::hotkey::pretty_hotkey(&spec)
+                );
+                log_line(&self.status);
+            }
+            Err(err) => {
+                self.status = err;
+                log_line(&self.status);
+            }
+        }
+    }
+
     pub(super) fn on_restart_app(&mut self) {
         // 先落日志再退出：重启之后用户/我都要能对上"是这一步干的"
         log_line("收到重启请求（权限刚改过，旧进程里的 TCC 结论已过期）");
