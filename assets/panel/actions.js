@@ -3,7 +3,9 @@
 // onclick 上，全局查找，跨文件引用没问题。
 function switchTo(value) {
   const main = document.getElementById('mainSwitch');
-  main.textContent = '切换中…';
+  // 切换中是"进行态"：图标换 refresh + busy-icon（旋转），跟设计稿一致。
+  // innerHTML 而不是 textContent —— 后者会把 render() 画上去的图标抹掉。
+  main.innerHTML = icon('refresh', 'busy-icon') + '<span>切换中…</span>';
   api('/api/switch?value=' + value).then(() => setTimeout(pull, 700));
 }
 function setTarget(value) { api('/api/target?value=' + value).then(pull); }
@@ -26,7 +28,8 @@ function quickSwitch() {
 
 function askPeer(value) {
   const main = document.getElementById('mainSwitch');
-  main.textContent = '已请对端切换…';
+  // 同样是进行态：refresh + busy-icon。innerHTML（同 switchTo）。
+  main.innerHTML = icon('refresh', 'busy-icon') + '<span>已请对端切换…</span>';
   main.disabled = true;
   api('/api/ask-peer?value=' + value).then(() => setTimeout(pull, 1500));
 }
@@ -95,3 +98,11 @@ function recHotkey() {
 // 启动：先拉一次，之后自调度轮询（节奏随下载状态变，见 core.js）
 pull();
 schedulePull();
+// P2：侧栏宽档取初值，之后跟窗口宽度走。ResizeObserver 缺失时
+// （老 WebView2 / 自测 DOM 桩）保持默认图标栏档 —— 820px 窗口
+// 本来就走那档，行为不破；用户把窗口拖宽超过 950px 才需要它。
+updateNavCompact();
+const appBox = document.querySelector('.app');
+if (appBox && typeof ResizeObserver === 'function') {
+  new ResizeObserver(updateNavCompact).observe(appBox);
+}

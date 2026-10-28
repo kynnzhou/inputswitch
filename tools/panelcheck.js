@@ -81,10 +81,15 @@ const ids = ['kvmGrid', 'kvmLooseBox', 'kvmGridHint', 'kvmLinks', 'kvmLinkHint',
   'sub', 'advice', 'peersHint', 'displayNote', 'kvmFollow', 'kvmEdge', 'kvmModeHint'];
 ids.forEach(id => { made[id] = mkEl(id); });
 
+// P2：壳体的 .app 要能被 querySelector 拿到（updateNavCompact 量它的宽）。
+// 假 app 带 clientWidth（默认 800 —— panelwin.rs 窗口 820，走图标栏档）
+// 和真 classList；断言里改 clientWidth 再调函数，就能验宽档切换。
+const appEl = mkEl('app');
+appEl.clientWidth = 800;
 const document = {
   getElementById: (id) => made[id] || (made[id] = mkEl(id)),
   createElement: (tag) => mkEl('new-' + tag),
-  querySelector: () => null,
+  querySelector: (sel) => (sel === '.app' ? appEl : null),
   querySelectorAll: () => [],
   addEventListener: () => {},
   body: mkEl('body'),
@@ -134,6 +139,8 @@ const snap = {
   ],
   inputs: [], inputs_hidden: [], perms: { capture: true, inject: true },
   autostart: true, clipboard: true,
+  // P2 起页脚显示切屏热键，夹具给一个具体值
+  hotkey: 'Ctrl+Alt+S',
   // 自动更新：available 是徽章唯一该亮的阶段
   update: {
     phase: 'available', current: '0.6.89', latest: '0.6.90',
@@ -248,7 +255,11 @@ ok(made['hdrKeys'].textContent === 'CHINAMI-0DFF1JU', '状态条显示键鼠现�
 ok(made['mainSwitch'].style.display !== 'none', '没有可切目标时主按钮仍然显示');
 ok(!made['mainSwitch'].disabled, '没有可切目标时主按钮也不 disabled');
 ok(made['mainSwitch'].classList.contains('is-off'), '此时挂 .is-off（灰蓝，但仍可见可点）');
-ok(/没有其他输入口/.test(made['mainSwitch'].textContent), '文案说清是"没有其他输入口"');
+// P1 起主按钮文案带图标（icon('swap') + <span>），JS 走 innerHTML 赋值。
+// 桩的 innerHTML / textContent 是两个独立属性、不会互相同步，所以判据读
+// innerHTML —— 断言意图（"文案说清是没有其他输入口"）不变。
+ok(/<span>没有其他输入口<\/span>/.test(made['mainSwitch'].innerHTML),
+  '文案说清是"没有其他输入口"（P1 起读 innerHTML，图标进驻按钮）');
 ok(made['mainSwitch'].dataset.action === 'none', '动作标成 none，quickSwitch 据此给提示');
 // 17. 维护动作只在顶部出现一次，且三个动作平铺（v0.6.83 新增「扫描输入口」——
 //     以前说明里让人点，页面上却没有这个按钮）
@@ -378,6 +389,69 @@ ok(/已忽略这个版本/.test(made['updateBody'].innerHTML), '弹窗说明"已
 ok(/恢复提示/.test(made['updateBody'].innerHTML), '忽略过的人给「恢复提示」（再点一次撤销）');
 ok(/onclick="updateAction\('download'\)"/.test(made['updateBody'].innerHTML),
   '忽略过也仍然能装（用户可能改主意）');
+
+// ---- P2 壳体重构：侧栏 + 四页 + 页脚 ----
+// 21. 四页容器与导航四项（源码级：DOM 写死在 index.html 里）
+ok(/<div class="view-container" id="viewContainer">/.test(html), '四页容器 viewContainer 在册');
+ok((html.match(/class="page-view"/g) || []).length === 4, '四页各一个 .page-view');
+['workspace', 'devices', 'transfers', 'settings'].forEach(p => {
+  ok(new RegExp(`id="${p}View"`).test(html), `${p} 页容器在册`);
+  ok(new RegExp(`id="nav-${p}"`).test(html), `${p} 导航项在册`);
+});
+ok(!/id="workspaceView"[^>]*hidden/.test(html), '工作台页默认可见');
+['devices', 'transfers', 'settings'].forEach(p => {
+  ok(new RegExp(`id="${p}View"[^>]*hidden`).test(html), `${p} 页默认隐藏`);
+});
+// 顶栏重排后三件套原样保留（下一步提示 / toast / 支持性说明）
+ok(/id="nextStep"/.test(topbar) && /id="status"/.test(topbar) && /id="supportLine"/.test(topbar),
+  '顶栏下一步提示、toast、支持性说明原样保留');
+// 22. showPage 切页行为（真调函数，看 DOM 状态）
+try { vm.runInContext("showPage('devices')", ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('showPage 报错：', e.message); process.exit(1); }
+ok(made['devicesView'].hidden === false && made['workspaceView'].hidden === true,
+  'showPage：新页显示、旧页隐藏');
+ok(made['nav-devices'].classList.contains('selected')
+  && !made['nav-workspace'].classList.contains('selected'),
+  'showPage：导航高亮跟到新页');
+ok(made['nav-devices'].getAttribute('aria-current') === 'page'
+  && made['nav-workspace'].getAttribute('aria-current') === null,
+  'showPage：aria-current 只挂新页（读屏软件定位用）');
+try { vm.runInContext("showPage('bogus')", ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('showPage 报错：', e.message); process.exit(1); }
+ok(made['workspaceView'].hidden === false, '未知页名回落工作台（不白屏）');
+// 23. 侧栏宽档：默认 800px（820 窗口）走图标栏，拖宽过 950 展开
+ok(appEl.classList.contains('compact-nav'), '默认窗宽侧栏走图标栏档（.compact-nav）');
+appEl.clientWidth = 1000;
+try { vm.runInContext('updateNavCompact()', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('updateNavCompact 报错：', e.message); process.exit(1); }
+ok(!appEl.classList.contains('compact-nav'), '拖宽过 950px 侧栏展开成文字栏');
+appEl.clientWidth = 800;
+vm.runInContext('updateNavCompact()', ctx, { filename: 'panel.html' });
+ok(appEl.classList.contains('compact-nav'), '拖窄回 950 以下收回图标栏');
+// 24. 页脚三件 + 配对状态 / 热键 / 未配对直达按钮
+ok(/id="footerConnection"/.test(html) && /id="footerMessage"/.test(html),
+  '页脚配对状态与消息两个容器在册');
+ok(/<kbd>Ctrl<\/kbd><kbd>Alt<\/kbd><kbd>Esc<\/kbd>/.test(html) && /紧急断开键鼠/.test(html),
+  '页脚常驻紧急断开键鼠提示');
+const snapP = JSON.parse(JSON.stringify(snap));
+snapP.paired = true; snapP.peer_verified = 2;
+ctx.__fixture = snapP;
+try { vm.runInContext('snap = __fixture; render();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('P2 render 报错：', e.message); process.exit(1); }
+ok(made['footerConnection'].className === 'footer-connection'
+  && /已配对 · 已连接/.test(made['footerConnection'].innerHTML),
+  '页脚配对状态：已连接（绿）');
+ok(made['footerMessage'].textContent === '切屏热键 Ctrl+Alt+S', '页脚显示切屏热键');
+ok(made['navNode'].textContent === 'Mac 本机', '侧栏本机名跟顶栏同一个值');
+ok(made['deviceCount'].textContent === '3', '设备徽标显示在线台数');
+// 未配对：页脚转黄，横幅给「去配对」直达设备页
+ctx.__fixture = snap;   // 原夹具没有 paired 字段 → 未配对
+try { vm.runInContext('snap = __fixture; render();', ctx, { filename: 'panel.html' }); }
+catch (e) { console.error('P2 render 报错：', e.message); process.exit(1); }
+ok(made['footerConnection'].className === 'footer-connection off'
+  && /未配对/.test(made['footerConnection'].innerHTML), '未配对时页脚转黄');
+ok(/onclick="showPage\('devices'\)"/.test(made['pairBanner'].innerHTML),
+  '未配对横幅带「去配对」直达按钮（跳设备页）');
 
 console.log(bad ? `\n${bad} 项不通过` : '\n全部通过');
 process.exit(bad ? 1 : 0);

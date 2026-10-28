@@ -49,7 +49,9 @@ function renderKvm() {
     ? (k.peer_alive ? state : state + '（对端不在线）')
     : '未启动';
   el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
-  el('kvmPower').textContent = k.on ? '关闭' : '开启';
+  // 电源按钮带图标（设计稿的图标按钮画法）。innerHTML 而不是 textContent：
+  // 轮询每 1.2 秒重写这一行，textContent 会把图标抹掉（同主按钮，见 render.js）。
+  el('kvmPower').innerHTML = icon('keyboard') + (k.on ? '关闭' : '开启');
   el('kvmPower').className = 'btn-sm';
 
   // 缺权限时给一条明路。注意这两个值由 GUI 进程自己上报，不看 CLI 探针
@@ -119,7 +121,7 @@ function renderKvmLinks(k) {
         : `<button class="btn-sm" onclick="handOverTo('${esc(l.node)}')">交给它</button>`);
     // 圆点用纯色元素，不塞 ● 文本 —— 7×7 的盒子里放 10px 字形会溢出成黑疙瘩
     return `<div class="linkrow">
-      <span class="node"><span class="dot${l.alive ? ' on' : ''}"></span><span class="nm">${esc(l.node)}</span></span>
+      <span class="node">${icon('mouse')}<span class="dot${l.alive ? ' on' : ''}"></span><span class="nm">${esc(l.node)}</span></span>
       ${meta}
       ${held}
     </div>`;
@@ -171,7 +173,7 @@ function screenCard(node, o) {
   return `<div class="screen" data-node="${esc(node)}" data-side="${esc(o.side || '')}"
       tabindex="0" role="button" title="${esc(node)} · ${label}（可拖动，方向键也能移动）"
       aria-label="${esc(node)}，${label}">
-    <span class="dot${o.alive ? ' on' : ''}"></span>
+    ${icon('monitor')}<span class="dot${o.alive ? ' on' : ''}"></span>
     <span class="sname">${esc(node)}</span>${tag}${rootTag}</div>`;
 }
 

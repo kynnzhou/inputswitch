@@ -36,7 +36,7 @@
 ## 4. 改面板 UI 前先读真实源件，改完必跑 panelcheck
 
 - 面板是 `assets/panel/` 七件，`index.html` + `style.css` + 五段 JS，按路由分别 `include_str!`。
-- 门禁：`node tools/panelcheck.js assets/panel`，**80 条断言**。它管的不只是渲染，还有多年踩坑沉淀的**界面铁律**——改之前先跑一遍拿基线，别等改完再看红。
+- 门禁：`node tools/panelcheck.js assets/panel`，**110 条断言**（P2 壳体重构后从 80 条扩到 110：四页切换、侧栏宽档、页脚三件各一组）。它管的不只是渲染，还有多年踩坑沉淀的**界面铁律**——改之前先跑一遍拿基线，别等改完再看红。
 - 界面铁律以 `CONTRIBUTING.md` 为准：主切换按钮永远显示（不能切时换文案 + 灰蓝，绝不 disabled/隐藏）、全页只有一个实心蓝按钮（P3 起更新弹窗里的主操作是唯一例外：遮罩盖上时顶栏那个根本看不见，「任何一刻屏上只有一个蓝块」没破）、顶栏三个维护动作平铺、托盘菜单是系统控件不可定制。
 - **新增 JS 文件要同步四处**：`index.html` 的 `<script src>`、`tools/panelcheck.js` 的 `JS_ORDER`、`src/panel.rs` 的 `const PANEL_X = include_str!(...)`、以及 `panel.rs` 里对应的路由分支。加载顺序是 `core.js → render.js → kvm.js → update.js → actions.js`（见 `index.html` 尾部），core 的全局变量要让后面的看得见，顺序错了 panelcheck 的 DOM 桩会 undefined。
 
@@ -221,10 +221,10 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 | 构建 | `cargo build --bins` | ✅ 通过（两 exe 均链接成功） |
 | 瘦构建（bin） | `cargo build --bin inputswitch-cli --no-default-features` | ✅ 0 警告（2026-10-27 清掉 `cli/service.rs:53` 的 `let mut sw` 存量；这个形态 release.yml 真构建，此前门禁的 no-default-features 只查 `--lib`，bin 的警告一直没人管——`cmd_daemon_headless` 整个函数是 `cfg(not(feature = "tray"))` 专属，默认构建里不存在，所以只在瘦构建现形） |
 | 单元测试 | `cargo test --lib -- --test-threads=1` | 109/109 通过（2026-10-27 实测，`update` 模块 52 条 + 面板 round-trip 1 条 + 锚点取帧 1 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
-| 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 80 条全过（含 P3 自动更新五幕：徽章/弹窗/进度/过渡层/忽略） |
+| 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 110 条全过（2026-10-28 P2 壳体重构：新增四页切换 / 侧栏宽档 / 页脚三件 30 条；含 P3 自动更新五幕：徽章/弹窗/进度/过渡层/忽略） |
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
 | fmt | `cargo fmt --check` | 🔴 46 个文件有 diff（2026-10-26 实测；`kvm/recv/`、`tray/engine/`、`tray/actions/`、`kvm/capture/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48，actions.rs 删掉后 48 → 47，capture.rs 删掉后 47 → 46 —— 旧 capture.rs 自带 1 处存量，删除即消账） |
-| 体量 | `node tools/check-size.js` | ✅ 通过，基线已是最紧（tray/ 与 kvm/ 拆分后逐批收紧） |
+| 体量 | `node tools/check-size.js` | ✅ 通过（2026-10-28 P2 壳体重构：面板五件按 `--allow-grow` 审计放行 —— core.js +57 / style.css +90 / index.html +39 / render.js +31 / actions.js +8，全是壳层逻辑与新 DOM，基线已写回） |
 | 发版预检 | `node tools/release.js check` | ✅ P4 实测：正确拦截未提交改动与 tag 占用、核对徽章版本、dry-run 不碰任何东西（gh 登录状态本机已具备） |
 | 发布产物自检 | `node tools/gen-updater-json.js <目录> --check` | ✅ P4 实测：重算 SHA-256 与清单逐平台比对，防手改 |
 

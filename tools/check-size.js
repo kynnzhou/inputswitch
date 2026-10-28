@@ -64,12 +64,12 @@ const RUST_BASELINE = {
 };
 
 const PANEL_BASELINE = {
-  'assets/panel/actions.js': 97,
-  'assets/panel/core.js': 72,
-  'assets/panel/index.html': 229,
-  'assets/panel/kvm.js': 395,
-  'assets/panel/render.js': 280,
-  'assets/panel/style.css': 578
+  'assets/panel/actions.js': 108,
+  'assets/panel/core.js': 138,
+  'assets/panel/index.html': 307,
+  'assets/panel/kvm.js': 397,
+  'assets/panel/render.js': 315,
+  'assets/panel/style.css': 639
 };
 
 // exts 是数组。注意别把数组直接喂给 endsWith —— 它会被 ToString 成

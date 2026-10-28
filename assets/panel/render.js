@@ -22,6 +22,10 @@ function renderHeader() {
   const n = (snap.peers || []).length;
   el('hdrPeer').innerHTML =
     `<span class="dot${k.peer_alive ? ' on' : ' off'}"></span> ${n} 台在线`;
+  // P2：侧栏「设备与布局」的徽标跟顶栏对端数是同一个数 —— 顶栏是事实，
+  // 徽标是"那一页里有几台设备"的路标。两处都从 snap.peers 算，不会打架。
+  const dc = el('deviceCount');
+  if (dc) dc.textContent = String(n);
 }
 
 /// "下一个能切过去的"口：顶栏主按钮用它挑目标。
@@ -92,6 +96,9 @@ function renderPorts() {
 function render() {
   if (!snap) return;
   document.getElementById('node').textContent = snap.node || '';
+  // P2：侧栏底部的本机名跟顶栏「本机」是同一个值。收成图标栏时这行字
+  // 会被 CSS 藏掉（.compact-nav .local-machine > div），展开时才看得见。
+  document.getElementById('navNode').textContent = snap.node || '';
   renderHeader();
   renderUpdate();
 
@@ -110,11 +117,35 @@ function render() {
     banner.innerHTML = `<b>配对码已填，但还没有对端确认</b>${hint}`;
   } else {
     banner.className = 'banner warn';
-    banner.innerHTML = '<b>未配对</b> <span class="sub">同一网段里的任何设备都能控制这块屏，建议先配对</span>';
+    // P2：横幅在工作台页，配对卡在设备页 —— 未配对时给一个「去配对」
+    // 直接跳过去（showPage 在 core.js）。文案包进 span.grow，
+    // 按钮才落到横幅右侧，不和文字挤成一团。
+    banner.innerHTML = '<span class="grow"><b>未配对</b> <span class="sub">同一网段里的任何设备都能控制这块屏，建议先配对</span></span>'
+      + '<button class="btn-sm" onclick="showPage(\'devices\')">去配对</button>';
   }
   const replayNote = snap.replayed
     ? `<br><span class="sub">另有 ${snap.replayed} 条重复消息已忽略（网络重发，属正常现象）</span>` : '';
   if (replayNote) banner.innerHTML += replayNote;
+
+  // P2：页脚左侧的配对状态 —— 和横幅是同一份事实，但哪一页都看得见。
+  // 图标跟状态走：✓ 已连接（绿）/ 等对端确认（黄）/ 未配对（黄），
+  // 颜色由 .footer-connection / .off 两个类在 CSS 里分。
+  const fc = document.getElementById('footerConnection');
+  if (fc) {
+    if (snap.paired && snap.peer_verified > 0) {
+      fc.className = 'footer-connection';
+      fc.innerHTML = icon('check') + '<span>已配对 · 已连接</span>';
+    } else if (snap.paired) {
+      fc.className = 'footer-connection off';
+      fc.innerHTML = icon('clock') + '<span>配对码已填 · 等对端确认</span>';
+    } else {
+      fc.className = 'footer-connection off';
+      fc.innerHTML = icon('shield') + '<span>未配对</span>';
+    }
+  }
+  // 页脚中间：切屏热键。没设过就不占位（CSS :empty 会把整行收掉）。
+  const fm = document.getElementById('footerMessage');
+  if (fm) fm.textContent = snap.hotkey ? '切屏热键 ' + snap.hotkey : '';
   const codeInput = document.getElementById('code');
   // 只在用户没动过输入框时才用服务端值回填。
   // 原来是无条件回填，导致清空后 1.2 秒又被拉回旧码 —— 看起来就像"取消不了"。
@@ -140,7 +171,10 @@ function render() {
 
   if (blind) {
     // 画面在对面：按钮变成"请它切回来"。没有对端时保留文案、标成 .is-off。
-    main.textContent = peer ? `请 ${peer.node} 把画面切回本机` : '请对端把画面切回本机';
+    // 图标 + <span> 跟设计稿主按钮一致（app.js renderHeader：icon('swap') + span）。
+    // esc() 不能省：peer.node 是后端来的字符串，进了 innerHTML 就得转义。
+    main.innerHTML = icon('swap')
+      + '<span>' + (peer ? `请 ${esc(peer.node)} 把画面切回本机` : '请对端把画面切回本机') + '</span>';
     if (!peer) main.classList.add('is-off');
     main.dataset.action = 'peer';
     main.dataset.value = snap.own_value || '';
@@ -148,7 +182,8 @@ function render() {
       ? '<span class="arrow">→</span> 本机读不到这块屏，切回要由正在显示画面的那台来发指令。'
       : '<span class="arrow">→</span> 对端不在线，画面暂时切不回来。';
   } else if (tgt) {
-    main.textContent = `切到 ${tgt.label}${kvmFollowing() ? '（键鼠跟过去）' : ''}`;
+    main.innerHTML = icon('swap') + '<span>切到 ' + esc(tgt.label)
+      + (kvmFollowing() ? '（键鼠跟过去）' : '') + '</span>';
     main.dataset.action = 'local';
     main.dataset.value = tgt.value;
     main.dataset.name = tgt.name || '';
@@ -158,7 +193,7 @@ function render() {
   } else {
     // 有显示器、但没有可切的口（全都不存在 / 只有当前口）。
     // 不 disabled：位置和形状都不变，点下去由 quickSwitch() 说清为什么。
-    main.textContent = '没有其他输入口';
+    main.innerHTML = icon('swap') + '<span>没有其他输入口</span>';
     main.classList.add('is-off');
     main.dataset.action = 'none';
     main.dataset.value = '';
@@ -217,7 +252,7 @@ function render() {
           <div class="addr">${esc(p.addr)}</div>
           ${blocked}
         </div>
-        <button class="btn-sm" onclick="sendTo('${esc(p.node)}')">发文件</button>
+        <button class="btn-sm" onclick="sendTo('${esc(p.node)}')">${icon('upload')}发文件</button>
       </div>`;
     }).join('');
   }
