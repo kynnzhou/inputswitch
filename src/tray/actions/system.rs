@@ -8,9 +8,10 @@
 use tao::keyboard::ModifiersState;
 
 use crate::tray::log_line;
-use crate::tray::send::{pick_folder, start_send};
+use crate::tray::send::{pick_folder, retry_send, start_send, start_send_folder, start_send_test};
 use crate::tray::sys::open_path;
 use crate::tray::Ui;
+use crate::transfer::tasks;
 
 impl Ui {
     pub(super) fn on_toggle_autostart(&mut self, on: bool) {
@@ -71,6 +72,67 @@ impl Ui {
             &mut self.status,
             node.as_deref(),
         );
+    }
+
+    pub(super) fn on_send_folder(&mut self, node: Option<String>) {
+        start_send_folder(
+            &self.config,
+            &self.mesh,
+            &self.proxy,
+            &mut self.status,
+            node.as_deref(),
+        );
+    }
+
+    pub(super) fn on_send_test(&mut self, node: Option<String>) {
+        start_send_test(
+            &self.config,
+            &self.mesh,
+            &self.proxy,
+            &mut self.status,
+            node.as_deref(),
+        );
+    }
+
+    /// 传输列表四件套。合法性都由注册表答（任务在不在、什么阶段），
+    /// 这里只把结论翻译成状态行 —— 和面板上"点了有反应"是同一份文案。
+    pub(super) fn on_transfer_pause(&mut self, id: u64) {
+        self.status = if tasks::set_paused(id, true) {
+            format!("已暂停传输 #{id}")
+        } else {
+            "这条传输现在不能暂停".to_string()
+        };
+        log_line(&self.status);
+    }
+
+    pub(super) fn on_transfer_resume(&mut self, id: u64) {
+        self.status = if tasks::set_paused(id, false) {
+            format!("已继续传输 #{id}")
+        } else {
+            "这条传输现在不能继续".to_string()
+        };
+        log_line(&self.status);
+    }
+
+    pub(super) fn on_transfer_cancel(&mut self, id: u64) {
+        // 只置标志：阶段等传输线程落。它每个块之间都看，最多一个块的延迟
+        self.status = if tasks::cancel(id) {
+            format!("已取消传输 #{id}")
+        } else {
+            "这条传输现在不能取消".to_string()
+        };
+        log_line(&self.status);
+    }
+
+    pub(super) fn on_transfer_retry(&mut self, id: u64) {
+        retry_send(
+            &self.config,
+            &self.mesh,
+            &self.proxy,
+            &mut self.status,
+            id,
+        );
+        log_line(&self.status);
     }
 
     pub(super) fn on_submachine(&mut self, on: bool) {

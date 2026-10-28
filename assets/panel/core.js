@@ -1,16 +1,18 @@
-// 基础层：共享状态（snap / busy / codeDirty / editingPort / flashUntil）、
+// 基础层：共享状态（snap / busy / codeDirty / editingPorts / flashUntil）、
 // 取数通道（api / post / pull）、两个小工具（esc / icon）和 P2 起的
-// 壳层逻辑（showPage 切页 / updateNavCompact 侧栏宽档）。
-// 其余四个脚本都依赖这里的全局变量与函数。
+// 壳层逻辑（showPage 切页 / updateNavCompact 侧栏宽档 / showSettingsTab
+// 设置页选项卡），以及 P2.5 的主题三态与减少动态效果（applyTheme 等，
+// 偏好存前端 localStorage）。其余四个脚本都依赖这里的全局变量与函数。
 let snap = null;
 let busy = false;
 /// 用户动过输入框就别再被后台轮询覆盖，否则清空的码会自己弹回来
 let codeDirty = false;
 /// 正在给某个输入口改名。轮询每 1.2 秒把 #ports 整个重建一次，
-/// 重建会换掉 contenteditable 的节点 —— 用户打两个字输入就没了
-/// （实测：聚焦后打字，等一轮轮询，节点被替换、文字回到旧值）。
-/// 改名期间跳过那一列的重建，和 codeDirty 保护配对码输入框是同一个模式。
-let editingPort = false;
+/// 重建会换掉 input 节点 —— 用户打两个字输入就没了（实测：聚焦后
+/// 打字，等一轮轮询，节点被替换、文字回到旧值）。改名期间跳过那一轮
+/// 重建，和 codeDirty 保护配对码输入框是同一个模式。
+/// P4 起改名搬进「管理输入源」弹窗（savePorts），这个标志照用。
+let editingPorts = false;
 /// flash() 的提示要在页面上活满 3.2 秒，而轮询每 1.2 秒会重写那一行。
 /// 存截止时间，pull() 到这个点之前不动它。
 let flashUntil = 0;
@@ -33,7 +35,8 @@ async function pull() {
     snap = await res.json();
     render();
   } catch (e) {
-    document.getElementById('pairBanner').textContent = '控制台与主程序失联了';
+    // 写进场景警示条（P4 起它取代了配对横幅，常驻工作台顶部）
+    document.getElementById('sceneAlert').textContent = '控制台与主程序失联了';
     // P2：失联也写进页脚 —— 用户可能停在设备/文件/设置页，
     // 工作台那条横幅他根本看不见，而页脚哪一页都在。
     const fc = document.getElementById('footerConnection');
@@ -135,4 +138,83 @@ function updateNavCompact() {
   if (!app) return;
   const w = app.clientWidth || window.innerWidth || 0;
   app.classList.toggle('compact-nav', w < 950);
+}
+
+/// ── P2.5 设置页：三个常驻选项卡 ─────────────────────────────────
+/// 快捷键 / 启动与恢复 / 外观与关于。和 showPage 同一个路子：面板写死在
+/// index.html 里，切 tab 只换 hidden 和选中态。aria-selected 跟着挪
+/// （读屏软件靠它认"当前在哪格"）。共享类控件（共用键鼠、光标速度、
+/// 剪贴板同步）按同一逻辑住工作台，设置页不复制。
+const SETTINGS_TABS = ['shortcut', 'startup', 'appearance'];
+
+function showSettingsTab(tab) {
+  if (SETTINGS_TABS.indexOf(tab) < 0) tab = 'shortcut';
+  for (const t of SETTINGS_TABS) {
+    const panel = document.getElementById(t + 'Panel');
+    if (panel) panel.hidden = t !== tab;
+    const btn = document.getElementById('tab-' + t);
+    if (btn) {
+      btn.classList.toggle('selected', t === tab);
+      btn.setAttribute('aria-selected', String(t === tab));
+    }
+  }
+}
+
+/// ── P2.5 主题三态 + 减少动态效果 ─────────────────────────────────
+/// 后端还没有主题字段，两个偏好都只存前端 localStorage（key 见下）。
+/// 默认 'system' = 跟 P2.5 之前的行为完全一致（那时 CSS 直接跟
+/// prefers-color-scheme，现在由这里解析后写到 <html data-theme>，
+/// 深色令牌挂在 :root[data-theme="dark"] 上）。
+/// index.html 的头内脚本负责首屏 paints 前落值防闪；这里管后续变化。
+const THEME_KEY = 'inputswitch.panel.theme';
+const MOTION_KEY = 'inputswitch.panel.reduce-motion';
+
+function storedTheme() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return (v === 'light' || v === 'dark' || v === 'system') ? v : 'system';
+  } catch (e) { return 'system'; }
+}
+
+function systemDark() {
+  return typeof matchMedia === 'function'
+    && matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function applyTheme() {
+  const t = storedTheme();
+  const dark = t === 'dark' || (t === 'system' && systemDark());
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  // 分段控件选中态跟当前档位走（系统偏好变化时也要同步）
+  ['light', 'dark', 'system'].forEach(v => {
+    const b = document.getElementById('themeOpt-' + v);
+    if (b) {
+      b.classList.toggle('selected', v === t);
+      b.setAttribute('aria-pressed', String(v === t));
+    }
+  });
+}
+
+function setTheme(v) {
+  if (['light', 'dark', 'system'].indexOf(v) < 0) v = 'system';
+  try { localStorage.setItem(THEME_KEY, v); } catch (e) { /* 存不进去也当场生效 */ }
+  applyTheme();
+}
+
+function applyReduceMotion() {
+  let on = false;
+  try { on = localStorage.getItem(MOTION_KEY) === '1'; } catch (e) { /* 当没存过 */ }
+  document.documentElement.classList.toggle('reduced-motion', on);
+  const b = document.getElementById('motionBtn');
+  if (b) {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-checked', String(on));
+  }
+}
+
+function toggleReduceMotion() {
+  let on = false;
+  try { on = localStorage.getItem(MOTION_KEY) === '1'; } catch (e) { /* 当没存过 */ }
+  try { localStorage.setItem(MOTION_KEY, on ? '0' : '1'); } catch (e) { /* 存不进去也当场生效 */ }
+  applyReduceMotion();
 }

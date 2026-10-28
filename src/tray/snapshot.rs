@@ -159,6 +159,9 @@ pub(super) fn update_snapshot(
         inject: kvm::can_post(),
     };
     snap.transfer = transfer_note.to_string();
+    // 传输任务清单：注册表自己管状态（自带锁），这里只把快照搬进面板。
+    // 徽标 / 列表 / 暂停取消全读这一份，前端不自己推阶段
+    snap.transfers = crate::transfer::tasks::views();
     snap.identity = profile_key.to_string();
     // 自动更新：update 模块自己管状态（自带锁和单飞闸），这里只把快照
     // 搬进面板。徽章 / 弹窗 / 重启过渡层全读这一份，前端不自己推阶段

@@ -1,7 +1,7 @@
 /* 控制面板的全部样式。从 index.html 拆出（内容未动，只去了 <style> 一层缩进）。
    分节：设计令牌 / 基础 / 壳体（侧栏·命令栏·页脚·四页）/ 按钮系统 /
    开关与输入 / 输入口行 / 对端行 / 链路行 / 3×3 摆位图与拖拽 / 手感分段 /
-   高级折叠 / 图标 / 自动更新弹窗与重启过渡层。
+   设置页选项卡与工作台共享条 / 图标 / 自动更新弹窗与重启过渡层。
 
    ── P1（2026-10-28）视觉系统移植 ─────────────────────────────
    令牌与组件尺寸改随 design/interactive（DESIGN.md 前言已核验 295 项一致）：
@@ -20,9 +20,17 @@
    保留下来的三处存量决策（都有实测理由，别当漏改）：
    ① --faint #6b7488：v0.6.83 调到 4.4:1 的三级文字色，设计体系只有 muted 一档；
    ② 滚动条隐藏：应用窗口用 overlay 滚动条，常驻细条是浏览器窗口最露馅的地方；
-   ③ 深色走 prefers-color-scheme：后端还没有主题字段，三态主题留到 P3。
+   ③ 深色三态（P2.5）：令牌挂 :root[data-theme="dark"]，light/dark/system
+      由 core.js 的 applyTheme 解析（默认 system），偏好存前端 localStorage
+      —— 后端还没有主题字段，不做后端化。
    另：.glass 类名还挂在顶栏 / 高级卡 / 弹窗上（panelcheck 断言顶栏结构
-       `<header class="topbar glass">`），玻璃配方已删，类名只是痕迹。 */
+       `<header class="topbar glass">`），玻璃配方已删，类名只是痕迹。
+
+   ── P2.5（2026-10-28）设置页选项卡 + 工作台共享条 ──────────────
+   设置页从「高级」折叠卡改成三个常驻选项卡（快捷键 / 启动与恢复 /
+   外观与关于），版式移植设计稿的 settings-tabs / setting-row；
+   剪贴板同步从设置页搬到工作台共用键鼠卡下方 —— 共享类控件住工作台，
+   设置页不复制。所有既有元素 ID 不变，render.js 零改动。 */
 :root {
   color-scheme: light;
   /* ── 设计令牌（移植自 DESIGN.md / design/interactive/app.css :root）── */
@@ -70,30 +78,32 @@
   /* 三级文字：设计体系只有 muted 一档，这档是 v0.6.83 调到 4.4:1 的值，保留 */
   --faint: #6b7488;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --stage: #131720;
-    --surface: #20252f;
-    --subtle: #292f3a;
-    --canvas: #1c212b;
-    --ink: #e9edf5;
-    --muted: #a2adbf;
-    --line: #353d4b;
-    --line-strong: #515e73;
-    --accent: #4268d4;
-    --accent-hover: #496fdc;
-    --accent-soft: #283754;
-    --accent-ink: #abc0ff;
-    --success: #7fd0ab;
-    --success-soft: #233a32;
-    --warning: #ebbf7b;
-    --warning-soft: #3c3327;
-    --danger: #ff9caa;
-    --danger-soft: #422c35;
-    --overlay-shadow: 0 24px 70px -20px #0008, 0 4px 20px -8px #0006;
-    --faint: #8d96aa;
-  }
+/* P2.5：深色令牌改挂 :root[data-theme="dark"]（原来是 @media
+   prefers-color-scheme 直接跟系统）。data-theme 由 core.js 的 applyTheme
+   解析后写到 <html> 上 —— light/dark/system 三态，默认 system（跟现行
+   行为一致）；index.html 的头内脚本在首屏 paints 前落值，防闪一帧白。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --stage: #131720;
+  --surface: #20252f;
+  --subtle: #292f3a;
+  --canvas: #1c212b;
+  --ink: #e9edf5;
+  --muted: #a2adbf;
+  --line: #353d4b;
+  --line-strong: #515e73;
+  --accent: #4268d4;
+  --accent-hover: #496fdc;
+  --accent-soft: #283754;
+  --accent-ink: #abc0ff;
+  --success: #7fd0ab;
+  --success-soft: #233a32;
+  --warning: #ebbf7b;
+  --warning-soft: #3c3327;
+  --danger: #ff9caa;
+  --danger-soft: #422c35;
+  --overlay-shadow: 0 24px 70px -20px #0008, 0 4px 20px -8px #0006;
+  --faint: #8d96aa;
 }
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
@@ -451,9 +461,6 @@ input[type=text] {
 .linkrow button { grid-area: 1 / 2 / 3 / 3; justify-self: end; }
 .linkrow .held { color: var(--success); font-weight: 650; font-size: 13px; }
 
-.kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px; font-size: 12.5px; }
-.kv dt { color: var(--faint); }
-.kv dd { margin: 0; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
 .split { display: flex; gap: 8px; flex-wrap: wrap; }
 .split > * { flex: 1; min-width: 130px; }
@@ -553,24 +560,257 @@ html.dragging, html.dragging * {
 #kvmScaleRow > button:hover { background: rgba(255,255,255,.6); }
 #kvmScaleRow > button.sel { background: var(--surface); color: var(--ink);
   font-weight: 600; box-shadow: 0 1px 3px rgba(23,35,57,.12); }
-@media (prefers-color-scheme: dark) {
-  #kvmScaleRow > button:hover { background: rgba(255,255,255,.08); }
-}
+/* 深色档的分段控件悬停：跟着 data-theme 走（原来是 prefers-color-scheme） */
+:root[data-theme="dark"] #kvmScaleRow > button:hover { background: rgba(255,255,255,.08); }
 
-/* 高级折叠 */
-.adv { padding: 0; margin-bottom: 12px; overflow: hidden; }
-.adv summary {
-  list-style: none; cursor: pointer; padding: 12px 16px;
-  display: flex; align-items: center; gap: 10px;
-  font-size: 13px; font-weight: 650; color: var(--muted);
+/* ── 设置页：三个常驻选项卡（P2.5，移植设计稿的 settings-tabs）──────
+   标签条 + 行列表直接落在页面上，不套卡 —— 行间用 1px --line 分，
+   再套一张卡就多一层边框。这一页的 flex gap 清零，标签条紧贴
+   行列表（分隔靠标签条自己的 border-bottom）。选中项是底部 2px 蓝条。 */
+.settings-page { gap: 0; }
+.settings-tabs { display: flex; border-bottom: 1px solid var(--line); gap: 23px; flex: none; }
+.settings-tabs button {
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  padding: 6px 1px 10px; min-height: 36px; background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 500;
 }
-.adv summary::-webkit-details-marker { display: none; }
-.adv summary .chev { margin-left: auto; color: var(--faint); transition: transform .18s; }
-.adv[open] summary .chev { transform: rotate(90deg); }
-.adv .body { padding: 0 16px 14px; display: grid; gap: 10px; }
-.adv .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
-@media (max-width: 760px) { .adv .cols { grid-template-columns: 1fr; } }
-.adv .box { padding: 12px 14px; border-radius: 8px; background: var(--subtle); border: 1px solid var(--line); }
+.settings-tabs button:hover { color: var(--text); }
+.settings-tabs button.selected { border-bottom-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.settings-panel { display: flex; flex-direction: column; }
+/* 一行一设：左边说这是什么，右边放控件。行高 65px 跟设计稿一致 ——
+   两行字（标题 + 说明）配一个开关，矮了挤、高了空。 */
+.setting-row {
+  display: flex; gap: 15px; align-items: center; justify-content: space-between;
+  min-height: 65px; padding: 12px 0; border-bottom: 1px solid var(--line);
+}
+.setting-text { min-width: 0; flex: 1; }
+.setting-text strong { font-size: 12px; font-weight: 600; display: block; color: var(--ink); }
+.setting-text p { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.setting-ctrl { display: flex; align-items: center; gap: 10px; flex: none; min-width: 0; }
+.setting-value { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+/* 行间插的解释文字（如自动恢复的说明）：贴紧上面的开关组 */
+.settings-panel > .hint { margin: 2px 0 6px; }
+.settings-footnote {
+  font-size: 11px; color: var(--muted); padding-top: 12px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.settings-footnote kbd {
+  font-family: inherit; font-size: 10.5px; color: var(--muted);
+  border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 4px;
+  background: var(--surface);
+}
+/* 分段控件（移植设计稿的 .segmented）：一个外框里几个等宽选项，
+   选中项是白色内衬。外观三态（浅色/深色/跟随系统）用它。 */
+.segmented {
+  display: inline-flex; padding: 3px; border-radius: 8px; gap: 2px; flex: none;
+  background: var(--subtle); border: 1px solid var(--line);
+}
+.segmented button {
+  background: transparent; border: 0; min-height: 30px; padding: 4px 12px;
+  color: var(--muted); font-size: 12px; gap: 6px; border-radius: 5px;
+}
+.segmented button:hover { background: rgba(255,255,255,.55); color: var(--text); }
+.segmented button.selected {
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 1px 4px #15274713; font-weight: 600;
+}
+:root[data-theme="dark"] .segmented button:hover { background: rgba(255,255,255,.08); }
+:root[data-theme="dark"] .segmented button.selected { box-shadow: 0 1px 4px #0006; }
+/* 设置行里的紧凑档：行高 65px 配 30px 的分段按钮会显得空 */
+.setting-row .segmented { padding: 2px; }
+.setting-row .segmented button { min-height: 25px; font-size: 11px; padding: 2px 9px; }
+
+/* ══════════════════════════════════════════════════════════════
+   工作台场景（P4：按设计稿 renderWorkspace 重做）────────────────
+   版式从 design/interactive/app.css 原样移植：页头 + 场景分段器 /
+   scene-panel（scene-panel-head + screen-flow 双机卡片 + flow-connection
+   + source-strip）/ sharing-strip 双开关 / quick-transfer / 多屏的
+   multi-topology + multi-explainer。和生产现状的三个对接点：
+   ① 交互不走设计稿的 data-* 委托 —— 生产的按钮全是 onclick 全局函数
+      （wsSwitch / openPortsModal / setWorkspaceScene，见 actions.js）；
+   ② 摆位图（.topology）复用 kvm.js 的 screenCard 与 document 级 pointer
+      拖拽（格子带 data-drop），和设备页 3×3 图同一套交互两个容器；
+   ③ 深色靠令牌切换，无写死颜色；响应式按生产窗口（默认 820、最窄
+      600×520）移植设计稿的容器查询两档。 */
+.view-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex: none; }
+.view-heading h1 { font-size: 17px; font-weight: 650; letter-spacing: .01em; }
+.view-heading p { font-size: 12px; color: var(--muted); margin-top: 5px; }
+/* 场景面板：上下 1px 线夹住的实底区域（设计稿同款），内部三段 */
+.scene-panel {
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  background: var(--canvas); display: flex; flex-direction: column;
+  min-height: 205px;
+}
+.scene-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 18px 0; flex: none; }
+.scene-panel-head > span { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.scene-panel-head .icon { width: 15px; height: 15px; }
+.scene-panel-head strong { color: var(--ink); font-size: 12px; }
+/* 双机卡片 + 中间连接线 */
+.screen-flow { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 136px; padding: 8px 28px; }
+.computer { display: flex; flex-direction: column; align-items: center; width: 34%; min-width: 0; }
+.computer-display {
+  display: flex; position: relative; align-items: center; justify-content: center;
+  width: 156px; max-width: 100%; height: 96px;
+  border: 1.5px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--muted); padding: 7px;
+  transition: border-color 220ms, background-color 220ms;
+}
+/* 显示器的小底座：伪元素画在按钮下沿外（设计稿同款） */
+.computer-display::after {
+  position: absolute; content: ""; height: 6px; width: 48px;
+  background: var(--line-strong); bottom: -8px; border-radius: 0 0 3px 3px;
+  transition: background-color 220ms;
+}
+.computer-display.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); }
+.computer-display.active::after { background: var(--accent); }
+.computer-display:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
+.screen-content {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  width: 100%; height: 100%; justify-content: center;
+  background: var(--subtle); border-radius: 4px;
+}
+.computer-display.active .screen-content { background: var(--accent-soft); }
+.screen-content .icon { width: 24px; height: 24px; }
+.screen-content > span { font-size: 11px; }
+.computer-name { margin-top: 15px; display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+.computer-meta { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; align-items: center; gap: 5px; }
+.flow-connection {
+  flex: 1; max-width: 230px; min-width: 70px;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  align-self: center; margin: 0 4px 37px; position: relative;
+}
+.flow-note { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.connection-line { height: 2px; width: 100%; background: var(--line-strong); position: relative; }
+.connection-line::before, .connection-line::after {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--line-strong); position: absolute; top: -2px;
+}
+.connection-line::before { left: 0; }
+.connection-line::after { right: 0; }
+.signal { height: 4px; width: 26px; position: absolute; top: -1px; left: 0; background: var(--accent); border-radius: 4px; opacity: 0; }
+.flow-connection > .icon { color: var(--accent-ink); width: 20px; height: 20px; }
+/* 输入源条：场景面板底部一条，真实输入口 + 管理入口 */
+.source-strip { border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; padding: 10px 16px; flex: none; flex-wrap: wrap; }
+.source-strip > span { color: var(--muted); font-size: 11px; margin-right: 4px; white-space: nowrap; }
+.source-button { border-color: transparent; background: transparent; color: var(--muted); font-size: 11px; min-height: 27px; padding: 3px 9px; gap: 5px; }
+.source-button.current { color: var(--accent-ink); background: var(--accent-soft); border-color: transparent; }
+.source-button .icon { width: 12px; height: 12px; }
+.source-strip .port-manage { margin-left: auto; font-size: 11px; }
+.multi-summary { font-size: 11px; color: var(--muted); }
+.multi-summary strong { color: var(--ink); font-weight: 600; }
+/* 场景警示（设计稿 alert-inline）：黄底一行，error 档红底 */
+.alert-inline {
+  display: flex; gap: 8px; align-items: center; color: var(--warning);
+  background: var(--warning-soft); padding: 8px 12px; border-radius: 7px;
+  font-size: 11px; flex: none;
+}
+.alert-inline.error { color: var(--danger); background: var(--danger-soft); }
+.alert-inline > span { flex: 1; }
+.alert-inline button { font-size: 11px; color: inherit; min-height: 24px; padding: 0 4px; background: transparent; border: 0; }
+.alert-inline .icon { height: 15px; width: 15px; }
+/* 共享双开关（设计稿 sharing-strip）：两栏网格，中间 1px 线分。
+     生产开关用 .sw（34×20 胶囊），设计稿的 .toggle 是同物不同名。 */
+.sharing-strip { display: grid; grid-template-columns: 1fr 1fr; flex: none; gap: 22px; padding: 2px 0; }
+.sharing-item { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 2px; }
+.sharing-item + .sharing-item { border-left: 1px solid var(--line); padding-left: 24px; }
+.sharing-item > .icon { width: 21px; height: 21px; color: var(--muted); }
+.sharing-copy { flex: 1; min-width: 0; }
+.sharing-copy strong { font-size: 12px; font-weight: 600; display: block; }
+.sharing-copy p { font-size: 11px; color: var(--muted); margin-top: 4px; }
+/* 快捷传输（设计稿 quick-transfer） */
+.quick-transfer { border-top: 1px solid var(--line); padding-top: 12px; display: flex; gap: 10px; align-items: center; flex: none; }
+.quick-transfer > .icon { color: var(--muted); width: 18px; height: 18px; }
+.quick-transfer p { font-size: 11px; color: var(--muted); flex: 1; }
+.quick-transfer p strong { font-weight: 500; color: var(--ink); }
+.quick-transfer button { font-size: 11px; min-height: 28px; }
+/* 多屏场景：左摆位图 + 右说明（设计稿 multi-topology / multi-explainer） */
+.multi-topology { display: flex; flex: 1; min-height: 0; align-items: stretch; padding: 10px 12px; gap: 18px; justify-content: center; }
+.topology {
+  flex: 1; min-height: 174px; display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 6px; max-width: 390px; align-self: stretch;
+}
+.topology-slot {
+  border: 1px dashed var(--line-strong); background: transparent; border-radius: 7px;
+  min-width: 0; padding: 3px 5px; min-height: 0;
+  display: flex; align-items: center; justify-content: center; flex-direction: column;
+  gap: 1px; color: var(--muted); font-size: 11px;
+}
+.topology-slot .icon { width: 15px; height: 15px; }
+.topology-slot.occupied { border-style: solid; background: var(--surface); color: var(--ink); }
+.topology-slot.self { border-style: solid; background: var(--subtle); cursor: default; }
+.topology-slot strong { font-size: 11px; font-weight: 600; }
+.topology-slot small { font-size: 11px; color: var(--muted); }
+/* 拖拽 feedback：kvm.js 的 paintTarget 往 [data-drop] 上挂这两个类 */
+.topology-slot.hit { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
+.topology-slot.bad { border-color: var(--danger); border-style: solid; background: var(--danger-soft); }
+/* 槽位类名必须跟链路 side 一致（top/left/self/right/bottom —— kvm.js 的
+   WS_SLOTS 直接拿 side 当类名与 data-drop），写成了 up/down 上下两槽就会
+   丢掉 grid-area 掉进自动排列（2026-10-28 实测抓到的脱钩）。 */
+.slot-top { grid-area: 1 / 2; } .slot-left { grid-area: 2 / 1; } .slot-self { grid-area: 2 / 2; }
+.slot-right { grid-area: 2 / 3; } .slot-bottom { grid-area: 3 / 2; }
+.slothint { font-size: 11px; color: var(--faint); text-align: center; line-height: 1.5; }
+.multi-explainer { width: 145px; display: flex; justify-content: center; flex-direction: column; gap: 9px; flex: none; padding-right: 12px; }
+.multi-explainer h3 { line-height: 1.6; font-size: 12px; }
+.multi-explainer p { color: var(--muted); font-size: 11px; line-height: 1.8; }
+/* 共用一块屏托盘（设计稿 shared-screen-tray）：无门对端住这里 */
+.shared-screen-tray {
+  display: flex; align-items: center; gap: 9px; padding: 8px 11px;
+  border-top: 1px solid var(--line); font-size: 11px; color: var(--muted);
+  min-height: 41px; flex: none;
+}
+.shared-screen-tray > span { margin-right: auto; white-space: nowrap; }
+.shared-screen-tray .loosebox { display: flex; flex-wrap: wrap; gap: 6px; }
+.shared-screen-tray.hit { background: var(--accent-soft); }
+/* 管理输入源弹窗（设计稿 ports 动作的生产版） */
+.ports-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.port-row { display: flex; align-items: center; gap: 10px; }
+.port-row > div { flex: 1; min-width: 0; }
+.port-row input[type=text] { width: 100%; }
+.port-row small { display: block; color: var(--faint); font-size: 11px; margin-top: 3px; }
+
+/* 窄窗两档（设计稿 @container 720 / 520 的移植）：窗口 <720 收紧场景
+   面板；<600（生产最窄）时页头换行、flow-note 让位、说明栏收起。 */
+@media (max-width: 720px) {
+  .view-heading h1 { font-size: 15px; }
+  .view-heading p { font-size: 11px; }
+  .segmented button { padding-inline: 9px; font-size: 11px; }
+  .segmented .icon { width: 13px; height: 13px; }
+  .scene-panel-head { padding: 12px 13px 0; }
+  .screen-flow { padding: 8px 19px; }
+  .computer-display { width: 136px; height: 83px; }
+  .computer-name { font-size: 12px; }
+  .source-strip { padding: 9px 10px; gap: 3px; }
+  .source-button { font-size: 11px; padding-inline: 6px; }
+  .sharing-strip { gap: 14px; }
+  .sharing-item { gap: 8px; }
+  .sharing-item + .sharing-item { padding-left: 15px; }
+  .multi-topology { gap: 10px; padding-inline: 4px; }
+  .multi-explainer { width: 120px; }
+}
+@media (max-width: 600px) {
+  .view-heading { flex-wrap: wrap; gap: 8px; }
+  .view-heading .segmented { width: 100%; }
+  .view-heading .segmented button { flex: 1; }
+  .flow-note { display: none; }
+  .flow-connection { min-width: 28px; margin-inline: 4px; gap: 6px; }
+  .computer { width: 39%; }
+  .computer-display { width: 100%; max-width: 112px; }
+  .multi-explainer { display: none; }
+  .topology { max-width: 100%; }
+}
+/* 矮窗（设计稿 @container 620 / 550 的移植）：场景面板压高度，
+   摆位图收窄，把纵向空间让给输入源条和共享条。 */
+@media (max-height: 620px) {
+  .scene-panel { min-height: 0; }
+  .screen-flow { min-height: 96px; }
+  .multi-topology .topology { max-width: 350px; }
+}
+@media (max-height: 550px) {
+  .screen-flow { min-height: 72px; }
+  .computer-display { height: 72px; }
+  .flow-connection { margin-bottom: 28px; }
+}
 
 /* ── 图标（P1：sprite 随设计稿进 index.html）──────────────────
    24×24 线性图标，stroke 继承 currentColor，尺寸由上下文定。 */
@@ -622,6 +862,33 @@ html.dragging, html.dragging * {
 .upd-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .upd-row > .primary { flex: 1; min-width: 132px; }
 
+/* 帮助 / 排查弹窗的正文（P2.5）：行式键位表 + 灰底注记。
+   键位表一行一条：左动作右按键，底部 1px 线分 —— 和设置行同一个版式。
+   两个弹窗都是静态内容，没有 .upd- 那套动态段落。 */
+.modal-body { font-size: 12px; color: var(--muted); line-height: 1.8; }
+.modal-body p + p { margin-top: 11px; }
+.help-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  border-bottom: 1px solid var(--line); padding: 12px 0;
+}
+.help-row span:first-child { color: var(--ink); font-size: 12px; }
+.help-row .keys { color: var(--ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.modal-note {
+  background: var(--subtle); border-radius: 8px; padding: 12px;
+  margin-top: 16px; font-size: 11px; line-height: 1.7;
+}
+.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+.modal-actions > button { flex: 1; min-width: 120px; }
+/* 顶栏帮助入口：和维护三件同一套弱化样式（27px 图标键），但不进
+   flat-group —— 那三个是"排查本机"的动作，帮助不是。 */
+.actions .icon-help {
+  min-height: 27px; width: 27px; padding: 0; border-radius: 6px;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--line); box-shadow: none;
+}
+.actions .icon-help:hover { background: var(--subtle); border-color: var(--line-strong); color: var(--text); }
+.actions .icon-help .icon { width: 13px; height: 13px; }
+
 /* 重启过渡层：比弹窗更"重"（遮得更暗、z-index 更高）—— 它出现时
    整个程序马上就要没了，视觉上必须压过一切 */
 .restart-mask { position: fixed; inset: 0; z-index: 50; padding: 20px;
@@ -634,6 +901,108 @@ html.dragging, html.dragging * {
 .restart-tip { font-size: 15px; font-weight: 550; margin-top: 2px; }
 .restart-sub { font-size: 12px; color: var(--muted); margin: 10px 0 16px; max-width: 300px; }
 
+/* ── P3 传输页（移植设计稿 transfersView 四块）────────────────────
+   结构：transfer-target（发送到）/ drop-zone（拖放区）/ transfers-list
+   （筛选 + 记录 + 分页）/ inbox-line（接收目录）。块间 12px 由 .page-view
+   的 gap 给（设计稿同值挂在 #transfersView 上）。
+   设计稿的响应式是容器查询（.app-window 带 container-type: size）；生产的
+   面板窗口固定 820px 宽、最小 600×520，侧栏恒为图标栏（updateNavCompact
+   的 950 阈值在 820 处永远成立）—— 设计稿 ≤950 容器档因此是生产的常态，
+   其传输规则（.transfer-status 110px）已并进下面的基础规则；高度两档
+   （620 / 550）和最窄宽度档（600）按视口查询移植。 */
+.transfer-target { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+.transfer-target select { min-height: 30px; font-size: 12px; width: 150px; }
+.transfer-target .tag { margin-left: auto; }
+/* 拖放区：虚线框 + 退一档的底。drag-over 是拖到一半的高亮（actions.js
+   的 initTransferDrop 挂类）。WebView 里 drop 会降级成系统选择器。 */
+.drop-zone {
+  min-height: 134px; border: 1px dashed var(--line-strong); border-radius: 12px;
+  background: var(--canvas); display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 8px; flex: none; padding: 15px; text-align: center;
+}
+.drop-zone.drag-over { background: var(--accent-soft); border-color: var(--accent); }
+.drop-zone > .icon { width: 26px; height: 26px; color: var(--accent-ink); }
+.drop-zone h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.drop-zone p { font-size: 11px; color: var(--muted); margin: 0; }
+.drop-actions { display: flex; gap: 8px; margin-top: 1px; flex-wrap: wrap; justify-content: center; }
+.drop-actions button { font-size: 11px; min-height: 28px; padding: 3px 9px; }
+/* 传输记录：筛选组 + 行 + 分页 */
+.transfers-list { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 8px; font-size: 11px; color: var(--muted); }
+.filter-group { display: flex; gap: 4px; }
+.filter-group button { font-size: 11px; min-height: 25px; padding: 2px 7px; border: 0; color: var(--muted); background: transparent; }
+.filter-group button.selected { background: var(--subtle); color: var(--ink); }
+.transfer-row { min-height: 57px; padding: 9px 0; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); }
+.transfer-row > .icon { width: 25px; height: 25px; color: var(--muted); flex: none; }
+.transfer-file { min-width: 0; flex: 1; }
+.transfer-file strong { font-size: 11px; font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.transfer-file small { font-size: 11px; color: var(--muted); display: block; margin-top: 2px; }
+/* 110px = 设计稿 ≤950 容器档的值（生产窗口 820px 恒在此档，见上） */
+.transfer-status { width: 110px; font-size: 11px; color: var(--muted); }
+.transfer-status .success { display: flex; align-items: center; gap: 5px; color: var(--success); }
+.transfer-status .danger { color: var(--danger); }
+.transfer-status .icon { width: 13px; height: 13px; }
+.progress-track { background: var(--line); height: 3px; border-radius: 3px; overflow: hidden; margin-top: 5px; }
+.progress-track > i { display: block; width: 100%; height: 100%; background: var(--accent); transform: scaleX(var(--progress, 0)); transform-origin: left; transition: transform 220ms linear; }
+.transfer-actions { display: flex; width: 58px; justify-content: flex-end; flex: none; gap: 2px; }
+.transfer-actions .icon-button { width: 26px; height: 27px; min-height: 27px; padding: 3px; }
+.transfer-actions .icon { width: 15px; height: 15px; }
+.list-empty { color: var(--muted); font-size: 11px; padding: 22px 0; text-align: center; }
+.list-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 7px; padding-top: 5px; font-size: 11px; color: var(--muted); }
+.list-pagination button { min-height: 23px; font-size: 11px; padding: 0 6px; }
+.inbox-line { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); flex: none; }
+.inbox-line > .icon { width: 14px; height: 14px; flex: none; }
+.inbox-line .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-line button { font-size: 11px; min-height: 24px; }
+/* 纯图标钮（设计稿 .icon-button）：描边钮去掉边和底，只留图标。
+   传输行的暂停/取消/重试用它 —— 一行里并排三枚带字按钮放不下。 */
+.icon-button { padding: 6px; width: 32px; height: 32px; border-color: transparent; background: transparent; color: var(--muted); }
+.icon-button:hover { border-color: transparent; color: var(--ink); background: var(--subtle); }
+/* 侧栏传输徽标：有在进行的任务才亮（renderTransfers 置 hidden），
+   配色跟设计稿 .transfer-count 一致（蓝底蓝字，和设备数那枚灰底区分） */
+.nav-count.transfer-count { background: var(--accent-soft); color: var(--accent-ink); border-radius: 4px; }
+
+/* 矮窗两档（设计稿 @container app max-height 620 / 550 的移植）：
+   传输页收紧块间距，拖放区和行高压一点 —— 窗口就那么大，
+   列表要多留。 */
+@media (max-height: 620px) {
+  #transfersView { gap: 8px; }
+  .drop-zone { min-height: 110px; padding: 10px; gap: 5px; }
+  .drop-zone > .icon { width: 22px; height: 22px; }
+  .transfer-row { min-height: 50px; padding-block: 6px; }
+}
+@media (max-height: 550px) {
+  #transfersView { gap: 7px; }
+  .drop-zone { min-height: 96px; }
+  .drop-zone > .icon { display: none; }
+  .transfer-row { min-height: 45px; padding-block: 5px; }
+  .transfer-row > .icon { width: 21px; height: 21px; }
+}
+/* 最窄一档（设计稿 @container app max-width 520 的传输规则，按生产
+   最小窗宽 600px 落地）：状态列和操作列再收，行图标让位。 */
+@media (max-width: 600px) {
+  .transfer-target select { width: 118px; }
+  .transfer-target .tag { display: none; }
+  .drop-zone h2 { font-size: 11px; }
+  .drop-zone p { font-size: 11px; }
+  .drop-actions { gap: 3px; }
+  .drop-actions button { padding-inline: 5px; }
+  .transfer-row { gap: 7px; }
+  .transfer-status { width: 68px; }
+  .transfer-actions { width: 45px; }
+  .transfer-row > .icon { display: none; }
+  .filter-group { gap: 0; }
+  .filter-group button { padding-inline: 4px; }
+  .inbox-line { font-size: 11px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+/* P2.5：手动「减少动态效果」开关（设置页 → 外观与关于）。
+   core.js 的 applyReduceMotion 把偏好落到 :root.reduced-motion 上，
+   和上面 OS 级那档同一个判据 —— 保留状态反馈的说法是"少动"，不是"不动"：
+   这里连过渡一起收掉，但 :hover 变色这类不带动画的反馈不受影响。 */
+:root.reduced-motion *, :root.reduced-motion *::before, :root.reduced-motion *::after {
+  transition: none !important; animation: none !important;
 }

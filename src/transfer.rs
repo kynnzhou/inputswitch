@@ -8,9 +8,13 @@
 //! 完整性靠 SHA-256：发端先算一遍写进 HELLO，收端边收边算，对不上就删掉不落地。
 //! 目录会递归展开并保留相对路径 —— 但相对路径必须过 `safe_rel`，
 //! 否则对端可以塞一个 `../../.ssh/authorized_keys` 进来。
+//!
+//! ---- 切分轴（2026-10-28）----
+//! `tasks` 是传输任务注册表（进程级状态 + 暂停/取消手柄），和线上协议无关：
+//! 改面板的传输列表只动 `tasks`，改帧格式只动本文件。
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,10 +24,16 @@ use sha2::Digest;
 
 use crate::pair;
 
+pub mod tasks;
+
 pub const CHUNK: usize = 256 * 1024;
 const FRAME_JSON: u8 = 1;
 const FRAME_DATA: u8 = 2;
 const MAX_JSON: u32 = 8 * 1024 * 1024;
+
+/// `send()` 因取消提前退出时返回的错误。调用方拿它把任务标记成「已取消」
+/// 而不是「失败」—— 两件事对用户完全不一样。
+pub const CANCELLED: &str = "已取消";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileMeta {
@@ -137,22 +147,27 @@ fn read_frame(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
     Ok((head[0], payload))
 }
 
-/// 发给某台对端。`progress(sent, total)` 在传输过程中被反复调用。
+/// 发给某台对端。`progress(sent, total)` 在传输过程中被反复调用
+/// （`collect` 之后也会立刻调一次 `(0, total)`，让调用方尽早拿到总量）。
 ///
 /// `clip = true` 表示这是剪贴板按需传输：收端收完会把落盘路径写进剪贴板。
+///
+/// `ctrl` 是暂停/取消手柄：每个数据块之间读一次。暂停不断开连接，
+/// 靠周期性空帧保活（接收侧读超时 60s，空 data 帧对它是 0 字节数据）。
+/// CLI 等不需要控制的调用方传 `None`。
 pub fn send(
-    ip: IpAddr,
-    port: u16,
+    addr: std::net::SocketAddr,
     node: &str,
     paths: &[PathBuf],
     key: Option<[u8; 32]>,
     clip: bool,
+    ctrl: Option<&tasks::Control>,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<String, String> {
     let (local, metas) = collect(paths)?;
     let total: u64 = metas.iter().map(|m| m.size).sum();
+    progress(0, total);
 
-    let addr = std::net::SocketAddr::new(ip, port);
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
         .map_err(|e| format!("连不上对端 {}：{}", addr, e))?;
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -177,6 +192,27 @@ pub fn send(
     for path in local.iter() {
         let mut file = std::fs::File::open(path).map_err(|e| format!("打开失败：{}", e))?;
         loop {
+            // 每个块之间让出控制权。取消：立刻退出；暂停：挂着不发，
+            // 每 45s 一个空 data 帧让对端的 60s 读超时够不着（见 tasks::KEEPALIVE）。
+            if let Some(c) = ctrl {
+                if c.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(CANCELLED.to_string());
+                }
+                if c.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                    let mut since_ping = std::time::Instant::now();
+                    while c.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                        if c.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                            return Err(CANCELLED.to_string());
+                        }
+                        if since_ping.elapsed() >= tasks::KEEPALIVE {
+                            write_frame(&mut stream, FRAME_DATA, &[])
+                                .map_err(|e| format!("发送中断：{}", e))?;
+                            since_ping = std::time::Instant::now();
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
             let n = file.read(&mut buf).map_err(|e| format!("读取失败：{}", e))?;
             if n == 0 {
                 break;
@@ -399,6 +435,7 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn rejects_traversal() {
@@ -431,18 +468,101 @@ mod tests {
 
         let node = "test-node";
         let result = send(
-            IpAddr::from([127, 0, 0, 1]),
-            port,
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
             node,
             std::slice::from_ref(&src),
             None,
             false,
+            None,
             |_, _| {},
         );
         assert!(result.is_ok(), "{:?}", result);
         let saved = inbox.join("hello.txt");
         assert!(saved.exists());
         assert_eq!(std::fs::read(&saved).unwrap(), b"inputswitch transfer test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 暂停后继续：最终照样收完，且内容完整。
+    /// 4MB / 256KB 一块 = 16 个块，第一个数据回调就暂停，主线程 250ms 后放行。
+    #[test]
+    fn pause_then_resume_completes_over_loopback() {
+        let dir = std::env::temp_dir().join(format!("isw-pause-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload = vec![7u8; 4 * 1024 * 1024];
+        let src = dir.join("big.bin");
+        std::fs::write(&src, &payload).unwrap();
+        let inbox = dir.join("inbox");
+        let port = 49124;
+        serve(
+            Arc::new(Mutex::new(inbox.clone())),
+            port,
+            Arc::new(Mutex::new(None)),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let ctrl = tasks::Control::default();
+        let in_thread = ctrl.clone();
+        let once = std::sync::atomic::AtomicBool::new(false);
+        let sender = std::thread::spawn(move || {
+            send(
+                std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                "test-node",
+                std::slice::from_ref(&src),
+                None,
+                false,
+                Some(&in_thread),
+                |sent, _total| {
+                    // 第一个有字节进度的回调处暂停一次（(0, total) 那次不算）
+                    if sent > 0 && !once.swap(true, Ordering::SeqCst) {
+                        in_thread.paused.store(true, Ordering::SeqCst);
+                    }
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(250));
+        ctrl.paused.store(false, Ordering::SeqCst); // 放行
+        let result = sender.join().unwrap();
+        assert!(result.is_ok(), "{:?}", result);
+        assert_eq!(std::fs::read(inbox.join("big.bin")).unwrap(), payload);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 预置取消：第一个块边界就退，返回 `CANCELLED`（不是普通失败）。
+    #[test]
+    fn preset_cancel_returns_cancelled_over_loopback() {
+        let dir = std::env::temp_dir().join(format!("isw-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("x.bin");
+        std::fs::write(&src, vec![1u8; 1024 * 1024]).unwrap();
+        let port = 49125;
+        serve(
+            Arc::new(Mutex::new(dir.join("inbox"))),
+            port,
+            Arc::new(Mutex::new(None)),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let ctrl = tasks::Control::default();
+        ctrl.cancel.store(true, Ordering::SeqCst);
+        let result = send(
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            "test-node",
+            std::slice::from_ref(&src),
+            None,
+            false,
+            Some(&ctrl),
+            |_, _| {},
+        );
+        assert_eq!(result.unwrap_err(), CANCELLED);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -350,7 +350,12 @@ impl Ui {
                     // 不能让他觉得"粘贴键坏了"。
                     h.send_key_to_peer(0x09); // V
                 }
-                self.status = format!("剪贴板文件传输失败：{err}");
+                // 用户在面板上点了取消：不是故障，说清"按原样粘了"
+                self.status = if err == crate::transfer::CANCELLED {
+                    "已取消剪贴板传输，这次粘贴按原样转发给对端".to_string()
+                } else {
+                    format!("剪贴板文件传输失败：{err}")
+                };
             }
         }
         self.transfer_note.clear();

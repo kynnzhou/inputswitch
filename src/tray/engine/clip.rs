@@ -55,6 +55,12 @@ impl Ctx {
         let peer_name = peer.node.clone();
         let proxy_t = self.proxy.clone();
         let proxy_p = self.proxy.clone();
+        // 登记进传输列表：按需传输也是"本机发起的一次发送"，用户看得见才知所出入
+        let (task_id, ctrl) = crate::transfer::tasks::register(
+            &peer.node,
+            &format!("剪贴板 · {count} 个文件"),
+            files.clone(),
+        );
         log_line(&format!(
             "按需传输开始：{count} 个条目 → {peer_name}（正在整理清单并校验）"
         ));
@@ -62,12 +68,12 @@ impl Ctx {
             let _ = proxy_t.send_event(UserEvent::Transfer("正在准备文件…".to_string()));
             let mut last_pct = u64::MAX;
             let res = transfer::send(
-                ip,
-                port,
+                std::net::SocketAddr::new(ip, port),
                 &node,
                 &files,
                 key,
                 true, // 这批是剪贴板按需传输：收端收完要写剪贴板
+                Some(&ctrl),
                 |sent, total| {
                     // 同 start_send：checked_div 一并防住除零与溢出
                     let pct = sent
@@ -81,6 +87,13 @@ impl Ctx {
                     }
                 },
             );
+            match &res {
+                Ok(_) => crate::transfer::tasks::finish(task_id, crate::transfer::tasks::Phase::Done, ""),
+                Err(err) if err == transfer::CANCELLED => {
+                    crate::transfer::tasks::finish(task_id, crate::transfer::tasks::Phase::Cancelled, "")
+                }
+                Err(err) => crate::transfer::tasks::finish(task_id, crate::transfer::tasks::Phase::Failed, err),
+            }
             let _ = proxy_t.send_event(UserEvent::PasteDone(res));
         });
     }

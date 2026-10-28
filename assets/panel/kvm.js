@@ -1,33 +1,18 @@
-// 共用键鼠：状态与链路行（renderKvm / renderKvmLinks）、3×3 摆位图
-// （renderKvmGrid / screenCard）、拖拽与键盘摆位（Pointer Events）、
-// 摆位落库（placeOn / linkApi）。跟摆位图相关的两个点对点动作
-// （handOverTo / sendTo）也在这里。
+// 共用键鼠：权限横幅与手感档位（renderKvm）、链路行（renderKvmLinks）、
+// 两套摆位图（设备页 3×3：renderKvmGrid；工作台多屏场景的十字五槽：
+// renderWorkspaceTopology）、拖拽与键盘摆位（Pointer Events）、摆位落库
+// （placeOn / linkApi）。两套图共用 screenCard 和 document 级事件 ——
+// 格子带 data-drop，指针事件和方向键摆位不关心容器是谁。
+// P4 起工作台不再有「共用键鼠」卡：电源开关搬进共享条（#kvmSwitch），
+// 光标速度搬去设置页（#kvmScaleRow），链路行搬去设备页（#kvmLinks），
+// 「把键鼠交给对端」由多屏场景自己画（multiSceneHtml 的 wsHandOver）。
 function renderKvm() {
   const k = snap.kvm || {};
-  // 模式是**每台对端**的属性，不再是全局开关：这两个布尔由后端按链路表
-  // 算好塞进来。原来前端拿 `k.mode !== 'edge'` 自己推 —— k.mode 只是
-  // 第一条链路的模式，跟后端 do_switch 用的 has_follow_link()（任一链路）
-  // 不是同一个判据，两边必然打架。
-  const onFollowLink = !!k.follow_link;
   const el = (id) => document.getElementById(id);
-
-  // 键鼠交接栏：「把键鼠交给对端」不碰画面。
-  // 两种情况它都没用，直接藏：
-  //   ① 共用一块屏：画面一离开就看不见这块面板，没有可点的时机；
-  //   ② 键鼠已经在别台手上（active 非空）：抓取期间光标被钉死、点击被
-  //      转发给对端，这个按钮物理上点不到 —— 换收件人请点链路行的「转给它」。
-  const handUseless = onFollowLink || !!k.active;
-  el('kvmHandBtn').style.display = handUseless ? 'none' : '';
-  // 按钮藏了就**别留说明**：跟随链路那一句和上面 kvmHint 一字不差，
-  // 卡片里会出现同一句话两遍（两栏重排后它们挨得更近，更像笔误）。
-  // 剩下的一种情况（按钮可见）才需要解释怎么用它。
-  el('kvmHandHint').textContent = handUseless
-    ? ''
-    : '光标推到屏幕边缘就过去，按 Ctrl+Alt+Esc 收回。';
 
   // 接收手感档位：位移先按两屏分辨率比例换算（几何正确），再乘这个倍率。
   // 两个系统的指针加速曲线不同，同一串位移在两边速度必然有差 ——
-  // 「回到本机变慢」就往上调一档。
+  // 「回到本机变慢」就往上调一档。控件在设置页「快捷键」选项卡。
   const scale = Number(k.recv_scale || 1);
   const scaleBtns = [
     ['kvmScale09', 0.9],
@@ -45,18 +30,10 @@ function renderKvm() {
       + '。只影响键鼠在对端、你在本机操作时的速度。';
   }
 
-  const state = k.state || '未启动';  el('kvmState').textContent = k.on
-    ? (k.peer_alive ? state : state + '（对端不在线）')
-    : '未启动';
-  el('kvmState').style.color = k.on ? (k.peer_alive ? '' : 'var(--orange)') : 'var(--muted)';
-  // 电源按钮带图标（设计稿的图标按钮画法）。innerHTML 而不是 textContent：
-  // 轮询每 1.2 秒重写这一行，textContent 会把图标抹掉（同主按钮，见 render.js）。
-  el('kvmPower').innerHTML = icon('keyboard') + (k.on ? '关闭' : '开启');
-  el('kvmPower').className = 'btn-sm';
-
   // 缺权限时给一条明路。注意这两个值由 GUI 进程自己上报，不看 CLI 探针
   // （探针是包里的第二个二进制，另一个 cdhash，TCC 只认主程序，它永远报 ✗）
-  // 权限横幅已经提到顶栏（它决定整个共用键鼠能不能用），这里只留状态提示。
+  // 横幅在工作台置顶（permBanner 在场景面板上方）—— 缺权限时场景面板里
+  // 的任何状态都是空转，它必须先于一切被看见。
   const perms = snap.perms || { capture: true, inject: true };
   const missing = [];
   if (!perms.inject) missing.push('注入（接收对端的键鼠）');
@@ -66,17 +43,10 @@ function renderKvm() {
     el('permText').textContent = '缺少权限：' + missing.join('、') +
       '。在系统设置里勾选后，必须重启本程序才会生效。';
   }
-  el('kvmHint').textContent = missing.length
-    ? '缺少系统授权，键鼠送不出去。先在上面点「重启应用」。'
-    : k.follow_link
-      ? (k.on ? '切到对端时键鼠跟着画面走，切回来时自动回来。'
-              : '共用键鼠还没开。开启后，切画面时键鼠会跟着过去。')
-      : (k.links || []).length
-        ? '光标推到屏幕边缘就过去，按 Ctrl+Alt+Esc 收回。'
-        : '还没有摆好对端的位置，本机暂时不接管键鼠。在右边把对端放进格子即可。';
 
   renderKvmLinks(k);
   renderKvmGrid(k);
+  renderWorkspaceTopology(k);
 }
 
 // 一台对端一行：只显示"它现在是什么状态" + 一个动作按钮。
@@ -132,9 +102,11 @@ function handOverTo(node) {
   api('/api/kvm-handover?node=' + encodeURIComponent(node)).then(pull);
 }
 // 点名发文件给这一台。不带 node 时后端会退回"握着键鼠的那台"，
-// 多台在线又没会话就直接拒绝 —— 多机时猜人必然猜错
+// 多台在线又没会话就直接拒绝 —— 多机时猜人必然猜错。
+// 发完跳到传输页：接下来要看的是传输记录，不是还留在设备页。
 function sendTo(node) {
   api('/api/send?node=' + encodeURIComponent(node)).then(pull);
+  showPage('transfers');
 }
 
 // ---- 3×3 摆位图 ----
@@ -245,6 +217,74 @@ function renderKvmGrid(k) {
   if (focused) {
     const again = box.querySelector(`.screen[data-node="${focused}"]`)
       || looseBox.querySelector(`.screen[data-node="${focused}"]`);
+    if (again) again.focus();
+  }
+}
+
+// ---- 工作台多屏场景的摆位图（设计稿 topology 十字五槽的生产版）----
+// 和设备页 3×3 图（renderKvmGrid）共用同一套交互：screenCard 可拖、
+// 格子带 data-drop、document 级 pointer 事件 + 方向键摆位。版式按设计稿：
+// 上下左右四槽 + 中心本机，四角留空（协议只支持四向，没有斜角）。
+// links/peers → bySide/loose 的归集逻辑和 renderKvmGrid 逐行同构 ——
+// 两处必须一致，否则同一台对端在两张图上的位置会打架。
+const WS_SLOTS = ['top', 'left', 'self', 'right', 'bottom'];
+
+function renderWorkspaceTopology(k) {
+  // 拖动中不重绘：innerHTML 一换，手里那张卡片就没了
+  if (dragState) return;
+  const box = document.getElementById('wsTopology');
+  const looseBox = document.getElementById('wsLooseBox');
+  if (!box || !looseBox) return;
+
+  // 重绘会重建节点，焦点会丢。记住是哪一台，画完再还给它的新节点。
+  const focused = document.activeElement && document.activeElement.classList
+    && document.activeElement.classList.contains('screen')
+    ? document.activeElement.dataset.node : null;
+
+  const links = k.links || [];
+  const peers = snap.peers || [];
+  const bySide = {};
+  const loose = [];
+  const dup = [];
+  const known = new Set();
+  const rootNode = k.root || '';
+  links.forEach(l => {
+    known.add(l.node);
+    const item = {
+      node: l.node, side: l.side || '', alive: !!l.alive, active: !!l.active,
+      root: rootNode === l.node,
+    };
+    if (!l.side) loose.push(item);
+    else if (bySide[l.side]) { dup.push(l.node); loose.push(Object.assign({ dup: true }, item)); }
+    else bySide[l.side] = item;
+  });
+  peers.forEach(p => {
+    if (!known.has(p.node)) {
+      loose.push({ node: p.node, side: '', alive: true, fresh: true, root: rootNode === p.node });
+    }
+  });
+
+  const slotHtml = (slot) => {
+    if (slot === 'self') {
+      return '<div class="topology-slot self slot-self">' + icon('windows')
+        + '<strong>本机</strong><small>' + esc(snap.node || '—') + '</small></div>';
+    }
+    const taken = bySide[slot];
+    const inner = taken
+      ? screenCard(taken.node, taken)
+      : '<span class="slothint">' + SIDE_NAME[slot] + '<br>放置设备</span>';
+    return '<div class="topology-slot' + (taken ? ' occupied' : '') + ' slot-' + slot
+      + '" data-drop="' + slot + '">' + inner + '</div>';
+  };
+  box.innerHTML = WS_SLOTS.map(slotHtml).join('');
+
+  looseBox.innerHTML = loose.length
+    ? loose.map(item => screenCard(item.node, item)).join('')
+    : '<span class="slothint">（没有待摆位的对端）</span>';
+
+  if (focused) {
+    const again = box.querySelector('.screen[data-node="' + focused + '"]')
+      || looseBox.querySelector('.screen[data-node="' + focused + '"]');
     if (again) again.focus();
   }
 }
@@ -370,7 +410,9 @@ function finishDrag(then) {
   d.el.classList.remove('dragging');
   d.el.removeAttribute('style');
   if (d.moved) d.el.remove();   // 已经被挪到 body 下，重绘会重建整张图
+  // 两套摆位图都重画：拖拽可能发生在任一容器里（设备页 / 工作台多屏场景）
   renderKvmGrid(snap.kvm || {});
+  renderWorkspaceTopology(snap.kvm || {});
   if (then) then();
 }
 
