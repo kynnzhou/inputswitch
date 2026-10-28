@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="InputSwitch 可交互界面设计稿：单屏切换、多屏共享、设备配对、文件传输与设置。">
+  <title>InputSwitch · 交互设计稿</title>
+  <link rel="icon" href="../brand/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+      <symbol id="i-screens" viewBox="0 0 24 24"><rect x="2" y="3" width="14" height="11" rx="2"/><path d="M5 18h8M9 14v4M19 8h1a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2"/></symbol>
+      <symbol id="i-transfer" viewBox="0 0 24 24"><path d="M7 3v16m-4-4 4 4 4-4M17 21V5m-4 4 4-4 4 4"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-swap" viewBox="0 0 24 24"><path d="M3 7h17m-4-4 4 4-4 4M21 17H4m4-4-4 4 4 4"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 15h10" stroke-linecap="round"/></symbol>
+      <symbol id="i-mouse" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="6"/><path d="M12 2v7M6 10h12"/></symbol>
+      <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3M8 11h8M8 16h6"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-4 9-8 11-4-2-8-6-8-11V5l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></symbol>
+      <symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3M3 12h18"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+      <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .6-1.5 1-1.5 2M12 17h.01"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7h18"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H5a1 1 0 0 0-1 1v18a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9l-7-7Zm0 0v7h7M8 14h8M8 18h5"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 13a9 9 0 0 1-10-10 9 9 0 1 0 10 10Z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8 16a6 6 0 0 1 8 0M12 20h.01"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4Z"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4M8 15l-2 2a4 4 0 0 0 6 6l3-3a4 4 0 0 0 0-6M16 9l2-2a4 4 0 0 0-6-6L9 4a4 4 0 0 0 0 6" transform="translate(0 -1)"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+      <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 4h8v8H3zm10 0h8v8h-8zM3 14h8v7H3zm10 0h8v7h-8z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="13" rx="2"/><path d="m4 16-2 4h20l-2-4M9 20h6"/></symbol>
+    </defs>
+  </svg>
+
+  <aside class="review-bar" id="previewTools" popover="auto" aria-label="设计预览工具">
+    <div class="review-title"><strong>设计预览</strong><span>仅模拟操作</span></div>
+    <div class="review-controls">
+      <label class="review-select"><span>演示状态</span><select id="demoState" aria-label="演示状态"><option value="ready">正常连接</option><option value="offline">设备离线</option><option value="unpaired">尚未配对</option><option value="failure">切换失败</option><option value="noinput">无可用输入</option></select></label>
+      <label class="review-select size-select"><span>窗口</span><select id="previewSize" aria-label="预览窗口尺寸"><option value="auto">自适应</option><option value="1080x720">1080 × 720</option><option value="820x680">820 × 680</option><option value="600x520">600 × 520</option></select></label>
+      <div class="preview-bottom"><button class="text-button preview-theme" id="previewTheme" data-action="theme-cycle" aria-label="切换深色外观"><svg class="icon"><use href="#i-moon"/></svg><span>深色外观</span></button><button class="text-button reset-preview" data-action="reset" title="恢复所有演示数据"><svg class="icon"><use href="#i-refresh"/></svg><span>重置演示</span></button></div>
+    </div>
+    <div class="preview-status"><span id="dimensionLabel">自适应窗口</span><span>不会操作真实设备</span></div>
+  </aside>
+
+  <main class="preview-stage">
+    <section class="app-window" id="appWindow" aria-label="InputSwitch 应用预览">
+      <header class="app-titlebar">
+        <div class="brand"><img src="../brand/icon.svg" alt="" width="25" height="25"><strong>InputSwitch</strong></div>
+        <div class="titlebar-actions"><span class="preview-label">交互设计稿 · 演示数据</span><button class="preview-trigger quiet-button" popovertarget="previewTools" title="演示状态、窗口尺寸与外观"><svg class="icon"><use href="#i-settings"/></svg>设计预览</button><button class="icon-button" data-action="help" aria-label="使用帮助" title="使用帮助"><svg class="icon"><use href="#i-help"/></svg></button></div>
+      </header>
+
+      <aside class="sidebar" aria-label="主导航">
+        <div class="workspace-label">我的工作空间</div>
+        <nav class="main-nav">
+          <button data-page="workspace" class="nav-item selected" aria-current="page" title="工作台"><svg class="icon"><use href="#i-grid"/></svg><span>工作台</span></button>
+          <button data-page="devices" class="nav-item" title="设备与布局"><svg class="icon"><use href="#i-screens"/></svg><span>设备与布局</span><span class="nav-count" id="deviceCount">2</span></button>
+          <button data-page="transfers" class="nav-item" title="文件传输"><svg class="icon"><use href="#i-transfer"/></svg><span>文件传输</span><span class="nav-count transfer-count" id="transferCount" hidden>0</span></button>
+          <button data-page="settings" class="nav-item" title="设置"><svg class="icon"><use href="#i-settings"/></svg><span>设置</span></button>
+        </nav>
+        <div class="sidebar-bottom">
+          <button class="sidebar-help" data-action="help" title="快捷键与使用帮助"><svg class="icon"><use href="#i-help"/></svg><span>使用帮助</span></button>
+          <div class="local-machine"><svg class="icon"><use href="#i-windows"/></svg><div><strong>我的 Windows</strong><span>本机 · 键鼠已连接</span></div><i class="status-dot" aria-hidden="true"></i></div>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="command-bar">
+          <div class="command-top">
+            <div class="owner-facts">
+              <div class="owner-fact"><svg class="icon"><use href="#i-monitor"/></svg><span class="fact-label">画面</span><strong id="pictureOwner">本机</strong></div>
+              <span class="fact-divider"></span>
+              <div class="owner-fact"><svg class="icon"><use href="#i-mouse"/></svg><span class="fact-label">键鼠</span><strong id="keyboardOwner">本机</strong></div>
+              <span class="connection-fact" id="onlineFact"><i class="status-dot"></i>2 台在线</span>
+            </div>
+            <button class="primary" id="mainSwitch" data-action="switch"><svg class="icon"><use href="#i-swap"/></svg><span>切换到 Mac mini</span></button>
+          </div>
+          <div class="maintenance-row">
+            <div class="maintenance-actions">
+              <button class="quiet-button" data-maintain="detect"><svg class="icon"><use href="#i-refresh"/></svg>重新检测</button>
+              <button class="quiet-button" data-maintain="scan"><svg class="icon"><use href="#i-scan"/></svg>扫描输入口</button>
+              <button class="quiet-button" data-maintain="check"><svg class="icon"><use href="#i-check-circle"/></svg>检测能否切换</button>
+            </div>
+            <button class="hotkey-hint text-button" data-action="shortcut" title="修改切屏快捷键"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd></button>
+          </div>
+        </header>
+        <div class="view-container" id="viewContainer">
+          <section id="workspaceView" class="page-view" aria-label="工作台"></section>
+          <section id="devicesView" class="page-view" aria-label="设备与布局" hidden></section>
+          <section id="transfersView" class="page-view" aria-label="文件传输" hidden></section>
+          <section id="settingsView" class="page-view" aria-label="设置" hidden></section>
+        </div>
+      </div>
+
+      <footer class="app-footer">
+        <span class="footer-connection" id="footerConnection"><svg class="icon"><use href="#i-shield"/></svg>已配对 · 连接已加密</span>
+        <span class="footer-message" id="footerMessage" role="status" aria-live="polite">一切就绪</span>
+        <button class="escape-hint text-button" data-action="escape-help"><kbd>Ctrl + Alt + Esc</kbd><span>紧急断开</span></button>
+      </footer>
+      <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
+    </section>
+  </main>
+  <dialog id="modal" aria-labelledby="modalTitle"><div class="modal-content" id="modalContent"></div></dialog>
+  <input type="file" id="filePicker" multiple hidden>
+  <input type="file" id="folderPicker" webkitdirectory multiple hidden>
+  <noscript>请启用 JavaScript 以体验交互设计稿。</noscript>
+</body>
+</html>
