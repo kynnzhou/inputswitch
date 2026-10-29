@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Snapshot } from "../lib/types";
 import { Icon } from "./IconSprite";
 import { savePair, kvmHandover } from "../lib/api";
@@ -25,7 +25,14 @@ export function Devices({
   optimistic: { node: string; side: string }[];
   setOptimistic: (o: { node: string; side: string }[]) => void;
 }) {
+  // 已配对时默认看摆位（旧面板 autoDevicePane 同逻辑）；没配对先教配对
   const [pane, setPane] = useState<"layout" | "pair">("pair");
+  // 首次拿到快照时按配对态校正默认 pane（已配对 → 摆位；旧面板 autoDevicePane 同逻辑）
+  const paneInit = useRef(false);
+  if (!paneInit.current && snap) {
+    paneInit.current = true;
+    if (snap.paired && snap.peer_verified > 0) setPane("layout");
+  }
   const [code, setCode] = useState("");
   const [codeDirty, setCodeDirty] = useState(false);
 
