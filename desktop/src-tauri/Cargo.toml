@@ -10,7 +10,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # 与根 crate 同版本号由 scripts/sync-version.mjs 同步（真源在根 Cargo.toml）。
 # 后端逻辑全部来自根 lib（kvm/transfer/panel…），壳只管窗口、托盘与热键。
-inputswitch = { path = "../.." }
+inputswitch = { path = "../..", features = ["tray"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

@@ -39,12 +39,13 @@ use crate::{transfer, Switcher};
 // 可见性一律 `pub(super)`：只给 `crate::tray` 这层看，不泄漏到 crate 外
 // （对外仍然只有 `tray::run` 和 `tray::log_line` 两个入口）。
 mod actions;
-mod engine;
+pub mod engine;
+pub use self::menu::port_rows_for_snapshot;
 mod events;
 mod hotkey;
 mod kvmctl;
 mod log;
-mod menu;
+pub mod menu;
 mod send;
 mod snapshot;
 mod switch;
@@ -128,7 +129,7 @@ pub(super) static HAS_DISPLAY: AtomicBool = AtomicBool::new(false);
 /// panic，走 Drop）复位，快照每轮轮询读它。
 pub(super) static MAINT_BUSY: AtomicBool = AtomicBool::new(false);
 
-enum Command {
+pub enum Command {
     /// 切屏，并且如果键鼠开着就跟过去（正常路径）
     SwitchRaw { name: String, value: u16 },
     /// 只切画面，键鼠留在本机。面板上的「仅切换画面」走这条
@@ -156,7 +157,8 @@ enum Command {
     AskPeerSwitch { value: u16 },
 }
 
-enum UserEvent {
+#[derive(Debug)]
+pub enum UserEvent {
     Status {
         text: String,
         target: String,
@@ -379,7 +381,11 @@ pub fn run() -> ! {
     {
         let proxy = proxy.clone();
         let mesh = mesh.clone();
-        thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
+        // engine 只认 EventSink：包一层 send_event，行为与原先逐字节一致
+        let sink = Arc::new(move |ev: UserEvent| {
+            let _ = proxy.send_event(ev);
+        });
+        thread::spawn(move || engine_loop(switcher, rx, sink, mesh));
     }
     log_line(&format!(
         "启动：热键={} 目标={} 节点={} 构建=v{}",

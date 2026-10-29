@@ -23,15 +23,22 @@
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::peer::Mesh;
 use crate::Switcher;
-use tao::event_loop::EventLoopProxy;
+
+pub use crate::tray::{Command, UserEvent};
+
+/// 引擎事件出口：旧壳 = EventLoopProxy 的包装，Tauri 壳 = 写共享快照。
+/// `Arc<dyn Fn>` 而非泛型：engine_loop 跨线程 spawn，泛型参数会顺着
+/// `thread::spawn` 传染到每个调用方。
+pub type EventSink = Arc<dyn Fn(UserEvent) + Send + Sync>;
 
 use self::status::{inspect, profile_key_of, status_text};
 use super::kvm_now;
-use super::{Command, UserEvent, HAS_DISPLAY};
+use super::HAS_DISPLAY;
 
 mod beat;
 mod clip;
@@ -46,7 +53,8 @@ mod switch;
 struct Ctx {
     switcher: Switcher,
     rx: Receiver<Command>,
-    proxy: EventLoopProxy<UserEvent>,
+    // 事件出口（EventSink 的文档在类型别名上）
+    proxy: EventSink,
     mesh: Mesh,
     /// 上一轮推送的签名，只在状态真的变了才往 UI 线程丢事件
     last_push: String,
@@ -81,7 +89,7 @@ impl Ctx {
             return;
         }
         self.last_push = sig;
-        let _ = self.proxy.send_event(UserEvent::Status {
+        let _ = (self.proxy)(UserEvent::Status {
             text,
             target: target.to_string(),
             profile_key: key,
@@ -100,10 +108,11 @@ pub(super) fn sync_own(switcher: &mut Switcher, mesh: &Mesh) -> Option<u16> {
 }
 
 /// 启动工作线程。参数清单 = 原 `engine_loop` 的签名，语义不变。
-pub(super) fn engine_loop(
+pub fn engine_loop(
     switcher: Switcher,
     rx: Receiver<Command>,
-    proxy: EventLoopProxy<UserEvent>,
+    // 事件出口（EventSink 的文档在类型别名上）
+    proxy: EventSink,
     mesh: Mesh,
 ) {
     let mut ctx = Ctx {
