@@ -3,6 +3,7 @@ import type { Snapshot } from "../lib/types";
 import type { PageId } from "../lib/ui";
 import { Icon } from "./IconSprite";
 import { askPeer, kvmPower, sendFiles, switchTo, toggleClipboard } from "../lib/api";
+import { PlacementGrid } from "./PlacementGrid";
 
 /** 一行警示（对照 alert-inline）：图标 + 一句话 + 一个直达动作 */
 function AlertInline({
@@ -84,7 +85,7 @@ function SceneAlert({ snap, onNavigate }: { snap: Snapshot; onNavigate: (p: Page
 }
 
 /** 单屏场景：共用显示器头 + 双机卡片 + flow + 输入源条（对照 singleSceneHtml） */
-function SingleScene({ snap, refresh }: { snap: Snapshot; refresh: (t: string) => void }) {
+function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t: string) => void; openPorts: () => void }) {
   const inputs = snap.inputs;
   const blind = snap.has_display === false;
   const cur = inputs.find((i) => i.current) || null;
@@ -206,6 +207,9 @@ function SingleScene({ snap, refresh }: { snap: Snapshot; refresh: (t: string) =
             </button>
           );
         })}
+        <button className="btn-sm ghost port-manage" onClick={openPorts}>
+          管理
+        </button>
       </div>
     </div>
   );
@@ -215,10 +219,22 @@ export function Workspace({
   snap,
   flash,
   onNavigate,
+  selectedNode,
+  onSelectNode,
+  optimistic,
+  setOptimistic,
+  refresh,
+  openPorts,
 }: {
   snap: Snapshot | null;
   flash: (t: string) => void;
   onNavigate: (p: PageId) => void;
+  selectedNode: string | null;
+  onSelectNode: (n: string | null) => void;
+  optimistic: { node: string; side: string }[];
+  setOptimistic: (o: { node: string; side: string }[]) => void;
+  refresh: () => void;
+  openPorts: () => void;
 }) {
   const [scene, setScene] = useState<"single" | "multi">("single");
 
@@ -270,7 +286,7 @@ export function Workspace({
       <SceneAlert snap={snap} onNavigate={onNavigate} />
 
       {scene === "single" ? (
-        <SingleScene snap={snap} refresh={flash} />
+        <SingleScene snap={snap} refresh={flash} openPorts={openPorts} />
       ) : (
         <div className="scene-panel">
           <div className="scene-panel-head">
@@ -281,6 +297,28 @@ export function Workspace({
             <button className="btn-sm ghost" onClick={() => onNavigate("devices")}>
               管理布局 <Icon name="chevron" />
             </button>
+          </div>
+          <div className="multi-topology">
+            <PlacementGrid
+              snap={snap}
+              variant="cross"
+              selected={selectedNode}
+              onSelect={onSelectNode}
+              optimistic={optimistic}
+              setOptimistic={setOptimistic}
+              flash={flash}
+              refresh={refresh}
+            />
+            <div className="multi-explainer">
+              <h3>鼠标越过边缘，
+                <br />
+                工作自然接续。
+              </h3>
+              <p>按真实位置摆放设备。
+                <br />
+                直接拖动，或点它后用方向键。
+              </p>
+            </div>
           </div>
           <div className="source-strip">
             <span>

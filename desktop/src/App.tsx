@@ -7,6 +7,7 @@ import { Devices } from "./components/Devices";
 import { Transfers } from "./components/Transfers";
 import { Settings } from "./components/Settings";
 import { useSnapshot } from "./hooks/useSnapshot";
+import { HelpModal, DiagnosticsModal, ScanModal, PortsModal, UpdateModal } from "./components/Modals";
 import { useTheme } from "./hooks/useTheme";
 import type { PageId, Toast } from "./lib/ui";
 import type { Snapshot } from "./lib/types";
@@ -17,6 +18,12 @@ export function App() {
   const { theme, setTheme, reduceMotion, toggleReduceMotion } = useTheme();
   const [page, setPage] = useState<PageId>("workspace");
   const [toast, setToast] = useState<Toast>({ text: "", until: 0 });
+  // 弹窗（一次只开一个；帮助 → 排查的转场用 push 替换）
+  const [modal, setModal] = useState<null | "help" | "diag" | "scan" | "ports" | "update">(null);
+  // 摆位图选中态：设备页与工作台多屏共用一份（同一份数据的两个视角）
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  // 摆位乐观层：放下立即生效，后端快照回来后被覆盖
+  const [optimistic, setOptimistic] = useState<{ node: string; side: string }[]>([]);
 
   const flash = useCallback((text: string) => {
     setToast({ text, until: Date.now() + 3200 });
@@ -43,10 +50,40 @@ export function App() {
       <div className="app">
         <Sidebar snap={snap} page={page} onNavigate={setPage} />
         <div className="app-main">
-          <Topbar snap={snap} onNavigate={setPage} toast={toast} flash={flash} refresh={refresh} />
+          <Topbar
+            snap={snap}
+            toast={toast}
+            flash={flash}
+            refresh={refresh}
+            openHelp={() => setModal("help")}
+            openScan={() => setModal("scan")}
+            openUpdate={() => setModal("update")}
+          />
           <div className="view-container" id="viewContainer">
-            {page === "workspace" && <Workspace snap={snap} flash={flash} onNavigate={setPage} />}
-            {page === "devices" && <Devices snap={snap} flash={flash} refresh={refresh} />}
+            {page === "workspace" && (
+              <Workspace
+                snap={snap}
+                flash={flash}
+                onNavigate={setPage}
+                selectedNode={selectedNode}
+                onSelectNode={setSelectedNode}
+                optimistic={optimistic}
+                setOptimistic={setOptimistic}
+                refresh={refresh}
+                openPorts={() => setModal("ports")}
+              />
+            )}
+            {page === "devices" && (
+              <Devices
+                snap={snap}
+                flash={flash}
+                refresh={refresh}
+                selectedNode={selectedNode}
+                onSelectNode={setSelectedNode}
+                optimistic={optimistic}
+                setOptimistic={setOptimistic}
+              />
+            )}
             {page === "transfers" && <Transfers snap={snap} flash={flash} />}
             {page === "settings" && (
               <Settings
@@ -70,6 +107,13 @@ export function App() {
           </span>
         </footer>
       </div>
+      {snap && modal === "help" && (
+        <HelpModal snap={snap} onClose={() => setModal(null)} onDiagnostics={() => setModal("diag")} />
+      )}
+      {modal === "diag" && <DiagnosticsModal onClose={() => setModal(null)} />}
+      {modal === "scan" && <ScanModal onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
+      {snap && modal === "ports" && <PortsModal snap={snap} onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
+      {snap && modal === "update" && <UpdateModal snap={snap} onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
     </>
   );
 }

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { Snapshot } from "../lib/types";
 import { Icon } from "./IconSprite";
-import { savePair } from "../lib/api";
+import { savePair, kvmHandover } from "../lib/api";
+import { PlacementGrid } from "./PlacementGrid";
 
 /**
  * 设备与布局页（P1 版）：名册列 + 配对表单完整；布局 pane（3×3 摆位图拖拽
@@ -10,10 +11,19 @@ import { savePair } from "../lib/api";
 export function Devices({
   snap,
   flash,
+  refresh,
+  selectedNode,
+  onSelectNode,
+  optimistic,
+  setOptimistic,
 }: {
   snap: Snapshot | null;
   flash: (t: string) => void;
   refresh: () => void;
+  selectedNode: string | null;
+  onSelectNode: (n: string | null) => void;
+  optimistic: { node: string; side: string }[];
+  setOptimistic: (o: { node: string; side: string }[]) => void;
 }) {
   const [pane, setPane] = useState<"layout" | "pair">("pair");
   const [code, setCode] = useState("");
@@ -52,7 +62,14 @@ export function Devices({
             </div>
           )}
           {snap.peers.map((p) => (
-            <div key={p.node} className="device-row" onClick={() => setPane("layout")}>
+            <div
+              key={p.node}
+              className={`device-row${selectedNode === p.node ? " sel" : ""}`}
+              onClick={() => {
+                setPane("layout");
+                onSelectNode(selectedNode === p.node ? null : p.node);
+              }}
+            >
               <Icon name={p.kvm_on ? "monitor" : "laptop"} />
               <span>
                 <strong>{p.node}</strong>
@@ -89,10 +106,17 @@ export function Devices({
               </div>
               <span className="tag plain">一台一格</span>
             </div>
-            <div className="hint">
-              3×3 摆位图正在迁移中（下一批）：拖拽摆位与键鼠交接行请暂时用旧面板（
-              <a href="/">打开旧版</a>）操作。下面是当前链路的只读视图：
-            </div>
+            <PlacementGrid
+              snap={snap}
+              variant="grid"
+              selected={selectedNode}
+              onSelect={onSelectNode}
+              optimistic={optimistic}
+              setOptimistic={setOptimistic}
+              flash={flash}
+              refresh={refresh}
+            />
+            <div className="rowlabel">键鼠交接</div>
             <div id="kvmLinks">
               {snap.kvm.links.map((l) => (
                 <div key={l.node} className="linkrow">
@@ -103,8 +127,14 @@ export function Devices({
                   <span className="meta">
                     {l.side ? `${l.side === "right" ? "右侧" : l.side === "left" ? "左侧" : l.side === "top" ? "上方" : "下方"} · ${l.mode === "edge" ? "多屏共享" : "跟随画面"}` : "共用一块屏"}
                     {!l.alive && " · 不在线"}
-                    {l.active && " · 键鼠在这台"}
                   </span>
+                  {l.active ? (
+                    <span className="held">键鼠在这台</span>
+                  ) : (
+                    <button className="btn-sm" onClick={() => void kvmHandover(l.node).then(refresh)}>
+                      {snap.kvm.state === "键鼠已交给对端" ? "转给它" : "交给它"}
+                    </button>
+                  )}
                 </div>
               ))}
               {snap.kvm.links.length === 0 && <div className="empty">还没有配过链路</div>}

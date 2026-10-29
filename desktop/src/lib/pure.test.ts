@@ -31,3 +31,26 @@ describe("nextTarget（主按钮挑目标）", () => {
     expect(nextTarget([port({ value: 1, presence: "invalid" }), port({ value: 2, current: true })])).toBeNull();
   });
 });
+
+import { collectLayout } from "./pure";
+
+describe("collectLayout（摆位归集）", () => {
+  const kvm = (links: { node: string; side: string }[], root = "") =>
+    ({ links: links.map((l) => ({ ...l, alive: true, active: false })), root }) as never;
+
+  it("有门链路进格子，无门进托盘，同侧第二台标 dup 落托盘", () => {
+    const l = collectLayout(kvm([{ node: "A", side: "right" }, { node: "B", side: "" }, { node: "C", side: "right" }]), []);
+    expect(l.bySide.right.node).toBe("A");
+    expect(l.loose.map((x) => x.node)).toEqual(["B", "C"]);
+    expect(l.loose[1].dup).toBe(true);
+  });
+  it("没配链路的对端进托盘且标 fresh（未摆位，不是「共用一块屏」）", () => {
+    const l = collectLayout(kvm([]), [{ node: "NEW" }]);
+    expect(l.loose[0].fresh).toBe(true);
+  });
+  it("乐观层立即生效：B 拖进 left 后不等后端快照就出现在左格", () => {
+    const l = collectLayout(kvm([{ node: "B", side: "" }]), [], [{ node: "B", side: "left" }]);
+    expect(l.bySide.left?.node).toBe("B");
+    expect(l.loose).toHaveLength(0);
+  });
+});

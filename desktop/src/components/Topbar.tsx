@@ -1,21 +1,25 @@
 import type { Snapshot } from "../lib/types";
-import type { PageId, Toast } from "../lib/ui";
+import type { Toast } from "../lib/ui";
 import { Icon } from "./IconSprite";
 import { askPeer, checkSupport, rescan, switchTo } from "../lib/api";
 import { nextTarget, kvmFollowing } from "../lib/pure";
 
 export function Topbar({
   snap,
-  onNavigate,
   toast,
   flash,
   refresh,
+  openHelp,
+  openScan,
+  openUpdate,
 }: {
   snap: Snapshot | null;
-  onNavigate: (p: PageId) => void;
   toast: Toast;
   flash: (text: string) => void;
   refresh: () => void;
+  openHelp: () => void;
+  openScan: () => void;
+  openUpdate: () => void;
 }) {
   if (!snap) {
     return (
@@ -118,22 +122,21 @@ export function Topbar({
           <Icon name="swap" />
           <span>{mainText}</span>
         </button>
-        <button id="updateBtn" className="upd-btn" onClick={() => onNavigate("settings")} title="检查更新（设置页）">
+        <button id="updateBtn" className="upd-btn" onClick={openUpdate}>
           <Icon name="download" />
           更新
+          <i className={`upd-dot${snap.update.latest && snap.update.latest !== snap.update.current && snap.update.skipped !== snap.update.latest ? " on" : ""}`} id="updateDot" />
         </button>
         <div className="spacer"></div>
+        <button className="icon-help" onClick={openHelp} title="使用帮助" aria-label="使用帮助">
+          <Icon name="help" />
+        </button>
         <div className="flat-group">
           <button id="maintRescan" disabled={maintBusy} onClick={() => void rescan().then(refresh)}>
             <Icon name="refresh" />
             重新检测
           </button>
-          <button
-            id="maintScan"
-            disabled={maintBusy}
-            onClick={() =>
-              flash("扫描会逐个尝试输入口，屏幕可能黑几次 —— 完整扫描入口在旧面板/后续版本")}
-          >
+          <button id="maintScan" disabled={maintBusy} onClick={openScan}>
             <Icon name="scan" />
             扫描输入口
           </button>
