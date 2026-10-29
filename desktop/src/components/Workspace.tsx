@@ -2,10 +2,10 @@ import { useState } from "react";
 import type { Snapshot } from "../lib/types";
 import type { PageId } from "../lib/ui";
 import { Icon } from "./IconSprite";
-import { askPeer, kvmPower, sendFiles, switchTo, toggleClipboard } from "../lib/api";
+import { askPeer, kvmPower, restartApp, sendFiles, switchTo, toggleClipboard } from "../lib/api";
 import { PlacementGrid } from "./PlacementGrid";
 
-/** 一行警示（对照 alert-inline）：图标 + 一句话 + 一个直达动作 */
+/** 一行警示（设计稿 .alert-inline）：图标 + 一句话 + 一个直达动作 */
 function AlertInline({
   icon,
   text,
@@ -18,7 +18,7 @@ function AlertInline({
   error?: boolean;
 }) {
   return (
-    <div className={`alert-inline${error ? " error" : ""}`} role={error ? "alert" : "status"}>
+    <div className={`alert-inline workspace-alert${error ? " error" : ""}`} role={error ? "alert" : "status"}>
       <Icon name={icon} />
       <span>{text}</span>
       {action && <button onClick={action.onClick}>{action.label}</button>}
@@ -43,13 +43,7 @@ function SceneAlert({ snap, onNavigate }: { snap: Snapshot; onNavigate: (p: Page
     const hint = snap.rejected
       ? `对端发来的 ${snap.rejected} 条消息没通过校验：多半是两边码不一样，或有一边版本较旧。`
       : "配对码已保存，正在等对端确认身份。";
-    return (
-      <AlertInline
-        icon="link"
-        text={hint}
-        action={{ label: "去设备页", onClick: () => onNavigate("devices") }}
-      />
-    );
+    return <AlertInline icon="link" text={hint} action={{ label: "去设备页", onClick: () => onNavigate("devices") }} />;
   }
   if (!peers.length) {
     return (
@@ -84,7 +78,7 @@ function SceneAlert({ snap, onNavigate }: { snap: Snapshot; onNavigate: (p: Page
   return null;
 }
 
-/** 单屏场景：共用显示器头 + 双机卡片 + flow + 输入源条（对照 singleSceneHtml） */
+/** 单屏场景：共用显示器头 + 双机卡片 + flow + 输入源条（设计稿 singleScene） */
 function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t: string) => void; openPorts: () => void }) {
   const inputs = snap.inputs;
   const blind = snap.has_display === false;
@@ -98,9 +92,9 @@ function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t
   ) : !inputs.length ? (
     <span className="tag warn">输入口待连接</span>
   ) : snap.kvm.peer_alive ? (
-    <span className="tag green">连接正常</span>
+    <span className="tag good">连接正常</span>
   ) : (
-    <span className="tag plain">等待连接</span>
+    <span className="tag">等待连接</span>
   );
 
   const wsSwitch = (who: "local" | "peer") => {
@@ -129,7 +123,7 @@ function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t
             title={blind ? "点它请对端把画面切回本机" : "画面已经在本机"}
           >
             <span className="screen-content">
-              <Icon name="windows" />
+              <Icon name="monitor" />
               <span>本机</span>
             </span>
           </button>
@@ -138,12 +132,8 @@ function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t
             {!blind && <span className="tag blue">当前</span>}
           </div>
           <div className="computer-meta">
-            <i className={`status-dot${blind ? " off" : ""}`} />
-            {blind
-              ? "画面在另一台机器上"
-              : cur
-                ? `${cur.label} · 当前画面`
-                : "没有检测到输入口"}
+            <i className={`status-dot${blind ? " off" : ""}`}></i>{" "}
+            {blind ? "画面在另一台机器上" : cur ? `${cur.label} · 当前画面` : "没有检测到输入口"}
           </div>
         </div>
         <div className="flow-connection">
@@ -171,14 +161,14 @@ function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t
             {blind && <span className="tag blue">当前</span>}
           </div>
           <div className="computer-meta">
-            <i className={`status-dot${blind ? "" : " off"}`} />
+            <i className={`status-dot${blind ? "" : " off"}`}></i>{" "}
             {blind ? "画面在这台显示" : peerPort ? `${peerPort.label} · 有主机` : "没有检测到对端的输入口"}
           </div>
         </div>
       </div>
       <div className="source-strip">
         <span>输入源</span>
-        {!inputs.length && <span className="sub">没有检测到输入源</span>}
+        {!inputs.length && <span className="muted">没有检测到输入源</span>}
         {inputs.map((i) => {
           const dead = i.presence === "invalid";
           const why = dead
@@ -207,11 +197,18 @@ function SingleScene({ snap, refresh, openPorts }: { snap: Snapshot; refresh: (t
             </button>
           );
         })}
-        <button className="btn-sm ghost port-manage" onClick={openPorts}>
+        <button className="text-button port-manage" onClick={openPorts}>
           管理
         </button>
       </div>
     </div>
+  );
+}
+
+/** 开关（设计稿 .toggle）：语义靠 aria-checked，样式也读它，不要另加 .on 类 */
+function Toggle({ id, on, label, onToggle }: { id: string; on: boolean; label: string; onToggle: () => void }) {
+  return (
+    <button id={id} className="toggle" role="switch" aria-checked={on} aria-label={label} onClick={onToggle} />
   );
 }
 
@@ -241,23 +238,10 @@ export function Workspace({
   if (!snap) return <section className="page-view" aria-label="工作台" />;
   const k = snap.kvm;
   const subOn = !!k.auto_resume && !!k.keep_alive && snap.autostart;
+  const noPerm = !snap.perms.capture || !snap.perms.inject;
 
   return (
-    <section className="page-view" aria-label="工作台">
-      {(!snap.perms.capture || !snap.perms.inject) && (
-        <div className="banner warn">
-          <span className="grow">
-            <b>系统授权没生效</b>
-            <br />
-            <span className="sub">
-              缺少权限：{!snap.perms.inject && "注入（接收对端的键鼠）"}
-              {!snap.perms.inject && !snap.perms.capture && "、"}
-              {!snap.perms.capture && "抓取（把本机键鼠送出去）"}。在系统设置里勾选后，必须重启本程序才会生效。
-            </span>
-          </span>
-        </div>
-      )}
-
+    <>
       <div className="view-heading">
         <div>
           <h1>工作台</h1>
@@ -283,6 +267,17 @@ export function Workspace({
         </div>
       </div>
 
+      {noPerm && (
+        <AlertInline
+          icon="info"
+          error
+          text={`系统授权没生效：缺${!snap.perms.inject ? " 注入（接收对端的键鼠）" : ""}${
+            !snap.perms.inject && !snap.perms.capture ? "、" : ""
+          }${!snap.perms.capture ? " 抓取（把本机键鼠送出去）" : ""}。勾选后必须重启本程序才生效。`}
+          action={{ label: "重启应用", onClick: () => void restartApp() }}
+        />
+      )}
+
       <SceneAlert snap={snap} onNavigate={onNavigate} />
 
       {scene === "single" ? (
@@ -294,7 +289,7 @@ export function Workspace({
               <Icon name="screens" />
               多屏布局
             </span>
-            <button className="btn-sm ghost" onClick={() => onNavigate("devices")}>
+            <button className="text-button small-button" onClick={() => onNavigate("devices")}>
               管理布局 <Icon name="chevron" />
             </button>
           </div>
@@ -310,13 +305,17 @@ export function Workspace({
               refresh={refresh}
             />
             <div className="multi-explainer">
-              <h3>鼠标越过边缘，
+              <h3>
+                鼠标越过边缘，
                 <br />
                 工作自然接续。
               </h3>
-              <p>按真实位置摆放设备。
+              <p>
+                按真实位置摆放设备。
                 <br />
-                直接拖动，或点它后用方向键。
+                选择设备后点方向，
+                <br />
+                也可以直接拖动。
               </p>
             </div>
           </div>
@@ -327,9 +326,7 @@ export function Workspace({
             <span className="multi-summary">
               键鼠当前在 <strong>{k.active || "本机"}</strong>
             </span>
-            {k.links.length === 0 && (
-              <span className="sub">还没有摆位 —— 去设备页把对端放进格子</span>
-            )}
+            {k.links.length === 0 && <span className="muted">还没有摆位 —— 去设备页把对端放进格子</span>}
           </div>
         </div>
       )}
@@ -347,13 +344,11 @@ export function Workspace({
                 : "已暂停，键鼠留在本机"}
             </p>
           </div>
-          <button
+          <Toggle
             id="kvmSwitch"
-            className={`sw${k.on ? " on" : ""}`}
-            role="switch"
-            aria-checked={k.on}
-            aria-label="共用键鼠"
-            onClick={() => void kvmPower(!k.on).then(() => flash(k.on ? "正在关闭共用键鼠…" : "正在开启共用键鼠…"))}
+            on={k.on}
+            label="共用键鼠"
+            onToggle={() => void kvmPower(!k.on).then(() => flash(k.on ? "正在关闭共用键鼠…" : "正在开启共用键鼠…"))}
           />
         </div>
         <div className="sharing-item">
@@ -362,13 +357,11 @@ export function Workspace({
             <strong>剪贴板同步</strong>
             <p>{snap.clipboard ? "文字只同步到当前使用的设备" : "已关闭，保留各自的剪贴板"}</p>
           </div>
-          <button
+          <Toggle
             id="clipBtn"
-            className={`sw${snap.clipboard ? " on" : ""}`}
-            role="switch"
-            aria-checked={snap.clipboard}
-            aria-label="同步剪贴板文本"
-            onClick={() => void toggleClipboard(!snap.clipboard)}
+            on={snap.clipboard}
+            label="同步剪贴板文本"
+            onToggle={() => void toggleClipboard(!snap.clipboard)}
           />
         </div>
       </div>
@@ -379,15 +372,15 @@ export function Workspace({
           <strong>顺手传个文件</strong>
           <span>，接着在另一台处理。</span>
         </p>
-        <button className="btn-sm" onClick={() => void sendFiles()}>
+        <button className="small-button" onClick={() => void sendFiles()}>
           <Icon name="upload" />
           发送文件
         </button>
-        <button className="btn-sm ghost" title="去文件传输页" onClick={() => onNavigate("transfers")}>
+        <button className="text-button secondary-transfer" title="去文件传输页" onClick={() => onNavigate("transfers")}>
           <Icon name="chevron" />
         </button>
       </div>
-      {subOn && <div className="hint">副机模式开着：这台会自动恢复并保持共用键鼠。</div>}
-    </section>
+      {subOn && <p className="settings-footnote">副机模式开着：这台会自动恢复并保持共用键鼠。</p>}
+    </>
   );
 }

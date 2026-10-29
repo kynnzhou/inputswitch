@@ -310,7 +310,7 @@ fn emit_panel_dist() {
     println!("cargo:rerun-if-changed=assets/panel-dist");
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    if let Ok(iter) = std::fs::read_dir(&dist) {
+    if dist.is_dir() {
         // Vite 产物只有两层：根的 index.html + assets/ 下的哈希文件。
         // 真出现更深嵌套时直接递归，别静默漏文件。
         fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 铁律组件测试第一批（347 条 panelcheck 的核心子集，P2/P3 继续补全）。
 // 渲染真实组件 + fixture 快照，断言「用户看得见的规则」，不是字符串匹配。
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
 import { Topbar } from "./Topbar";
@@ -20,7 +20,7 @@ afterEach(cleanup);
 describe("铁律：主按钮（永远显示，永不 disabled）", () => {
   it("有可切目标时显示「切到 X」且不 disabled、不挂 is-off", () => {
     const snap = makeSnap();
-    render(<Topbar snap={snap} toast={{ text: "", until: 0 }} flash={flash} refresh={noop} openHelp={noop} openScan={noop} openUpdate={noop} />);
+    render(<Topbar snap={snap} flash={flash} refresh={noop} openScan={noop} openShortcut={noop} />);
     const main = screen.getByText(/切到 DP/).closest("button")!;
     expect(main.id).toBe("mainSwitch");
     expect(main.className).toContain("primary");
@@ -30,14 +30,14 @@ describe("铁律：主按钮（永远显示，永不 disabled）", () => {
 
   it("画面在对面：文案变「请对端切回」，仍不 disabled", () => {
     const snap = makeSnap({ has_display: false });
-    render(<Topbar snap={snap} toast={{ text: "", until: 0 }} flash={flash} refresh={noop} openHelp={noop} openScan={noop} openUpdate={noop} />);
+    render(<Topbar snap={snap} flash={flash} refresh={noop} openScan={noop} openShortcut={noop} />);
     const main = screen.getByText(/把画面切回本机/).closest("button")!;
     expect((main as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("没有可切的口：挂 is-off 但仍可点（点下去由 flash 说原因）", () => {
     const snap = makeSnap({ inputs: makeSnap().inputs.filter((i) => i.current) });
-    render(<Topbar snap={snap} toast={{ text: "", until: 0 }} flash={flash} refresh={noop} openHelp={noop} openScan={noop} openUpdate={noop} />);
+    render(<Topbar snap={snap} flash={flash} refresh={noop} openScan={noop} openShortcut={noop} />);
     const main = screen.getByText("没有其他输入口").closest("button")!;
     expect(main.className).toContain("is-off");
     expect((main as HTMLButtonElement).disabled).toBe(false);
@@ -45,7 +45,7 @@ describe("铁律：主按钮（永远显示，永不 disabled）", () => {
 
   it("维护三钮随 maint_busy 禁用（主按钮不受它管）", () => {
     const snap = makeSnap({ maint_busy: true });
-    render(<Topbar snap={snap} toast={{ text: "", until: 0 }} flash={flash} refresh={noop} openHelp={noop} openScan={noop} openUpdate={noop} />);
+    render(<Topbar snap={snap} flash={flash} refresh={noop} openScan={noop} openShortcut={noop} />);
     for (const id of ["maintRescan", "maintScan", "maintCheck"]) {
       expect((document.getElementById(id) as HTMLButtonElement).disabled).toBe(true);
     }
@@ -77,9 +77,9 @@ describe("摆位图", () => {
     );
     const rightCell = container.querySelector('[data-drop="right"]') as HTMLElement;
     expect(within(rightCell).getByText("WIN")).toBeTruthy();
-    const loose = container.querySelector(".loosebox") as HTMLElement;
+    const loose = container.querySelector(".shared-screen-tray.loose") as HTMLElement;
     expect(within(loose).getByText("NEW")).toBeTruthy();
-    expect(within(loose).getByText("未摆位")).toBeTruthy();
+    expect(loose.textContent).toContain("未摆位");
     expect(within(loose).queryByText("共用一块屏")).toBeNull();
   });
 
@@ -89,7 +89,7 @@ describe("摆位图", () => {
       <PlacementGrid snap={snap} variant="grid" selected={null} onSelect={noop} optimistic={[]} setOptimistic={noop} flash={noop} refresh={noop} />,
     );
     rerender(<PlacementGrid snap={snap} variant="grid" selected="NEW" onSelect={noop} optimistic={[]} setOptimistic={noop} flash={noop} refresh={noop} />);
-    const aimCells = [...container.querySelectorAll(".cell.aim")].map((c) => (c as HTMLElement).dataset.drop);
+    const aimCells = [...container.querySelectorAll(".topology-slot.aim")].map((c) => (c as HTMLElement).dataset.drop);
     expect(aimCells.sort()).toEqual(["bottom", "left", "top"]);
   });
 
@@ -105,6 +105,8 @@ describe("设置页开关", () => {
   it(".sw 开关的 aria-checked 与状态同步（读屏软件读它）", () => {
     const snap = makeSnap();
     render(<Settings snap={snap} theme="system" setTheme={noop} reduceMotion={false} toggleReduceMotion={noop} />);
+    // 设置页按设计稿一次只渲染一个选项卡的内容，先切到「启动与恢复」
+    fireEvent.click(screen.getByText("启动与恢复"));
     expect(document.getElementById("autoBtn")!.getAttribute("aria-checked")).toBe("true");
     expect(document.getElementById("resumeBtn")!.getAttribute("aria-checked")).toBe("true");
     expect(document.getElementById("guardBtn")!.getAttribute("aria-checked")).toBe("true");
@@ -113,6 +115,7 @@ describe("设置页开关", () => {
   it("三项全开时副机模式显示「已开启」并挂 is-on", () => {
     const snap = makeSnap();
     render(<Settings snap={snap} theme="system" setTheme={noop} reduceMotion={false} toggleReduceMotion={noop} />);
+    fireEvent.click(screen.getByText("启动与恢复"));
     const sub = document.getElementById("subBtn")!;
     expect(sub.textContent).toContain("已开启");
     expect(sub.className).toContain("is-on");
