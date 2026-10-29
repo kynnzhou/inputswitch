@@ -114,7 +114,31 @@ export function App() {
       {modal === "scan" && <ScanModal onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
       {snap && modal === "ports" && <PortsModal snap={snap} onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
       {snap && modal === "update" && <UpdateModal snap={snap} onClose={() => setModal(null)} refresh={refresh} flash={flash} />}
+      <RestartOverlay snap={snap} />
     </>
+  );
+}
+
+/// 更新安装的重启倒计时全屏层（对照旧面板 restartOverlay）：
+/// phase=restarting 时盖住全屏，显示剩余秒数 + 取消。装的过程本程序会退出、
+/// 画面会闪，必须明说"正在发生什么"并给显眼的取消。轮询在 restarting
+/// 阶段自动提到 250ms（useSnapshot），倒计时是流畅的。
+function RestartOverlay({ snap }: { snap: Snapshot | null }) {
+  const u = snap?.update;
+  if (!u || u.phase !== "restarting") return null;
+  return (
+    <div className="restart-mask">
+      <div className="restart-box glass">
+        <div className="restart-num">{u.restart_in || 0}</div>
+        <div className="restart-tip">秒后重启并安装更新</div>
+        <div className="restart-sub">
+          安装过程中本程序会退出，装完自动拉起新版本。取消可以继续用当前版本。
+        </div>
+        <button className="btn-lg" onClick={() => void import("./lib/api").then((m) => m.updateAction("cancel"))}>
+          取消重启
+        </button>
+      </div>
+    </div>
   );
 }
 
