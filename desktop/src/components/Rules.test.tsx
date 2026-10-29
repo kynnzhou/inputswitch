@@ -47,9 +47,9 @@ describe("铁律：主按钮（永远显示，永不 disabled）", () => {
     const snap = makeSnap({ maint_busy: true });
     render(<Topbar snap={snap} toast={{ text: "", until: 0 }} flash={flash} refresh={noop} openHelp={noop} openScan={noop} openUpdate={noop} />);
     for (const id of ["maintRescan", "maintScan", "maintCheck"]) {
-      expect(document.getElementById(id)!.disabled).toBe(true);
+      expect((document.getElementById(id) as HTMLButtonElement).disabled).toBe(true);
     }
-    expect(document.getElementById("mainSwitch")!.disabled).toBe(false);
+    expect((document.getElementById("mainSwitch") as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -75,9 +75,9 @@ describe("摆位图", () => {
     const { container } = render(
       <PlacementGrid snap={snap} variant="grid" selected={null} onSelect={noop} optimistic={[]} setOptimistic={noop} flash={noop} refresh={noop} />,
     );
-    const rightCell = container.querySelector('[data-drop="right"]')!;
+    const rightCell = container.querySelector('[data-drop="right"]') as HTMLElement;
     expect(within(rightCell).getByText("WIN")).toBeTruthy();
-    const loose = container.querySelector(".loosebox")!;
+    const loose = container.querySelector(".loosebox") as HTMLElement;
     expect(within(loose).getByText("NEW")).toBeTruthy();
     expect(within(loose).getByText("未摆位")).toBeTruthy();
     expect(within(loose).queryByText("共用一块屏")).toBeNull();
