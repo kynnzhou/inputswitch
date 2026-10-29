@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"面板窗口的默认能力：只开 opener（外部链接），其余事件全走 loopback HTTP，不经 IPC","local":true,"windows":["panel"],"permissions":["opener:default"]}}
