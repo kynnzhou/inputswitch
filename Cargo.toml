@@ -3,7 +3,7 @@ name = "inputswitch"
 # 版本真源。日志、面板、更新检查一律读 `crate::VERSION`（= 这里的值），
 # 不允许在别处再手写一份 vX.Y.Z —— 以前那份手写副本就在 tray/mod.rs 的
 # 启动日志里，升级时很容易漏改。
-version = "0.6.90"
+version = "0.7.0"
 edition = "2021"
 description = "跨平台显示器输入源切换（Windows / macOS / Linux）"
 license = "MIT"

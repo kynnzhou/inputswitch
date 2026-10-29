@@ -65,7 +65,7 @@ impl Ctx {
             "按需传输开始：{count} 个条目 → {peer_name}（正在整理清单并校验）"
         ));
         thread::spawn(move || {
-            let _ = proxy_t.send_event(UserEvent::Transfer("正在准备文件…".to_string()));
+            let _ = proxy_t(UserEvent::Transfer("正在准备文件…".to_string()));
             let mut last_pct = u64::MAX;
             let res = transfer::send(
                 std::net::SocketAddr::new(ip, port),
@@ -83,7 +83,7 @@ impl Ctx {
                     if pct != last_pct {
                         last_pct = pct;
                         let _ =
-                            proxy_p.send_event(UserEvent::Transfer(format!("剪贴板传输… {pct}%")));
+                            proxy_p(UserEvent::Transfer(format!("剪贴板传输… {pct}%")));
                     }
                 },
             );
@@ -94,12 +94,12 @@ impl Ctx {
                 }
                 Err(err) => crate::transfer::tasks::finish(task_id, crate::transfer::tasks::Phase::Failed, err),
             }
-            let _ = proxy_t.send_event(UserEvent::PasteDone(res));
+            let _ = proxy_t(UserEvent::PasteDone(res));
         });
     }
 
     pub(super) fn on_remote_clipboard(&mut self, text: String) {
         // 写剪贴板得回主线程，这里只负责转交
-        let _ = self.proxy.send_event(UserEvent::RemoteClipboard(text));
+        let _ = (self.proxy)(UserEvent::RemoteClipboard(text));
     }
 }

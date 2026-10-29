@@ -24,6 +24,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # 前端（React 面板）：产物经 assets/panel-dist 内嵌，必须先于 cargo
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - run: node tools/copy-panel-dist.mjs
       # NSIS 不打在 runner 镜像里。安装器脚本见 packaging/windows/InputSwitch.nsi。
       # 注意：choco 装完不会进后续 step 的 PATH，必须像下面这样补 GITHUB_PATH
       - name: 安装 NSIS
@@ -61,6 +72,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # build.sh 内含前端三步，但 node 缓存在这里预热（npm ci 最耗时的一段）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
       # build.sh：编译 → .app → ad-hoc 签名 → 装进 /Applications → 打分发 zip。
       # runner 是干净机器，没有旧进程要杀；ad-hoc 签名在 runner 上可用
       - name: 构建 .app 与分发 zip

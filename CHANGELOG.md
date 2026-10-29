@@ -5,6 +5,26 @@
 版本真源是根 `Cargo.toml` 的 `version`（sync-version.mjs 同步到 desktop/package.json
 与 assets/badge-release.svg）。
 
+## 0.7.0（2026-10-29）
+
+### 更新摘要
+
+- 控制面板全面翻新为 React 新前端：左侧四页导航（工作台 / 设备与布局 / 文件传输 / 设置），摆位图支持点选放置与拖拽，弹窗体系（帮助 / 排查 / 扫描确认 / 管理输入源 / 更新）全部无障碍化
+- 面板引擎真接线：切屏、扫描、配对、共用键鼠生命周期、文件传输等全部操作即点即生效
+- 项目源码迁入 Tauri 2 壳架构（desktop/src-tauri），旧版面板保留在 /legacy 可随时回退
+
+### 新增
+
+- desktop/ 前端工程（Vite 6 + React 18 + TypeScript + vitest + eslint），40 个 API 端点全封装、全结构 TS 镜像
+- Tauri 2 壳：托盘全量菜单（2.5s 签名刷新）、全局热键（注册/事件/网页改键录制）、面板窗口、文件接收服务
+- 改键录制页（/hotkey-recorder）：网页收组合键，两端通用
+- CI frontend job、pre-push 七项门禁、CHANGELOG、版本同步脚本
+
+### 变更
+
+- 默认面板 / 切换为 React 新前端；旧手写面板挪到 /legacy（构建产物缺失时自动回退）
+- build.sh / cross-build-windows.sh / release.yml 加入前端三步（npm ci → build → copy-dist）
+
 ## 0.6.90（2026-10-27）
 
 ### 更新摘要

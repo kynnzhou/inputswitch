@@ -24,16 +24,16 @@ use super::{kvm_now, HAS_DISPLAY, ID_PANEL, ID_PEER, ID_PEER_FILE, ID_PEER_HAND,
 
 /// 一行菜单项：口的名字、菜单显示文本、VCP 取值、状态。
 #[derive(Clone)]
-pub(super) struct PortRow {
+pub struct PortRow {
     /// 存进配置与命令里的名字
-    pub(super) name: String,
+    pub name: String,
     /// 菜单上显示的文字
-    pub(super) label: String,
-    pub(super) value: u16,
-    pub(super) verified: bool,
-    pub(super) current: bool,
+    pub label: String,
+    pub value: u16,
+    pub verified: bool,
+    pub current: bool,
     /// 这个口上有没有主机（只由本机实测得到）
-    pub(super) presence: Presence,
+    pub presence: Presence,
 }
 
 impl PortRow {
@@ -60,6 +60,12 @@ impl PortRow {
 /// 输入源"，只是固件报的编码，露出来就会误导。真要用到它们有两条正路 ——
 /// 某个口接了新设备就扫一次（扫到即出现），整块换了显示器就重新检测
 /// （拓扑变化时也会自动检测一次，见 `Command::Heartbeat`）。
+pub fn port_rows_for_snapshot(config: &Config, profile_key: &str, current: Option<u16>) -> Vec<PortRow> {
+    // Tauri 壳快照 tick 用：与托盘菜单同一份输入口归集（含本机证据过滤），
+    // 不复制逻辑 —— 复制两份必然漂移。
+    port_rows(config, profile_key, current, false)
+}
+
 pub(super) fn port_rows(
     config: &Config,
     profile_key: &str,

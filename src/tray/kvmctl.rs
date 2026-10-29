@@ -25,7 +25,7 @@ use super::{Command, KVM};
 /// 局域网里只要出现过第三台装过本程序的机器（旧电脑自启没关很常见），
 /// peers.first() 就会稳定选错人 —— 两边各自对着错的机器发心跳，
 /// 谁也等不到回应，表现就是"两边都空闲、对端没回应"。
-pub(super) fn pick_peer<'a>(peers: &'a [Peer], remembered: &str) -> Option<&'a Peer> {
+pub fn pick_peer<'a>(peers: &'a [Peer], remembered: &str) -> Option<&'a Peer> {
     if !remembered.is_empty() {
         if let Some(p) = peers.iter().find(|p| p.node == remembered) {
             return Some(p);
@@ -42,7 +42,7 @@ pub(super) fn pick_peer<'a>(peers: &'a [Peer], remembered: &str) -> Option<&'a P
 /// v3 起吃的是**整张链路表**：`config.kvm.links` 里每台对端一条，按在线
 /// 情况解析成 IP。老配置（只有 `peer_node` + `side`）由 `Kvm::normalize`
 /// 升成一条链路，所以两机场景的行为和 v0.6.46 完全一致。
-pub(super) fn kvm_boot(
+pub fn kvm_boot(
     config: &mut Config,
     peers: &[Peer],
     tx: &mpsc::Sender<Command>,
@@ -268,7 +268,7 @@ pub(super) enum Handback {
 /// 表现是"改了方向但推那侧还是没反应"，而日志里一切正常。
 ///
 /// `ok_text` 是成功时写进状态条的话（已含"改成了什么"），失败再往后拼。
-pub(super) fn restart_kvm(
+pub fn restart_kvm(
     config: &mut Config,
     kvm_handle: &mut Option<Arc<kvm::Kvm>>,
     mesh: &Mesh,
@@ -349,7 +349,7 @@ pub(super) fn restart_kvm(
 }
 
 /// 两个系统权限都齐了吗。缺任一，共用键鼠要么开不起来、要么只能单向。
-pub(super) fn perms_ok() -> bool {
+pub fn perms_ok() -> bool {
     kvm::trusted() && kvm::can_post()
 }
 

@@ -78,10 +78,12 @@
 ## 从源码构建
 
 ```bash
-cargo build --release --bins   # macOS / Linux
-./build.sh                     # macOS：打包 .app、签名、安装到 /Applications
+cargo build --release --bins   # macOS / Linux（纯 Rust，面板旧版可用）
+./build.sh                     # macOS：前端三步 → 打包 .app → 签名 → /Applications
 ./cross-build-windows.sh       # 在 macOS 上交叉编译 Windows 版（Zig 工具链）
 ```
+
+面板（desktop/）开发需要 Node ≥ 20；没装 node 时构建自动跳过前端，旧面板不受影响。
 
 参与开发请看 [CONTRIBUTING.md](CONTRIBUTING.md)（构建/测试命令、界面铁律、发版流程）。
 

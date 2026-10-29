@@ -19,6 +19,14 @@ printf '#!/bin/sh\nexec "%s" ar "$@"\n' "$ZIG" > "$TC/bin/x86_64-w64-mingw32-ar"
 chmod +x "$TC/bin/"*
 chmod +x tools/zigcc
 
+echo "==> 前端（React 面板）"
+if command -v npm >/dev/null 2>&1; then
+  (cd desktop && npm ci --no-fund --no-audit && npm run build)
+  node tools/copy-panel-dist.mjs
+else
+  echo "警告：本机没有 npm，跳过前端构建"
+fi
+
 echo "==> 交叉编译 x86_64-pc-windows-gnu"
 
 cargo_win() {

@@ -2046,6 +2046,7 @@ dependencies = [
 name = "inputswitch-tauri"
 version = "0.6.90"
 dependencies = [
+ "global-hotkey",
  "inputswitch",
  "serde",
  "serde_json",

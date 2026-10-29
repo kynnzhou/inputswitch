@@ -39,12 +39,17 @@ use crate::{transfer, Switcher};
 // 可见性一律 `pub(super)`：只给 `crate::tray` 这层看，不泄漏到 crate 外
 // （对外仍然只有 `tray::run` 和 `tray::log_line` 两个入口）。
 mod actions;
-mod engine;
+pub mod engine;
+pub use self::menu::port_rows_for_snapshot;
+// Tauri 壳（desktop/src-tauri）复用的桥：与旧壳同一份实现，绝不复制逻辑。
+pub use self::kvmctl::{kvm_boot, perms_ok, pick_peer, restart_kvm};
+pub use self::send::{pick_files, pick_folder, resolve_peer};
+pub use self::sys::{open_config_dir, open_path};
 mod events;
 mod hotkey;
 mod kvmctl;
 mod log;
-mod menu;
+pub mod menu;
 mod send;
 mod snapshot;
 mod switch;
@@ -95,7 +100,7 @@ pub(super) static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
 /// 放静态而不是传参：整个进程只有一个，而需要它的地方分散在 UI 线程
 /// （菜单开关）、工作线程（切屏后叫键鼠跟过去）、面板（按钮）。
 /// 硬传下去要给 `engine_loop` 加一整串参数，收益不抵成本。
-static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
+pub static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
 
 /// 本机剪贴板里"等着按需传输"的文件清单。
 ///
@@ -106,7 +111,7 @@ static CLIP_PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static CLIP_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// 取当前实例的克隆。没有就是共用键鼠没开。
-fn kvm_now() -> Option<Arc<kvm::Kvm>> {
+pub fn kvm_now() -> Option<Arc<kvm::Kvm>> {
     KVM.lock().ok().and_then(|slot| slot.clone())
 }
 
@@ -128,7 +133,7 @@ pub(super) static HAS_DISPLAY: AtomicBool = AtomicBool::new(false);
 /// panic，走 Drop）复位，快照每轮轮询读它。
 pub(super) static MAINT_BUSY: AtomicBool = AtomicBool::new(false);
 
-enum Command {
+pub enum Command {
     /// 切屏，并且如果键鼠开着就跟过去（正常路径）
     SwitchRaw { name: String, value: u16 },
     /// 只切画面，键鼠留在本机。面板上的「仅切换画面」走这条
@@ -156,7 +161,8 @@ enum Command {
     AskPeerSwitch { value: u16 },
 }
 
-enum UserEvent {
+#[derive(Debug)]
+pub enum UserEvent {
     Status {
         text: String,
         target: String,
@@ -379,7 +385,11 @@ pub fn run() -> ! {
     {
         let proxy = proxy.clone();
         let mesh = mesh.clone();
-        thread::spawn(move || engine_loop(switcher, rx, proxy, mesh));
+        // engine 只认 EventSink：包一层 send_event，行为与原先逐字节一致
+        let sink = Arc::new(move |ev: UserEvent| {
+            let _ = proxy.send_event(ev);
+        });
+        thread::spawn(move || engine_loop(switcher, rx, sink, mesh));
     }
     log_line(&format!(
         "启动：热键={} 目标={} 节点={} 构建=v{}",
