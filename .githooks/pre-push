@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# push 前的本地门禁（七项）。CI 会再跑一遍，这里挡的是「推上去才发现红」的往返。
+# 急事可 SKIP_GATES=1 git push ... 跳过 —— 用了请在 PR 里说明原因。
+# 安装：git config core.hooksPath .githooks（一次性，仓库内生效）
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+fail=0
+step() { printf '\n==> %s\n' "$1"; }
+ok()   { printf '✓ %s\n' "$1"; }
+bad()  { printf '✗ %s\n' "$1"; fail=1; }
+
+[ "${SKIP_GATES:-0}" = "1" ] && { echo "SKIP_GATES=1，跳过本地门禁"; exit 0; }
+
+step "1/7 cargo check --bins"
+cargo check --bins >/dev/null 2>&1 && ok || bad
+
+step "2/7 cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings >/dev/null 2>&1 && ok || bad
+
+step "3/7 cargo test --lib -- --test-threads=1（单线程，见 CONTRIBUTING）"
+cargo test --lib -- --test-threads=1 >/dev/null 2>&1 && ok || bad
+
+step "4/7 check-size（体量棘轮）"
+node tools/check-size.js >/dev/null 2>&1 && ok || bad
+
+step "5/7 panelcheck（旧面板断言，P4 退休）"
+node tools/panelcheck.js assets/panel >/dev/null 2>&1 && ok || bad
+
+if [ -d desktop/node_modules ]; then
+  step "6/7 前端 lint + vitest"
+  (cd desktop && npm run lint >/dev/null 2>&1 && npm run test >/dev/null 2>&1) && ok || bad
+
+  step "7/7 前端构建 + 产物拷贝"
+  (cd desktop && npm run build >/dev/null 2>&1) && node tools/copy-panel-dist.mjs >/dev/null && ok || bad
+else
+  step "6/7 前端 lint + vitest（desktop/node_modules 不存在，跳过——见 CONTRIBUTING 装 node 依赖）"
+  ok "跳过"
+  step "7/7 前端构建 + 产物拷贝（同上，跳过）"
+  ok "跳过"
+fi
+
+echo
+[ $fail -eq 0 ] && echo "七项全绿，允许 push" || echo "有红项，push 已拦截（急事 SKIP_GATES=1 跳过）"
+exit $fail

@@ -1,6 +1,7 @@
-# CI：四张检查面，push 和 PR 都跑。
+# CI：五张检查面，push 和 PR 都跑。
 # - linux 的纯库编译（--no-default-features：不拉 tao/wry，Linux 上不用装 gtk）
-# - 面板 JS 的离线断言（panelcheck，node 直接跑）
+# - 面板 JS 的离线断言（panelcheck，node 直接跑；P4 迁完 vitest 后退休）
+# - 前端 desktop/：eslint + vitest + vite build + 产物拷贝（Tauri/React 迁移 P0 起）
 # - macOS / Windows 的完整编译（--bins 含托盘与面板窗口）
 # - macOS 的单元测试（这个套件要单线程跑，见 CONTRIBUTING）
 name: CI
@@ -11,6 +12,27 @@ on:
   pull_request:
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run lint
+        working-directory: desktop
+      - run: npm run test
+        working-directory: desktop
+      # 产物拷贝一并验证：P1 起 macos/windows job 会带上前端产物编译，
+      # 这里先把「build + copy」链路守绿。
+      - run: npm run build
+        working-directory: desktop
+      - run: node tools/copy-panel-dist.mjs
+
   lib-linux:
     runs-on: ubuntu-latest
     steps:

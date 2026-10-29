@@ -1,4 +1,5 @@
-//! 给 Windows 的 InputSwitch.exe 内嵌资源（图标）。
+//! 两件事：
+//! ① Windows 的 InputSwitch.exe 内嵌图标资源。
 //!
 //! 之前这个 exe 根本没有图标：资源管理器、任务栏、Alt+Tab 里都是通用的空白页。
 //! 补图标时发现本机没有 rc.exe / windres / llvm-rc（交叉编译走 Zig，
@@ -8,12 +9,19 @@
 //!
 //! 只有托盘那个 bin 需要资源：`cargo:rustc-link-arg-bin` 只对指定 bin 生效，
 //! 诊断 CLI 不会为了一个图标多背几十 KB。
+//!
+//! ② 生成前端产物清单（panel_dist.rs，全平台）：扫描 assets/panel-dist/
+//! （tools/copy-panel-dist.mjs 从 desktop/dist 拷来的 Vite 构建件），把每个
+//! 文件变成 `include_bytes!` 表项，panel.rs 据此把 React 应用同源托管在 /app/。
+//! 目录为空/不存在时生成空表 —— 没跑 npm 的协作者 `cargo build` 照样过，
+//! 只是 /app/ 返回一句「先构建前端」的提示页（旧面板 / 不受影响）。
 
 use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/AppIcon.ico");
     println!("cargo:rerun-if-changed=build.rs");
+    emit_panel_dist();
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -292,4 +300,66 @@ fn coff_with_icon(ico: &[u8], machine: u16, reloc_type: u16) -> Result<Vec<u8>, 
     out.extend_from_slice(&4u32.to_le_bytes());
 
     Ok(out)
+}
+
+/// 生成 `$OUT_DIR/panel_dist.rs`：`(路径, MIME, 字节)` 静态表。
+/// 路径是 URL 形（`index.html`、`assets/index-Abc.js`），panel.rs 按 `/app/<路径>` 查。
+/// `include_bytes!` 只认字面量路径，所以这里把绝对路径直接写进生成代码。
+fn emit_panel_dist() {
+    let dist = PathBuf::from("assets/panel-dist");
+    println!("cargo:rerun-if-changed=assets/panel-dist");
+
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(iter) = std::fs::read_dir(&dist) {
+        // Vite 产物只有两层：根的 index.html + assets/ 下的哈希文件。
+        // 真出现更深嵌套时直接递归，别静默漏文件。
+        fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
+            let Ok(iter) = std::fs::read_dir(dir) else { return };
+            for e in iter.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if e.path().is_dir() {
+                    walk(&e.path(), &format!("{prefix}{name}/"), out);
+                } else {
+                    out.push((format!("{prefix}{name}"), e.path()));
+                }
+            }
+        }
+        walk(&dist, "", &mut entries);
+    }
+    entries.sort();
+
+    let mut code = String::from(
+        "// 由 build.rs 生成，别手改。\n\
+         // panel_dist：前端构建产物的内嵌表（URL 路径, MIME, 字节）。\n\
+         pub static PANEL_DIST: &[(&str, &str, &[u8])] = &[\n",
+    );
+    for (url, path) in &entries {
+        let abs = std::fs::canonicalize(path)
+            .expect("canonicalize panel-dist 文件")
+            .display()
+            .to_string();
+        code.push_str(&format!(
+            "    ({url:?}, {:?}, include_bytes!({abs:?})),\n",
+            mime_of(url)
+        ));
+    }
+    code.push_str("];\n");
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(out_dir.join("panel_dist.rs"), code).expect("写 panel_dist.rs");
+}
+
+/// 内嵌表用的极简 MIME：Vite 产物就这几种；不认识的按二进制给，
+/// 浏览器对未知类型会下载而不是执行 —— 比误判成可执行的更安全。
+fn mime_of(url: &str) -> &'static str {
+    match url.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "json" => "application/json; charset=utf-8",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }

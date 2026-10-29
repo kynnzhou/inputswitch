@@ -1,5 +1,10 @@
 /target
 /dist
+# 前端（desktop/）的 node 生态产物与 Vite 构建件；assets/panel-dist 是
+# copy-panel-dist.mjs 的拷贝目标（编译期内嵌进二进制），都是生成物不进仓库
+/desktop/node_modules
+/desktop/dist
+/assets/panel-dist
 /.toolchain
 /.build
 *.log
