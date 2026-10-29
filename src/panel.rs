@@ -278,6 +278,9 @@ pub enum Action {
         side: Option<String>,
         mode: Option<String>,
     },
+    /// 设置全局热键（录制窗收完组合键后回传，如 "ctrl+alt+s"）。空串非法。
+    /// 壳侧负责写配置并重启热键注册 —— HTTP 层只透传。
+    SetHotkey(String),
     /// 重启本程序。
     ///
     /// 只为一件事存在：macOS 把 TCC 授权结论**缓存在进程里**。用户在设置里
@@ -725,6 +728,21 @@ fn handle(
             dispatch(Action::KvmTakeBack);
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
+        ("POST", "/api/hotkey-set") => {
+            let combo = json_field(&body, "combo").unwrap_or_default();
+            if combo.is_empty() {
+                respond_json(&mut stream, r#"{"ok":false,"error":"缺 combo"}"#)
+            } else {
+                dispatch(Action::SetHotkey(combo));
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+        }
+        ("GET", "/hotkey-recorder") => respond(
+            &mut stream,
+            200,
+            "text/html; charset=utf-8",
+            HOTKEY_RECORDER_HTML,
+        ),
         // 先回包再重启：进程一退，连接就断了，客户端看不到 ok 会以为失败
         ("POST", "/api/restart") => {
             dispatch(Action::RestartApp);
@@ -947,3 +965,31 @@ mod tests {
         assert_eq!(back.update.latest, "0.6.90");
     }
 }
+
+/// 改键录制小窗（Tauri 壳/旧壳都能开它）：抓第一组带修饰键的组合，
+/// 规范化后 POST /api/hotkey-set，页面自己显示结果。判定对照旧壳
+/// events.rs 的 compose_spec（必须带至少一个修饰键，否则会吃掉打字）。
+const HOTKEY_RECORDER_HTML: &str = r#"<!DOCTYPE html><html lang=zh-CN><meta charset=utf-8>
+<title>按下新的组合键</title><body style="font:14px system-ui;padding:24px;text-align:center">
+<b id=t>按下新的组合键（Esc 取消）</b><p id=r style="color:#888"></p>
+<script>
+onkeydown = (e) => {
+  e.preventDefault();
+  if (e.key === 'Escape') { document.getElementById('r').textContent = '已取消'; return; }
+  const parts = [];
+  if (e.ctrlKey) parts.push('ctrl');
+  if (e.altKey) parts.push('alt');
+  if (e.shiftKey) parts.push('shift');
+  if (e.metaKey) parts.push('cmd');
+  const main = e.key.length === 1 ? e.key.toLowerCase()
+    : (/^F[1-9][0-9]?$/.test(e.key) ? e.key.toLowerCase() : null);
+  if (!main) { document.getElementById('r').textContent = '这个键做不了热键，换一个（字母/数字/F1-F12）'; return; }
+  if (!parts.length) { document.getElementById('r').textContent = '至少带一个 Ctrl / Alt / Shift / Cmd'; return; }
+  const combo = parts.join('+') + '+' + main;
+  fetch('/api/hotkey-set', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({combo})})
+    .then(r => r.json()).then(j => {
+      document.getElementById('t').textContent = j.ok ? '已保存新热键' : ('失败：' + (j.error || ''));
+      document.getElementById('r').textContent = j.ok ? combo + ' —— 可以关掉这个窗口了' : '';
+    });
+};
+</script></body></html>"#;

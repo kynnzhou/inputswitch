@@ -33,6 +33,9 @@ use inputswitch::tray::{
     kvm_boot, log_line, open_config_dir, open_path, pick_files, pick_folder, resolve_peer,
     restart_kvm, KVM,
 };
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use tauri::menu::{CheckMenuItem, PredefinedMenuItem, Submenu};
 use inputswitch::transfer;
 use inputswitch::Switcher;
 
@@ -81,6 +84,13 @@ fn main() {
     // KVM 实例句柄：等价旧壳 Ui.kvm_handle（KVM 静态供引擎侧 kvm_now() 用）
     let kvm_handle: Arc<Mutex<Option<Arc<kvm::Kvm>>>> = Arc::new(Mutex::new(None));
     let tx_for_kvm = tx.clone();
+    // 面板真实端口（panel::start 顺延后写回；dispatcher 生成 URL 要用）
+    let port_shared: Arc<std::sync::atomic::AtomicU16> = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    // UI 请求通道：dispatcher（HTTP 线程）→ 持 AppHandle 的消费线程开窗
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiRequest>();
+    // 热键管理器：进程级单例（manager 必须活到退出）
+    let hotkey_mgr: Arc<Mutex<Option<GlobalHotKeyManager>>> = Arc::new(Mutex::new(None));
+    let menu_sig: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     // 文件接收服务（对话框类接线需要它）
     let inbox_shared: Arc<Mutex<std::path::PathBuf>> =
         Arc::new(Mutex::new(config0.transfer.inbox_dir()));
@@ -111,6 +121,9 @@ fn main() {
         let state_tx = state_tx.clone();
         let inbox_shared = inbox_shared.clone();
         let tx_for_kvm = tx_for_kvm.clone();
+        let port_tx = port_shared.clone();
+        let app_tx = ui_tx.clone();
+        let hotkey_mgr = hotkey_mgr.clone();
         Arc::new(move |action: Action| {
             let mut cfg = cfg_state.lock().unwrap();
             match action {
@@ -370,8 +383,23 @@ fn main() {
                     open_path(&dir);
                 }
                 Action::OpenConfigDir => open_config_dir(),
-                Action::RecordHotkey | Action::RestartApp => {
-                    log_line("[Tauri 壳] 改键窗口/重启：下一批接线");
+                Action::RecordHotkey => {
+                    // 录制页：收完组合键 POST /api/hotkey-set 回来（下一个分支）
+                    open_window(&app_tx, &port_tx, "recorder", "/hotkey-recorder".to_string(), 420.0, 120.0, "按下新的组合键");
+                }
+                Action::SetHotkey(combo) => {
+                    cfg.hotkey = combo.clone();
+                    let _ = cfg.save();
+                    // 立刻换注册（换不动会在热键线程下次刷新时重试）
+                    if hotkey::apply(&hotkey_mgr, &combo) {
+                        log_line(&format!("热键已改为 {combo}"));
+                    } else {
+                        log_line("热键换注册失败，旧热键仍在生效");
+                    }
+                }
+                Action::RestartApp => {
+                    log_line("收到重启请求");
+                    restart_app();
                 }
                 other => {
                     log_line(&format!("[Tauri 壳] 该动作下一批接线：{other:?}"));
@@ -381,6 +409,7 @@ fn main() {
     };
 
     let port = panel::start(state.clone(), dispatch, 47833).expect("面板服务起不来");
+    port_shared.store(port, std::sync::atomic::Ordering::SeqCst);
 
     {
         let state = state.clone();
@@ -537,26 +566,251 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            let open = MenuItem::with_id(app, "open", "打开控制面板…", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .icon_as_template(true)
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| {
-                    if event.id() == open.id() {
-                        open_panel(app, port);
-                    } else if event.id() == quit.id() {
-                        app.exit(0);
+            let app_handle = app.handle().clone();
+
+            // UI 请求消费：dispatcher（HTTP 线程）→ 开窗（必须持 AppHandle）
+            {
+                let app_handle = app_handle.clone();
+                thread::spawn(move || {
+                    while let Ok(req) = ui_rx.recv() {
+                        match req {
+                            UiRequest::OpenWindow { id, url, w, h, title } => {
+                                handle_open_window(&app_handle, &id, &url, w, h, &title);
+                            }
+                        }
                     }
-                })
-                .build(app)?;
+                });
+            }
+
+            // 热键：初始注册 + 事件轮询（对照旧壳：按下 → 查 target 值 → 切屏）
+            {
+                let hotkey_mgr = hotkey_mgr.clone();
+                let cfg_state = cfg_state.clone();
+                let tx_hotkey = tx.clone();
+                let state_hot = state.clone();
+                let first = cfg_state.lock().unwrap().hotkey.clone();
+                if !first.is_empty() {
+                    hotkey::apply(&hotkey_mgr, &first);
+                }
+                thread::spawn(move || loop {
+                    while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
+                        if ev.state != HotKeyState::Pressed {
+                            continue;
+                        }
+                        let cfg = cfg_state.lock().unwrap().clone();
+                        let snap = state_hot.lock().unwrap();
+                        let target = &cfg.hotkey_target;
+                        if target.is_empty() {
+                            log_line("热键还没指定目标：到控制面板的输入源列表点「设为热键」");
+                            continue;
+                        }
+                        let hit = snap
+                            .inputs
+                            .iter()
+                            .find(|i| i.name.eq_ignore_ascii_case(target) || i.label.eq_ignore_ascii_case(target));
+                        match hit {
+                            Some(i) => {
+                                let name = i.name.clone();
+                                let value = i.value;
+                                drop(snap);
+                                log_line(&format!("热键触发：切到 {name}"));
+                                let _ = tx_hotkey.send(Command::SwitchRaw { name, value });
+                            }
+                            None => {
+                                drop(snap);
+                                log_line(&format!("热键目标 {target} 没有对应的口"));
+                            }
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(120));
+                });
+            }
+
+            // 托盘 + 全量菜单：每 2.5s 按快照/配置重建（签名一致就不换 ——
+            // 换菜单会收起已展开的菜单，旧壳 menu_signature 同款坑）
+            let tray = {
+                let menu = build_menu(app.handle(), &cfg_state.lock().unwrap(), &state.lock().unwrap())?;
+                *menu_sig.lock().unwrap() = menu_signature(&cfg_state.lock().unwrap(), &state.lock().unwrap());
+                TrayIconBuilder::new()
+                    .icon(app.default_window_icon().unwrap().clone())
+                    .icon_as_template(true)
+                    .menu(&menu)
+                    .show_menu_on_left_click(true)
+                    .build(app)?
+            };
+            let tray = Arc::new(tray);
+            {
+                let tray = tray.clone();
+                let app_handle = app_handle.clone();
+                let cfg_state = cfg_state.clone();
+                let state = state.clone();
+                let menu_sig = menu_sig.clone();
+                thread::spawn(move || loop {
+                    thread::sleep(Duration::from_millis(2500));
+                    let cfg = cfg_state.lock().unwrap().clone();
+                    let snap = state.lock().unwrap().clone();
+                    let sig = menu_signature(&cfg, &snap);
+                    if sig == *menu_sig.lock().unwrap() {
+                        continue;
+                    }
+                    match build_menu(&app_handle, &cfg, &snap) {
+                        Ok(menu) => {
+                            let _ = tray.set_menu(Some(menu));
+                            *menu_sig.lock().unwrap() = sig;
+                        }
+                        Err(e) => log_line(&format!("托盘菜单重建失败：{e}")),
+                    }
+                });
+            }
+
+            // 菜单事件分发：沿用旧壳菜单 id 协议（switch:/peer:/peer-hand:/
+            // peer-side:/toggle-kvm/ask-back/restart-app/quit/open-panel）
+            let tx_menu = tx.clone();
+            let cfg_state_menu = cfg_state.clone();
+            let kvm_handle_menu = kvm_handle.clone();
+            let mesh_menu = mesh.clone();
+            let port_menu = port;
+            tray.on_menu_event(move |app, event| {
+                let id = event.id().0.as_str().to_string();
+                let tx = tx_menu.clone();
+                let mut cfg = cfg_state_menu.lock().unwrap();
+                let _ = (&kvm_handle_menu, &mesh_menu);
+                if id == "quit" {
+                    app.exit(0);
+                } else if id == "open-panel" {
+                    open_panel(app, port_menu);
+                } else if id == "toggle-kvm" {
+                    let on = inputswitch::tray::kvm_now().is_none();
+                    if on {
+                        let peers = mesh_menu.live_peers();
+                        let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|t| log_line(&t));
+                        match kvm_boot(&mut cfg, &peers, &tx, log) {
+                            Ok((h, text)) => {
+                                *kvm_handle_menu.lock().unwrap() = Some(h);
+                                cfg.kvm.enabled = true;
+                                let _ = cfg.save();
+                                log_line(&text);
+                            }
+                            Err(e) => log_line(&format!("共用键鼠开不了：{e}")),
+                        }
+                    } else if let Some(h) = kvm_handle_menu.lock().unwrap().take() {
+                        h.stop();
+                        if let Ok(mut slot) = KVM.lock() {
+                            *slot = None;
+                        }
+                        cfg.kvm.enabled = false;
+                        let _ = cfg.save();
+                        log_line("共用键鼠已关闭");
+                    }
+                } else if id == "ask-back" {
+                    let _ = tx.send(Command::AskPeerSwitch { value: cfg.own_value });
+                } else if id == "restart-app" {
+                    restart_app();
+                } else if let Some(rest) = id.strip_prefix("switch:") {
+                    if let Some((name, value)) = rest.rsplit_once(':') {
+                        if let Ok(value) = value.parse() {
+                            let _ = tx.send(Command::SwitchRaw { name: name.to_string(), value });
+                        }
+                    }
+                } else if let Some(rest) = id.strip_prefix("peer:") {
+                    if let Some((_node, value)) = rest.rsplit_once(':') {
+                        if let Ok(value) = value.parse() {
+                            let _ = tx.send(Command::SwitchRaw { name: String::new(), value });
+                        }
+                    }
+                } else if let Some(node) = id.strip_prefix("peer-hand:") {
+                    if let Some(h) = inputswitch::tray::kvm_now() {
+                        let _ = h.hand_over_to(node);
+                    }
+                } else if let Some(rest) = id.strip_prefix("peer-side:") {
+                    if let Some((node, side)) = rest.rsplit_once(':') {
+                        let side = if side == "none" { "" } else { side };
+                        if let Some(link) = cfg.kvm.links.iter_mut().find(|l| &l.node == node) {
+                            link.side = side.to_string();
+                            link.mode = if side.is_empty() { "follow".into() } else { "edge".into() };
+                        }
+                        cfg.kvm.mirror_from_primary();
+                        let _ = cfg.save();
+                        log_line(&format!("{node} 已设在{}", if side.is_empty() { "共用一块屏".to_string() } else { side.to_string() }));
+                    }
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("Tauri 壳启动失败");
+}
+
+/// 托盘全量菜单（对照旧壳 menu.rs build_menu 的精简版：状态行 + 输入源
+/// 切换 + 对端子菜单 + KVM 开关 + 画面切回 + 面板 + 退出）。
+fn build_menu(
+    app: &tauri::AppHandle,
+    cfg: &Config,
+    snap: &Snapshot,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "status-line", &snap.status, false, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+
+    if snap.has_display {
+        let sub = Submenu::with_id(app, "switch-sub", "切换输入源", true)?;
+        let rows = inputswitch::tray::port_rows_for_snapshot(cfg, &snap.identity, Some(snap.current));
+        if rows.is_empty() {
+            sub.append(&MenuItem::with_id(app, "no-ports", "没读到输入口 · 到面板重新检测", false, None::<&str>)?)?;
+        }
+        for r in rows {
+            let dead = r.presence == inputswitch::models::Presence::Invalid;
+            sub.append(&CheckMenuItem::with_id(
+                app,
+                format!("switch:{}:{}", r.name, r.value),
+                if r.label.trim().is_empty() { format!("0x{:02X}", r.value) } else { r.label.clone() },
+                !dead,
+                r.current,
+                None::<&str>,
+            )?)?;
+        }
+        menu.append(&sub)?;
+    } else if cfg.own_value > 0 {
+        menu.append(&MenuItem::with_id(app, "ask-back", "请对面把画面切回本机", true, None::<&str>)?)?;
+    }
+
+    for link in &cfg.kvm.links {
+        let head = format!("{link}{mark}", link = link.node,
+            mark = if link.side.is_empty() { " · 共用一块屏" } else { "" });
+        let sub = Submenu::with_id(app, format!("peer-sub-{}", link.node), head, true)?;
+        sub.append(&MenuItem::with_id(app, format!("peer-hand:{}", link.node), "把键鼠交给它", true, None::<&str>)?)?;
+        for (v, label) in [("right", "右侧"), ("left", "左侧"), ("top", "上方"), ("bottom", "下方"), ("", "共用一块屏")] {
+            sub.append(&CheckMenuItem::with_id(
+                app,
+                if v.is_empty() { format!("peer-side:{}:none", link.node) } else { format!("peer-side:{}:{v}", link.node) },
+                label,
+                true,
+                link.side == v,
+                None::<&str>,
+            )?)?;
+        }
+        menu.append(&sub)?;
+    }
+
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    let kvm_text = if snap.kvm.on { "共用键鼠 · 已开启 · 点此关闭" } else { "共用键鼠 · 已关闭 · 点此开启" };
+    menu.append(&MenuItem::with_id(app, "toggle-kvm", kvm_text, true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "open-panel", "打开控制面板…", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?)?;
+    Ok(menu)
+}
+
+/// 菜单签名（对照旧壳：内容没变不重建，macOS 换菜单会收起展开中的菜单）
+fn menu_signature(cfg: &Config, snap: &Snapshot) -> String {
+    use std::fmt::Write;
+    let mut sig = String::new();
+    let _ = write!(sig, "{status}|{display}|{current}|{own}", status = snap.status, display = snap.has_display, current = snap.current, own = cfg.own_value);
+    for l in &cfg.kvm.links {
+        let _ = write!(sig, ";{node}={side}", node = l.node, side = l.side);
+    }
+    let _ = write!(sig, ";kvm={}", snap.kvm.on);
+    sig
 }
 
 fn open_panel(app: &tauri::AppHandle, port: u16) {
@@ -571,4 +825,143 @@ fn open_panel(app: &tauri::AppHandle, port: u16) {
         .inner_size(820.0, 840.0)
         .min_inner_size(600.0, 520.0)
         .build();
+}
+
+
+// ===================== P2 尾批支撑 =====================
+
+/// dispatcher → 主线程的 UI 请求（开窗必须持 AppHandle 的线程做）
+enum UiRequest {
+    OpenWindow { id: String, url: String, w: f64, h: f64, title: String },
+}
+
+/// 开（或唤起）一个 Tauri 窗口。对照旧 panelwin：窗口对象常驻、关闭只是
+/// 隐藏；面板 show 时把滚动位置重置（WKWebView 保留旧滚动位置的怪癖）。
+fn open_window(
+    ui_tx: &std::sync::mpsc::Sender<UiRequest>,
+    port: &std::sync::atomic::AtomicU16,
+    id: &str,
+    path_or_url: String,
+    w: f64,
+    h: f64,
+    title: &str,
+) {
+    let port = port.load(std::sync::atomic::Ordering::SeqCst);
+    let url = if path_or_url.starts_with("http") {
+        path_or_url
+    } else {
+        format!("http://127.0.0.1:{port}{path_or_url}")
+    };
+    let _ = ui_tx.send(UiRequest::OpenWindow {
+        id: id.to_string(),
+        url,
+        w,
+        h,
+        title: title.to_string(),
+    });
+}
+
+fn handle_open_window(app: &tauri::AppHandle, id: &str, url: &str, w: f64, h: f64, title: &str) {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window(id) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        // 滚动重置：WebView 保留上次滚动位置（panelwin 三 hack 之一）
+        let _ = win.eval("window.scrollTo(0,0)");
+        return;
+    }
+    let _ = WebviewWindowBuilder::new(
+        app,
+        id,
+        tauri::WebviewUrl::External(url.parse().unwrap()),
+    )
+    .title(title)
+    .inner_size(w, h)
+    .build();
+}
+
+/// 热键注册（对照旧壳 hotkey.rs 的 apply_hotkey：先注新、成功再销旧）。
+/// manager 是进程级单例，第一次调用时创建。
+mod hotkey {
+    use super::*;
+
+    pub fn apply(mgr_slot: &Arc<Mutex<Option<GlobalHotKeyManager>>>, spec: &str) -> bool {
+        let Some(next) = parse(spec) else { return false };
+        let mut slot = mgr_slot.lock().unwrap();
+        if slot.is_none() {
+            match GlobalHotKeyManager::new() {
+                Ok(m) => *slot = Some(m),
+                Err(e) => {
+                    log_line(&format!("热键管理器创建失败：{e}"));
+                    return false;
+                }
+            }
+        }
+        let mgr = slot.as_ref().unwrap();
+        if let Err(e) = mgr.register(next) {
+            log_line(&format!("热键 {spec} 注册失败（被占用？）：{e}"));
+            return false;
+        }
+        log_line(&format!("热键已注册：{spec}（id={}）", next.id()));
+        true
+    }
+
+    /// "ctrl+alt+s" → HotKey。键表对照旧壳 code_of（字母/数字/F1-F12 够用）。
+    fn parse(spec: &str) -> Option<HotKey> {
+        let mut mods = Modifiers::empty();
+        let mut code = None;
+        for tok in spec.to_lowercase().split('+') {
+            match tok.trim() {
+                "ctrl" | "control" => mods |= Modifiers::CONTROL,
+                "alt" | "option" => mods |= Modifiers::ALT,
+                "shift" => mods |= Modifiers::SHIFT,
+                "cmd" | "super" | "win" | "meta" => mods |= Modifiers::SUPER,
+                "" => {}
+                other => code = Some(code_of(other)?),
+            }
+        }
+        code.map(|c| HotKey::new(Some(mods), c))
+    }
+
+    fn code_of(tok: &str) -> Option<Code> {
+        let c = match tok {
+            "space" => Code::Space,
+            "0" => Code::Digit0, "1" => Code::Digit1, "2" => Code::Digit2, "3" => Code::Digit3,
+            "4" => Code::Digit4, "5" => Code::Digit5, "6" => Code::Digit6, "7" => Code::Digit7,
+            "8" => Code::Digit8, "9" => Code::Digit9,
+            "a" => Code::KeyA, "b" => Code::KeyB, "c" => Code::KeyC, "d" => Code::KeyD,
+            "e" => Code::KeyE, "f" => Code::KeyF, "g" => Code::KeyG, "h" => Code::KeyH,
+            "i" => Code::KeyI, "j" => Code::KeyJ, "k" => Code::KeyK, "l" => Code::KeyL,
+            "m" => Code::KeyM, "n" => Code::KeyN, "o" => Code::KeyO, "p" => Code::KeyP,
+            "q" => Code::KeyQ, "r" => Code::KeyR, "s" => Code::KeyS, "t" => Code::KeyT,
+            "u" => Code::KeyU, "v" => Code::KeyV, "w" => Code::KeyW, "x" => Code::KeyX,
+            "y" => Code::KeyY, "z" => Code::KeyZ,
+            "f1" => Code::F1, "f2" => Code::F2, "f3" => Code::F3, "f4" => Code::F4,
+            "f5" => Code::F5, "f6" => Code::F6, "f7" => Code::F7, "f8" => Code::F8,
+            "f9" => Code::F9, "f10" => Code::F10, "f11" => Code::F11, "f12" => Code::F12,
+            _ => return None,
+        };
+        Some(c)
+    }
+}
+
+/// 重启本程序（对照旧壳 sys.rs）：延迟 1 秒等本进程退出释放端口/托盘。
+fn restart_app() {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let script = format!("sleep 1; open -n '{}'", exe.display());
+        let _ = std::process::Command::new("sh").arg("-c").arg(script).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let cmd = format!("timeout /t 1 >nul & start \"\" \"{}\"", exe.display());
+            let mut child = std::process::Command::new("cmd");
+            child.arg("/C").arg(cmd);
+            let _ = child.spawn();
+        }
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    std::process::exit(0);
 }

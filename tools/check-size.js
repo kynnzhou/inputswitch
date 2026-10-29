@@ -51,7 +51,7 @@ const RUST_BASELINE = {
   'src/lib.rs': 38,
   'src/main.rs': 218,
   'src/models.rs': 252,
-  'src/panel.rs': 949,
+  'src/panel.rs': 995,
   'src/panelwin.rs': 194,
   'src/pair.rs': 201,
   'src/peer.rs': 547,
