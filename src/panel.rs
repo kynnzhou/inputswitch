@@ -391,7 +391,18 @@ fn handle(
     };
 
     match (method.as_str(), route.as_str()) {
-        ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_INDEX),
+        // v0.7.0 起 / 是 React 新前端（构建产物内嵌），旧手写面板挪到 /legacy
+        // 保留（对照回退与断言迁移过渡期）。产物缺失（没跑 npm）时旧版顶上 ——
+        // 宁可用旧面板也别给用户一个提示页。
+        ("GET", "/") => {
+            let html = panel_dist::lookup_html("index.html");
+            if html.len() > 200 {
+                respond(&mut stream, 200, "text/html; charset=utf-8", html)
+            } else {
+                respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_INDEX)
+            }
+        }
+        ("GET", "/legacy") => respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_INDEX),
         // 新前端（React/Vite 构建，P0 起逐页迁入；构建产物内嵌见 build.rs 的
         // emit_panel_dist）。`/app` 与 `/app/` 都给 index.html，`/app/<file>`
         // 查产物表。没跑过 npm build 时表为空，回一句提示而不是 404 ——

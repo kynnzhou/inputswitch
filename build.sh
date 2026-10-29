@@ -18,6 +18,16 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
+echo "==> 前端（React 面板）"
+# 三步链（细案 P3）：产物经 assets/panel-dist 内嵌进二进制。
+# 本机没 node 时跳过 —— panel-dist 若为空，/app/ 回提示页，旧面板不受影响。
+if command -v npm >/dev/null 2>&1; then
+  (cd desktop && npm ci --no-fund --no-audit && npm run build)
+  node tools/copy-panel-dist.mjs
+else
+  echo "警告：本机没有 npm，跳过前端构建（旧面板不受影响）"
+fi
+
 echo "==> 编译（release）"
 cargo build --release --bins
 

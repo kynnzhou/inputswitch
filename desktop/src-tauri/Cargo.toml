@@ -1,6 +1,6 @@
 [package]
 name = "inputswitch-tauri"
-version = "0.6.90"
+version = "0.7.0"
 edition = "2021"
 description = "InputSwitch 的 Tauri 2 桌面壳（托盘/热键/面板窗口）"
 
