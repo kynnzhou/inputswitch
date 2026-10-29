@@ -1,5 +1,7 @@
 # 控制面板设计稿
 
+**新版完整交互原型：[interactive/index.html](interactive/index.html)**。包含单屏／多屏工作台、设备摆位、文件传输和设置；提供窗口尺寸、浅深色和异常状态切换。使用说明见 [interactive/README.md](interactive/README.md)。下面保留早期设计稿的说明。
+
 `panel-mock.html` —— 单文件，双击就能开（不需要起主程序、不需要联网）。
 顶部深色工具条是**设计稿专用**，产品里不会有。
 

@@ -10,10 +10,27 @@ use crate::models::{Presence, VCP_INPUT_SOURCE};
 
 use super::status::{inspect, status_text, sync_own};
 use super::Ctx;
-use crate::tray::{log_line, HAS_DISPLAY, PORT_NOTE};
+use crate::tray::{log_line, HAS_DISPLAY, MAINT_BUSY, PORT_NOTE};
+
+/// 维护动作进行中：创建时置位 MAINT_BUSY，Drop 时复位 —— panic 也不留
+/// 锁（三个 handler 都是同步长任务，中途 panic 时钮必须还能点）。入口
+/// `let _busy = BusyGuard::enter();` 即可，出口自动还钮。
+struct BusyGuard;
+impl BusyGuard {
+    fn enter() -> Self {
+        MAINT_BUSY.store(true, AtomicOrdering::SeqCst);
+        BusyGuard
+    }
+}
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        MAINT_BUSY.store(false, AtomicOrdering::SeqCst);
+    }
+}
 
 impl Ctx {
     pub(super) fn on_rescan(&mut self) {
+        let _busy = BusyGuard::enter();
         // 这一步必须真的重读：缓存里存着上一次的失败结论，
         // 不清掉的话这个按钮点了等于没点（用户报的就是这个）
         let report = self.switcher.rescan();
@@ -66,6 +83,7 @@ impl Ctx {
     }
 
     pub(super) fn on_check_support(&mut self) {
+        let _busy = BusyGuard::enter();
         let (line, detail) = inspect(&self.switcher);
         self.support = line;
         log_line(&format!("支持性检测：{}", detail));
@@ -74,6 +92,7 @@ impl Ctx {
     }
 
     pub(super) fn on_scan_ports(&mut self) {
+        let _busy = BusyGuard::enter();
         let target = self.switcher.config.hotkey_target.clone();
         log_line("开始扫描输入口");
 

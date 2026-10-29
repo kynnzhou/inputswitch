@@ -36,8 +36,8 @@
 ## 4. 改面板 UI 前先读真实源件，改完必跑 panelcheck
 
 - 面板是 `assets/panel/` 七件，`index.html` + `style.css` + 五段 JS，按路由分别 `include_str!`。
-- 门禁：`node tools/panelcheck.js assets/panel`，**80 条断言**。它管的不只是渲染，还有多年踩坑沉淀的**界面铁律**——改之前先跑一遍拿基线，别等改完再看红。
-- 界面铁律以 `CONTRIBUTING.md` 为准：主切换按钮永远显示（不能切时换文案 + 灰蓝，绝不 disabled/隐藏）、全页只有一个实心蓝按钮（P3 起更新弹窗里的主操作是唯一例外：遮罩盖上时顶栏那个根本看不见，「任何一刻屏上只有一个蓝块」没破）、顶栏三个维护动作平铺、托盘菜单是系统控件不可定制。
+- 门禁：`node tools/panelcheck.js assets/panel`，**347 条断言**（P2 壳体重构后从 80 条扩到 110：四页切换、侧栏宽档、页脚三件各一组；P2.5 再从 110 扩到 167：设置页三选项卡、主题三态与减少动态效果、帮助/排查弹窗、工作台共享条；P3.2 再从 167 扩到 201：传输页四块结构在册、行渲染/百分比/进度条 --progress/文件名 esc、分页与翻页、筛选三档与 aria-pressed 同步、暂停与发送的 URL 捕获、侧栏传输徽章、旧一行字容器已删；P4 再从 201 扩到 256：工作台按 `design/interactive` 设计稿重做后的场景分段器切态、单屏/多屏两场景渲染、场景警示六分支、wsSwitch/wsHandOver 的 URL 落点、管理输入源弹窗开合与批量改名、editingPorts 打字保护、五槽 grid-area 与类名对齐、旧 kvmHandBtn/#ports/pairBanner 已删；设计稿对齐批2 再从 256 扩到 288：flash 动作钮与放置撤销 toast、空配对码拦截、aria-busy 切换态、发送门禁 canSend、点击放置与 aim 高亮、场景面板缓存与锚点还焦、恢复默认热键；批3 再从 288 扩到 311：弹窗三件套（Esc 逐层关/点遮罩关/开时进框/关时还焦）、扫描确认弹窗、维护三钮 busy；批4 再从 311 扩到 335：设备页 devices-layout 名册列 + 详情双 pane、名册行摆位与键鼠态、选中态三块文字与两套摆位图联动、showDevicePane 切换与按配对态选默认 pane、配对表单 idle/waiting 两态与只读禁用、旧 #peers 富卡片与死样式已清；批5 再从 335 扩到 347：设备页窄窗两档响应式、snap 未就绪时 pane 挂账与 pull 到位补选、手动切不被轮询抢回）。它管的不只是渲染，还有多年踩坑沉淀的**界面铁律**——改之前先跑一遍拿基线，别等改完再看红。
+- 界面铁律以 `CONTRIBUTING.md` 为准：主切换按钮永远显示（不能切时换文案 + 灰蓝，绝不 disabled/隐藏）、全页只有一个实心蓝按钮（例外只有四个主操作：更新弹窗的 updateAction、管理输入源弹窗的 savePorts、扫描确认弹窗的 confirmScan、设备页配对表单的 pairSaveBtn——遮罩或整页换上时顶栏那个根本看不见，「任何一刻屏上只有一个蓝块」没破）、顶栏三个维护动作平铺、托盘菜单是系统控件不可定制。
 - **新增 JS 文件要同步四处**：`index.html` 的 `<script src>`、`tools/panelcheck.js` 的 `JS_ORDER`、`src/panel.rs` 的 `const PANEL_X = include_str!(...)`、以及 `panel.rs` 里对应的路由分支。加载顺序是 `core.js → render.js → kvm.js → update.js → actions.js`（见 `index.html` 尾部），core 的全局变量要让后面的看得见，顺序错了 panelcheck 的 DOM 桩会 undefined。
 
 ## 5. 等用户说「提交」再 commit
@@ -95,15 +95,14 @@
 
 | 文件 | 基线行数 |
 |---|---|
-| `assets/panel/style.css` | 578 |
-| `assets/panel/kvm.js` | 395 |
-| `assets/panel/render.js` | 280 |
-| `assets/panel/index.html` | 229 |
-| `assets/panel/update.js` | 184 |
-| `assets/panel/actions.js` | 97 |
-| `assets/panel/core.js` | 72 |
+| `assets/panel/style.css` | 1008 |
+| `assets/panel/render.js` | 635 |
+| `assets/panel/actions.js` | 312 |
+| `assets/panel/index.html` | 534 |
+| `assets/panel/kvm.js` | 439 |
+| `assets/panel/core.js` | 220 |
 
-与 cc-bridge 的 300 行硬线不同：本项目面板是手写 JS、无框架无构建，`style.css` 529 行是设计令牌 + 组件样式的自然体量，强行切 300 会产生大量 `@import` 或重复。**用基线棘轮代替硬线**。
+与 cc-bridge 的 300 行硬线不同：本项目面板是手写 JS、无框架无构建，`style.css` 是设计令牌 + 组件样式的自然体量，强行切 300 会产生大量 `@import` 或重复。**用基线棘轮代替硬线**。P4（2026-10-28 工作台按设计稿重做）六个文件集体涨过一次，全部走 `--allow-grow` 显式放行并记入脚本；那之后只准往下走。
 
 ## 8. 性能与常驻循环六问
 
@@ -220,11 +219,11 @@ v0.6.89 面板源码拆分为 assets/panel/ 六件 + v0.6.77~v0.6.88 积压改�
 | 编译 | `cargo check --bins` | ✅ 通过 |
 | 构建 | `cargo build --bins` | ✅ 通过（两 exe 均链接成功） |
 | 瘦构建（bin） | `cargo build --bin inputswitch-cli --no-default-features` | ✅ 0 警告（2026-10-27 清掉 `cli/service.rs:53` 的 `let mut sw` 存量；这个形态 release.yml 真构建，此前门禁的 no-default-features 只查 `--lib`，bin 的警告一直没人管——`cmd_daemon_headless` 整个函数是 `cfg(not(feature = "tray"))` 专属，默认构建里不存在，所以只在瘦构建现形） |
-| 单元测试 | `cargo test --lib -- --test-threads=1` | 109/109 通过（2026-10-27 实测，`update` 模块 52 条 + 面板 round-trip 1 条 + 锚点取帧 1 条；`clipboard` 那 2 条在拿不到剪贴板的受限 shell 里会失败，属执行环境问题，先在自己终端确认） |
-| 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 80 条全过（含 P3 自动更新五幕：徽章/弹窗/进度/过渡层/忽略） |
+| 单元测试 | `cargo test --lib -- --test-threads=1` | ✅ 113/115 通过（构成：`update` 模块 52 条 + 面板 round-trip 1 条 + 锚点取帧 1 条 + P3 传输注册表 7 条——tasks.rs 4 条状态机/环形驱逐 + transfer.rs 3 条 loopback 集成：roundtrip / pause_then_resume / preset_cancel；剩 2 条失败是 `clipboard` 的 `watcher_reports_change_once` 与 `text_roundtrip_keeps_original`，拿不到剪贴板的受限 shell 里必失败，属执行环境问题，与并行无关（单线程重跑结果一致），先在自己终端确认。**教训：别跑裸 `cargo test`**——默认多线程 + 全 target，loopback 测试互垫底，`pause_then_resume` 能假跑 30 分钟不推进；门禁命令带 `--lib -- --test-threads=1` 是有原因的） |
+| 面板断言 | `node tools/panelcheck.js assets/panel` | ✅ 347 条全过（2026-10-29 批5 设备页窄窗与 pane 时序：新增 12 条——720 档名册压行/「连接新设备」让位/详情说明收行/托盘压矮、600 档名册横排成设备带（横排落到 #deviceRows + 行 width:auto/flex:none）、对端行 39px 纯文字、同具体性图标钮（.device-list .add-device 压过 720 档 display:none）、snap 未就绪进设备页只挂欠账、pull 到位 render 补选未配对落表单、手动切过不被轮询抢回；2026-10-28 P4 工作台按设计稿重做：新增 55 条——场景分段器切态与 aria-pressed、单屏/多屏两场景渲染（双机卡片/flow/输入源条/摆位图五槽/托盘）、场景警示六分支各带直达动作、wsSwitch 三种落点（本机一句话打发/切对端口/ blind 走 ask-peer）、wsHandOver 打到第一条活链路、管理输入源弹窗开合与"只打改过的口"批量改名、editingPorts 打字保护守卫、五槽 grid-area 与类名对齐（防 CSS 写错类名导致槽位掉进自动排列）、旧 kvmHandBtn/#ports/pairBanner 已删断言；2026-10-28 P3.2 传输页重写：新增 34 条——四块结构在册 / 行渲染与百分比 / esc / 进度条 --progress / 分页 1-2 与翻页 / 筛选三档+aria-pressed / 暂停与发送 URL 捕获 / 侧栏徽标 / 旧容器已删；2026-10-28 P2.5 UI 改造：设置页三选项卡切页 / 主题三态与减少动态效果（localStorage 前端方案，默认 system）/ 帮助与排查弹窗开合 / 工作台共享条 57 条；P2 壳体重构 30 条：四页切换 / 侧栏宽档 / 页脚三件；含 P3 自动更新五幕：徽章/弹窗/进度/过渡层/忽略） |
 | clippy | `cargo clippy --all-targets -- -D warnings` | ✅ **0 条**（2026-10-25 从 65 条清到 0，已具备进钩子/CI 的条件） |
 | fmt | `cargo fmt --check` | 🔴 46 个文件有 diff（2026-10-26 实测；`kvm/recv/`、`tray/engine/`、`tray/actions/`、`kvm/capture/` 拆分零新增，recv/ 下仅剩 mod.rs 1 处 —— while 体多缩进 4 格，从原 `recv.rs` 迁移来的存量；engine.rs 删掉后 49 → 48，actions.rs 删掉后 48 → 47，capture.rs 删掉后 47 → 46 —— 旧 capture.rs 自带 1 处存量，删除即消账） |
-| 体量 | `node tools/check-size.js` | ✅ 通过，基线已是最紧（tray/ 与 kvm/ 拆分后逐批收紧） |
+| 体量 | `node tools/check-size.js` | ✅ 通过（2026-10-29 批5 设备页窄窗与 pane 时序：core.js 320→341 / render.js 757→759 / style.css 1114→1123 / index.html 与 kvm.js 不动，全部 `--allow-grow` 显式放行 —— 涨的是两档响应式规则、devicePaneAuto 挂账补选组与注释；src 侧零改动。2026-10-28 P4 工作台重做：面板六件集体上涨，全部 `--allow-grow` 显式放行 —— style.css 828→1008 / render.js 501→635 / actions.js 224→312 / index.html 487→534 / kvm.js 399→439 / core.js 218→220，涨的是设计稿工作台样式全家桶、场景渲染组、P4 动作组与弹窗骨架（含抓 bug 的槽位类名修复与空态文案修订）；src 侧零改动。2026-10-28 P3.2 传输页重写：面板五件按 `--allow-grow` 审计放行 —— style.css 733→828 / render.js 318→501 / index.html 450→487 / kvm.js 397→399 / actions.js 138→224。**教训：门禁结论会过期**——上一轮记录的"已通过"在 actions.js 又长 8 行（ResizeObserver 扩展）后实测是挂的，文件任何变动后旧结论作废，交付前必须全量重跑） |
 | 发版预检 | `node tools/release.js check` | ✅ P4 实测：正确拦截未提交改动与 tag 占用、核对徽章版本、dry-run 不碰任何东西（gh 登录状态本机已具备） |
 | 发布产物自检 | `node tools/gen-updater-json.js <目录> --check` | ✅ P4 实测：重算 SHA-256 与清单逐平台比对，防手改 |
 

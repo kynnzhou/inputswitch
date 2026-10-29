@@ -6,3 +6,5 @@
 .DS_Store
 # 内部开发笔记，不随开源仓库发布
 /.workbuddy
+# 本地验收资产（design/interactive/verify.cjs 产物），不随开源仓库发布
+/.impeccable

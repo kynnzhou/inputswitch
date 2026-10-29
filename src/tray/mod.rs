@@ -120,6 +120,14 @@ pub(super) static PORT_NOTE: Mutex<String> = Mutex::new(String::new());
 /// 这不是故障，但必须让面板说清楚，否则用户只会看到一句"没报输入源"。
 pub(super) static HAS_DISPLAY: AtomicBool = AtomicBool::new(false);
 
+/// 探测类维护动作（重新检测 / 扫描输入口 / 检测能否切换）是否正在跑。
+///
+/// 三个动作都在引擎线程上同步执行（rescan/check 是纯 DDC 读，scan 带
+/// 10 秒切屏试探），串行一个接一个。置位期间面板把顶栏三个钮一起禁用：
+/// 连点只是白排队，扫描还会多黑几次屏。handler 入口置位、出口（含
+/// panic，走 Drop）复位，快照每轮轮询读它。
+pub(super) static MAINT_BUSY: AtomicBool = AtomicBool::new(false);
+
 enum Command {
     /// 切屏，并且如果键鼠开着就跟过去（正常路径）
     SwitchRaw { name: String, value: u16 },

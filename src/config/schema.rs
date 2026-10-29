@@ -308,7 +308,9 @@ impl Default for Clipboard {
 fn default_version() -> u32 {
     CONFIG_VERSION
 }
-fn default_hotkey() -> String {
+/// 默认切屏热键。恢复默认（面板「恢复默认」钮 → /api/hotkey-reset）和
+/// 新配置的初始值都用它 —— 只有一个出处，改默认值只改这一行。
+pub fn default_hotkey() -> String {
     "ctrl+alt+s".to_string()
 }
 

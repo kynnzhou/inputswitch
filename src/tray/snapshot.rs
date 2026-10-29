@@ -14,7 +14,7 @@ use crate::peer::{Mesh, Peer};
 
 use super::hotkey::pretty_hotkey;
 use super::menu::{port_rows, PortRow};
-use super::{kvm_now, HAS_DISPLAY, PANEL_PORT, PORT_NOTE};
+use super::{kvm_now, HAS_DISPLAY, MAINT_BUSY, PANEL_PORT, PORT_NOTE};
 
 /// 把当前所有状态压成面板要的一份快照。
 #[allow(clippy::too_many_arguments)]
@@ -46,6 +46,9 @@ pub(super) fn update_snapshot(
     snap.replayed = mesh.replayed();
     snap.peer_verified = peers.iter().filter(|p| p.paired).count();
     snap.has_display = HAS_DISPLAY.load(AtomicOrdering::SeqCst);
+    // 探测类维护动作跑动中（重新检测 / 扫描 / 体检）：面板禁用顶栏三钮，
+    // 一个没完别接第二个。引擎线程串行，这个位就是权威状态。
+    snap.maint_busy = MAINT_BUSY.load(AtomicOrdering::SeqCst);
     snap.own_value = config.own_value;
     // 共用键鼠：开没开、跑哪种模式、现在键鼠在哪边、每条链路什么状态
     //
@@ -159,6 +162,9 @@ pub(super) fn update_snapshot(
         inject: kvm::can_post(),
     };
     snap.transfer = transfer_note.to_string();
+    // 传输任务清单：注册表自己管状态（自带锁），这里只把快照搬进面板。
+    // 徽标 / 列表 / 暂停取消全读这一份，前端不自己推阶段
+    snap.transfers = crate::transfer::tasks::views();
     snap.identity = profile_key.to_string();
     // 自动更新：update 模块自己管状态（自带锁和单飞闸），这里只把快照
     // 搬进面板。徽章 / 弹窗 / 重启过渡层全读这一份，前端不自己推阶段

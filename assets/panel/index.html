@@ -5,206 +5,593 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>InputSwitch · 切屏控制台</title>
 <link rel="stylesheet" href="/panel.css">
+<script>
+// P2.5 主题防闪：首屏 paints 之前把 localStorage 里的偏好落到 <html> 上，
+// 否则深色偏好会先闪一帧白（样式表在下面已经加载，paint 要等脚本跑完）。
+// 后续变化由 core.js 的 applyTheme 接管；matchMedia / localStorage 都不可用
+// 时静默跳过 —— 那时 data-theme 不落值，CSS 的 :root 浅色令牌兜底。
+(function(){try{
+  var t = localStorage.getItem('inputswitch.panel.theme') || 'system';
+  var dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  if (localStorage.getItem('inputswitch.panel.reduce-motion') === '1') {
+    document.documentElement.classList.add('reduced-motion');
+  }
+}catch(e){}})();
+</script>
 </head>
 <body>
-<div class="glow a"></div><div class="glow b"></div><div class="glow c"></div>
-<div class="wrap">
-  <!-- 顶部常驻状态条：画面 / 键鼠 / 对端 三个事实 + 主操作。
-       最高频的动作（切换）以前埋在「输入源」卡片里，得往下找。 -->
-  <header class="topbar glass">
-    <div class="statusline">
-      <div class="stat node"><span class="k">本机</span><span class="v" id="node">…</span></div>
-      <div class="stat"><span class="k">画面</span><span class="v" id="hdrScreen">—</span></div>
-      <div class="stat"><span class="k">键鼠</span><span class="v" id="hdrKeys">—</span></div>
-      <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
+<!-- P1：图标 sprite 随设计稿移植（33 个线性图标原样搬来 + i-download 一个生产新增）。
+     行内 <svg><use> 引用，stroke 继承 currentColor，不依赖任何外部资源。 -->
+<svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-screens" viewBox="0 0 24 24"><rect x="2" y="3" width="14" height="11" rx="2"/><path d="M5 18h8M9 14v4M19 8h1a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24"><path d="M7 3v16m-4-4 4 4 4-4M17 21V5m-4 4 4-4 4 4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M3 7h17m-4-4 4 4-4 4M21 17H4m4-4-4 4 4 4"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 15h10" stroke-linecap="round"/></symbol>
+    <symbol id="i-mouse" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="6"/><path d="M12 2v7M6 10h12"/></symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3M8 11h8M8 16h6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-4 9-8 11-4-2-8-6-8-11V5l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3M3 12h18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .6-1.5 1-1.5 2M12 17h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7h18"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 21h16"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H5a1 1 0 0 0-1 1v18a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9l-7-7Zm0 0v7h7M8 14h8M8 18h5"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 13a9 9 0 0 1-10-10 9 9 0 1 0 10 10Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8 16a6 6 0 0 1 8 0M12 20h.01"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4Z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4M8 15l-2 2a4 4 0 0 0 6 6l3-3a4 4 0 0 0 0-6M16 9l2-2a4 4 0 0 0-6-6L9 4a4 4 0 0 0 0 6" transform="translate(0 -1)"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 4h8v8H3zm10 0h8v8h-8zM3 14h8v7H3zm10 0h8v7h-8z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="13" rx="2"/><path d="m4 16-2 4h20l-2-4M9 20h6"/></symbol>
+  </defs>
+</svg>
+
+<!-- P2：壳体按设计稿重构 —— 左侧导航（四页）+ 命令栏 + 页脚。
+     窗口默认 820px 宽，< 950px 时侧栏收成 65px 图标栏（.compact-nav，
+     core.js 的 updateNavCompact 跟 ResizeObserver 切，和设计稿同机制）；
+     拖宽到 950px 以上自动展开成 178px 带文字栏。
+     七张卡按"我现在要干什么"分进四页：工作台（这台显示器 + 共用键鼠 +
+     剪贴板与快捷发送）、设备与布局（配对 + 对端 + 摆位）、文件传输（发送到
+     + 拖放区 + 传输记录 + 接收目录）、设置（快捷键 / 启动与恢复 / 外观与关于
+     三个选项卡）。
+     P3 起传输页按设计稿重写：四块结构 + 传输记录列表，#inbox / #transfer
+     两个一行字容器被列表取代；其余 ID 与 P1 一致，轮询弹窗一套代码不动。 -->
+<div class="app">
+  <aside class="sidebar" aria-label="主导航">
+    <nav class="main-nav">
+      <!-- ID 是给 core.js 的 showPage 用的：切页要改 .selected 和 aria-current，
+           按 ID 取比扫 class 直白，面板自测的 DOM 桩也测得动。 -->
+      <button class="nav-item selected" id="nav-workspace" data-page="workspace" aria-current="page" title="工作台" onclick="showPage('workspace')"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg><span>工作台</span></button>
+      <button class="nav-item" id="nav-devices" data-page="devices" title="设备与布局" onclick="showPage('devices')"><svg class="icon" aria-hidden="true"><use href="#i-screens"/></svg><span>设备与布局</span><span class="nav-count" id="deviceCount">0</span></button>
+      <button class="nav-item" id="nav-transfers" data-page="transfers" title="文件传输" onclick="showPage('transfers')"><svg class="icon" aria-hidden="true"><use href="#i-transfer"/></svg><span>文件传输</span><span class="nav-count transfer-count" id="transferCount" hidden>0</span></button>
+      <button class="nav-item" id="nav-settings" data-page="settings" title="设置" onclick="showPage('settings')"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>设置</span></button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="local-machine"><svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg><div><strong id="navNode">—</strong><span>本机</span></div><i class="status-dot" aria-hidden="true"></i></div>
     </div>
-    <div class="actions">
-      <!-- 主按钮：**永远显示**，不能切时换文案 + .is-off，但位置形状不变。
-           实心蓝只留给它一个 —— 输入口列表里的「切换」全是描边小按钮。 -->
-      <button id="mainSwitch" class="primary btn-lg" onclick="quickSwitch()">切换画面</button>
-      <!-- 更新入口：常驻描边按钮，有新版本时右上角亮红点（见 update.js）。
-           不放维护那三个里 —— 它是"装新版本"，不是"排查本机"。 -->
-      <button id="updateBtn" class="btn-lg upd-btn" onclick="openUpdate()">更新<i class="upd-dot" id="updateDot"></i></button>
-      <div class="spacer"></div>
-      <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。 -->
-      <div class="flat-group">
-        <button onclick="post('/api/rescan')">重新检测</button>
-        <button onclick="post('/api/scan')">扫描输入口</button>
-        <button onclick="post('/api/check')">检测能否切换</button>
+  </aside>
+
+  <div class="app-main">
+    <!-- 顶部常驻状态条：画面 / 键鼠 / 对端 三个事实 + 主操作。
+         最高频的动作（切换）以前埋在「输入源」卡片里，得往下找。 -->
+    <header class="topbar glass">
+      <div class="statusline">
+        <div class="stat node"><svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg><span class="k">本机</span><span class="v" id="node">…</span></div>
+        <div class="stat"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg><span class="k">画面</span><span class="v" id="hdrScreen">—</span></div>
+        <div class="stat"><svg class="icon" aria-hidden="true"><use href="#i-mouse"/></svg><span class="k">键鼠</span><span class="v" id="hdrKeys">—</span></div>
+        <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
       </div>
-    </div>
-    <!-- 只有"下一步该干什么"这一句；没有就整行消失 -->
-    <div class="nextstep" id="nextStep"></div>
-    <div class="hint" id="supportLine" style="display:none">能否用软件切换：<span id="support"></span></div>
-    <div class="toast" id="status"></div>
-  </header>
-
-  <!-- 权限问题提到顶栏：它决定整个共用键鼠能不能用，不该只藏在
-       「单屏多主机」卡里。卡里只留开关。 -->
-  <div class="banner warn" id="permBanner" style="display:none">
-    <span class="grow"><b>系统授权没生效</b><br>
-      <span class="sub" id="permText"></span></span>
-    <button class="btn-lg" onclick="post('/api/restart')">重启应用</button>
-  </div>
-
-  <div id="pairBanner" class="banner warn">正在读取状态…</div>
-
-  <!-- ① 这台显示器：整行铺开 —— 每行有名称 + 徽标 + 两个按钮，
-       塞进半宽会换行成两层，反而更难扫 -->
-  <section class="card">
-      <h2>这台显示器 <span class="sub" id="displayModel" style="font-weight:400"></span></h2>
-      <div id="ports" class="ports"><div class="empty">读取中…</div></div>
-      <!-- 两段说明合成一段：扫描的风险提示只在真点扫描时才有意义，
-           平时占着一行只会把卡片撑高。 -->
-      <div class="hint" id="portsHint"></div>
-  </section>
-
-  <!-- ② 配对（左）+ ③ 局域网对端（右）：紧跟在「这台显示器」下面 ——
-       配对是把两台机器连起来的第一步，配完才谈得上后面的摆位和切屏。 -->
-  <div class="grid2 equal">
-    <section class="card">
-      <h2>配对</h2>
-      <div class="pairrow">
-        <input id="code" type="text" maxlength="32" placeholder="配对码" autocomplete="off" oninput="codeDirty = true">
-        <button class="ghost" onclick="genCode()">随机生成</button>
-      </div>
-      <div class="btnrow" style="margin-top:10px">
-        <button onclick="savePair()">保存并连接</button>
-        <button id="unpairBtn" class="ghost" style="display:none" onclick="unpair()">取消配对</button>
-      </div>
-      <div class="hint">两台填同一个码。码越长越安全；换码后两边的键鼠会重连一次。</div>
-    </section>
-
-    <section class="card">
-      <h2>局域网对端</h2>
-      <div class="empty-fill" id="peers"><div class="empty" style="text-align:center">还没有发现其他机器</div></div>
-      <div class="hint">对端也在运行本程序时会自动出现在这里。</div>
-    </section>
-  </div>
-
-  <div class="grid2">
-    <!-- ④ 共用键鼠（左：状态 + 每台的链路 + 手感；右：摆位图）
-         以前链路行挂在摆位图下面，两栏高度差 300px 以上，左边一大片空白。 -->
-    <section class="card">
-      <h2>共用键鼠</h2>
-      <div class="switch">
-        <span>运行状态：<b id="kvmState">未启动</b></span>
-        <button id="kvmPower" class="btn-sm" onclick="toggleKvm()">开启</button>
-      </div>
-      <div class="hint" id="kvmHint"></div>
-
-      <!-- 每台对端一行：只显示状态 + 一个动作 -->
-      <div id="kvmLinks"></div>
-
-      <!-- 共用一块屏时这个按钮是陷阱：它只把键鼠送走、画面留在本机，而画面
-           一走你面前就是另一台机器的桌面，这块面板根本看不见 —— 没有可点的
-           时机。按后端算好的 follow_link 藏掉（见 renderKvm）。键鼠已经在别台
-           手上（active 非空）时同样藏掉：那时光标被钉死、点击到不了这里。 -->
-      <div class="split" style="margin-top:10px">
-        <button id="kvmHandBtn" class="btn-sm" onclick="post('/api/kvm-handover')">把键鼠交给对端</button>
-      </div>
-      <div class="hint" id="kvmHandHint"></div>
-
-      <div class="rowlabel">光标速度 · 键鼠在对端时生效</div>
-      <div id="kvmScaleRow">
-        <button id="kvmScale09" onclick="setKvmScale(0.9)">0.9</button>
-        <button id="kvmScale10" onclick="setKvmScale(1)">1.0</button>
-        <button id="kvmScale11" onclick="setKvmScale(1.1)">1.1</button>
-        <button id="kvmScale12" onclick="setKvmScale(1.2)">1.2</button>
-      </div>
-      <div class="hint" id="kvmScaleHint"></div>
-    </section>
-
-    <!-- ⑤ 摆位（各有一块屏 / 共用一块屏） -->
-    <section class="card">
-      <h2>摆位 <span class="tag plain">一台一格</span></h2>
-      <div id="kvmGrid" class="grid"></div>
-
-      <!-- 两种卡片停在这里，标签**必须分开**：
-           「共用一块屏」= 已配成跟随画面；
-           「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
-      <div id="kvmLoose" class="loosetray" data-drop="loose">
-        <div class="loosehead">共用一块屏 · 拖/点到这里：切画面时键鼠跟着走</div>
-        <div id="kvmLooseBox" class="loosebox"></div>
-      </div>
-
-      <div class="gridhint" id="kvmGridHint"></div>
-      <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
-           因为 #kvmGridHint 每次重绘都会被重写 -->
-      <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
-    </section>
-  </div>
-
-  <!-- ⑥ 文件 -->
-  <section class="card">
-    <h2>文件</h2>
-    <div class="btnrow">
-      <button onclick="post('/api/send')">发送文件…</button>
-      <button onclick="post('/api/inbox')">改接收目录</button>
-      <button onclick="post('/api/open-inbox')">打开接收目录</button>
-    </div>
-    <div class="hint" id="inbox">接收目录：—</div>
-    <div id="transfer" class="hint"></div>
-  </section>
-
-  <!-- ⑦ 高级：跟"我现在要干什么"无关的东西全收在这里 -->
-  <details class="adv card glass">
-    <summary>高级 <span class="sub">热键 · 启动与守护 · 剪贴板</span><span class="chev">›</span></summary>
-    <div class="body">
-      <div class="box">
-        <dl class="kv">
-          <dt>显示器</dt><dd id="display">—</dd>
-          <dt>设备标识</dt><dd><code id="identity">—</code></dd>
-          <dt>热键</dt><dd><span id="hotkey">—</span>
-            <button class="btn-sm" style="margin-left:10px" onclick="recHotkey()">改键</button>
-          </dd>
-          <dt>热键目标</dt><dd id="target">—</dd>
-        </dl>
-      </div>
-
-      <div class="cols">
-        <div class="box">
-          <!-- 开关用 .sw 表达状态，不再拿"已开启 / 已关闭"两个按钮去冒充。
-               三件事必须分开：自启是"程序跑起来"，恢复是"键鼠自动接上"，
-               守护是"崩了自己回来"。想只自启、不想被接管键鼠的人占多数。 -->
-          <div class="switch"><span>开机自启</span>
-            <button id="autoBtn" class="sw" role="switch" aria-checked="false" aria-label="开机自启" onclick="toggleAutostart()"></button></div>
-          <div class="switch"><span>对端上线后自动恢复共用键鼠</span>
-            <button id="resumeBtn" class="sw" role="switch" aria-checked="false" aria-label="对端上线后自动恢复共用键鼠" onclick="toggleAutoResume()"></button></div>
-          <div class="switch"><span>崩溃后自动重启</span>
-            <button id="guardBtn" class="sw" role="switch" aria-checked="false" aria-label="崩溃后自动重启" onclick="toggleKeepAlive()"></button></div>
-          <div class="hint" id="bootHint"></div>
+      <div class="actions">
+        <!-- 主按钮：**永远显示**，不能切时换文案 + .is-off，但位置形状不变。
+             实心蓝只留给它一个 —— 输入口列表里的「切换」全是描边小按钮。 -->
+        <button id="mainSwitch" class="primary btn-lg" onclick="quickSwitch()">切换画面</button>
+        <!-- 更新入口：常驻描边按钮，有新版本时右上角亮红点（见 update.js）。
+             不放维护那三个里 —— 它是"装新版本"，不是"排查本机"。 -->
+        <button id="updateBtn" class="upd-btn" onclick="openUpdate()"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>更新<i class="upd-dot" id="updateDot"></i></button>
+        <div class="spacer"></div>
+        <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。
+             探测类动作跑动中三个一起禁用（render.js 跟 snap.maint_busy），
+             扫描输入口多一道确认 —— 它会真的逐个切口，屏幕会黑几次。 -->
+        <div class="flat-group">
+          <button id="maintRescan" onclick="post('/api/rescan')"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重新检测</button>
+          <button id="maintScan" onclick="openScanModal()"><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg>扫描输入口</button>
+          <button id="maintCheck" onclick="post('/api/check')"><svg class="icon" aria-hidden="true"><use href="#i-check-circle"/></svg>检测能否切换</button>
         </div>
-        <div class="box">
-          <div class="switch"><span>同步剪贴板文本</span>
-            <button id="clipBtn" class="sw" role="switch" aria-checked="false" aria-label="同步剪贴板文本" onclick="toggleClipboard()"></button></div>
-          <!-- 不要放进 .split：那个类会把子元素拉满整栏，一个「副机模式：一键开启」
-               就变成一条横贯卡片的色块，和旁边 32px 的常规按钮完全不是一套。 -->
-          <div class="btnrow" style="margin-top:10px">
-            <button id="subBtn" onclick="toggleSubmachine()">—</button>
+        <!-- 帮助入口：和维护三件同一套弱化样式，但不进 flat-group ——
+             那三个是"排查本机"的动作，帮助不是。切换遇到问题从帮助弹窗里转去。 -->
+        <button class="icon-help" onclick="openHelp()" title="使用帮助" aria-label="使用帮助"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg></button>
+      </div>
+      <!-- 只有"下一步该干什么"这一句；没有就整行消失 -->
+      <div class="nextstep" id="nextStep"></div>
+      <div class="hint" id="supportLine" style="display:none">能否用软件切换：<span id="support"></span></div>
+      <div class="toast" id="status"></div>
+    </header>
+
+    <div class="view-container" id="viewContainer">
+      <!-- ① 工作台：按设计稿 renderWorkspace 重做 —— 页头与场景分段器 +
+           场景警示 + 单屏/多屏场景面板 + 共享双开关 + 快捷传输。
+           和生产现状（P2.5 及以前的卡片流）的差异，都是有意的搬迁：
+           · 输入口列表 → source-strip + 「管理」弹窗（设计稿 ports 动作），
+             行内 contenteditable 改名和「设为热键」都进弹窗；
+           · 链路行（转给它/交给它）→ 设备页摆位卡下方，和摆位图同一份
+             links 数据两个视角，放一起才对照得起来；
+           · 光标速度 → 设置页「快捷键」选项卡（设计稿 sharing 选项卡）；
+           · 配对横幅 → 场景警示（sceneAlert），"已配对·已连接"这类正常
+             状态页脚常驻说，不占工作台版面。
+           #sceneSingle / #sceneMulti 由 render.js 的 renderWorkspaceScene
+           现算填充（同一时刻只画当前场景，设计稿同款）。 -->
+      <section id="workspaceView" class="page-view" aria-label="工作台">
+        <!-- 权限问题：它决定整个共用键鼠能不能用。横幅置顶 —— 缺权限时
+             场景面板里的任何状态都是空转，先于一切。 -->
+        <div class="banner warn" id="permBanner" style="display:none">
+          <span class="grow"><b>系统授权没生效</b><br>
+            <span class="sub" id="permText"></span></span>
+          <button class="btn-lg" onclick="post('/api/restart')"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重启应用</button>
+        </div>
+
+        <!-- 页头 + 场景分段器（设计稿 pageHeading）。scene 是内存态
+             （设计稿 initialState 同样不落盘）—— 它只是"当前怎么看"，
+             不是配置。setWorkspaceScene 在 actions.js。 -->
+        <div class="view-heading">
+          <div><h1>工作台</h1><p>在设备之间，轻松接续你的工作。</p></div>
+          <div class="segmented" role="group" aria-label="工作场景">
+            <button id="sceneOpt-single" class="selected" aria-pressed="true" onclick="setWorkspaceScene('single')"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>单屏切换</button>
+            <button id="sceneOpt-multi" aria-pressed="false" onclick="setWorkspaceScene('multi')"><svg class="icon" aria-hidden="true"><use href="#i-screens"/></svg>多屏共享</button>
           </div>
-          <div class="hint">副机模式给<b>没接键鼠</b>的那台机器用：一次打开开机自启、自动恢复共用键鼠、崩溃后自动重启，并保持共用键鼠开启。
-            开启前请把这台的 IP 固定下来 —— 共用键鼠按 IP 认机器，不认机器名。</div>
         </div>
-      </div>
 
-      <div class="hint" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-        <span>配置文件和日志都在同一个目录里</span>
-        <button class="btn-sm" style="flex:none" onclick="post('/api/open-config')">打开配置文件夹</button>
-      </div>
+        <!-- 场景警示（设计稿 sceneAlert 的生产分支）：未配对 / 没验过 /
+             没有对端 / 对端离线 / 没有输入口 / 不支持切换，六种各带一个
+             直达动作。没有就整块消失（不占版面）。 -->
+        <div id="sceneAlert"></div>
+
+        <!-- 单屏场景：共用显示器头 + 双机卡片 + flow + 输入源条 -->
+        <div id="sceneSingle"></div>
+        <!-- 多屏场景：摆位图 + 说明 + 键鼠交接条 -->
+        <div id="sceneMulti" hidden></div>
+
+        <!-- 共享双开关（设计稿 sharing-strip）：共用键鼠 + 剪贴板同步，
+             两栏网格各带一句状态文案。开关态由 render.js 的 flip() 刷。 -->
+        <div class="sharing-strip">
+          <div class="sharing-item">
+            <svg class="icon" aria-hidden="true"><use href="#i-mouse"/></svg>
+            <div class="sharing-copy"><strong>共用键鼠</strong><p id="kvmCopy">—</p></div>
+            <button id="kvmSwitch" class="sw" role="switch" aria-checked="false" aria-label="共用键鼠" onclick="toggleKvm()"></button>
+          </div>
+          <div class="sharing-item">
+            <svg class="icon" aria-hidden="true"><use href="#i-clipboard"/></svg>
+            <div class="sharing-copy"><strong>剪贴板同步</strong><p id="clipCopy">—</p></div>
+            <button id="clipBtn" class="sw" role="switch" aria-checked="false" aria-label="同步剪贴板文本" onclick="toggleClipboard()"></button>
+          </div>
+        </div>
+
+        <!-- 快捷传输（设计稿 quick-transfer）：省一次跳页，更多操作去传输页 -->
+        <div class="quick-transfer">
+          <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>
+          <p><strong>顺手传个文件</strong><span>，接着在另一台处理。</span></p>
+          <!-- 走 sendFilesTo() 而不是直接 post：没对端 / 对端要求配对时
+               后端会拒，提前在面板上说清（canSend 门禁，actions.js） -->
+          <button class="btn-sm" onclick="sendFilesTo()"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>发送文件</button>
+          <button class="btn-sm ghost" title="去文件传输页" onclick="showPage('transfers')"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+        </div>
+      </section>
+
+      <!-- ② 设备与布局：设计稿 renderDevices 的生产版 —— devices-layout
+           左名册列（本机行 + 已知设备紧凑行 + 添加入口 + 配对摘要）+ 右详情列
+           （两个 pane：摆位布局 / 配对表单，showDevicePane 切）。
+           和生产旧结构（页首配对大卡 + 双栏卡）的区别：
+           ① 配对从"页首一张大卡"收成名册列常驻摘要 + 详情列的一个 pane；
+           ② 对端从富信息大卡收成名册紧凑行 —— snap.peers 全是在线对端
+              （ui.rs live_peers），行内状态说"键鼠开没开"而不是在线与否；
+              地址/配对警示等详细信息搬进 selected-detail，选中一台才展开。
+           保留的全部既有 ID：#code / #unpairBtn / #kvmGrid / #kvmLoose /
+           #kvmLooseBox / #kvmGridHint / #kvmFlash / #kvmLinks。
+           pane 默认态由 showPage('devices') 按配对态选（未配对→配对表单）。 -->
+      <section id="devicesView" class="page-view" aria-label="设备与布局" hidden>
+        <div class="devices-layout">
+          <div class="device-list">
+            <p class="list-label">这台电脑</p>
+            <div class="device-row local-row">
+              <svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>
+              <span><strong id="deviceLocalName">本机</strong><small>本机</small></span>
+            </div>
+            <p class="list-label">已知设备 · <span id="deviceListCount">0</span></p>
+            <div id="deviceRows"></div>
+            <button class="add-device" onclick="showDevicePane('pair', true)" title="连接新设备">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>连接新设备
+            </button>
+            <div class="pair-summary">
+              <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+              <span id="pairSummaryText">尚未配对</span>
+              <button class="ghost" onclick="showDevicePane('pair', true)">管理配对</button>
+            </div>
+          </div>
+
+          <div class="device-detail">
+            <div id="deviceLayoutPane">
+              <div class="detail-heading">
+                <div>
+                  <h2>按桌面上的位置摆放</h2>
+                  <p>选一台设备，再点方向。支持拖动、方向键和撤销。</p>
+                </div>
+                <span class="tag plain">一台一格</span>
+              </div>
+              <div id="kvmGrid" class="grid"></div>
+
+              <!-- 两种卡片停在这里，标签**必须分开**：
+                   「共用一块屏」= 已配成跟随画面；
+                   「未摆位」= 刚发现、还没告诉程序它放哪儿（拖进格子就建链路）。 -->
+              <div id="kvmLoose" class="loosetray" data-drop="loose">
+                <div class="loosehead">共用一块屏 · 拖/点到这里：切画面时键鼠跟着走</div>
+                <div id="kvmLooseBox" class="loosebox"></div>
+              </div>
+
+              <div class="gridhint" id="kvmGridHint"></div>
+              <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
+                   因为 #kvmGridHint 每次重绘都会被重写 -->
+              <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
+
+              <!-- 选中态提示 + 选中设备详情（设计稿 placement-note /
+                   selected-detail）：名册点一台，这里说清"选中了谁、下一步
+                   点什么、它的地址和键鼠状态"。旧 #peers 大卡的信息收在这里。 -->
+              <div class="placement-note" id="placementNote"></div>
+              <div class="selected-detail" id="selectedDetail"></div>
+
+              <!-- 键鼠链路行（P4 从工作台搬来）：每台对端一行状态 + 一个
+                   交接动作（转给它 / 交给它）。和上面摆位图是同一份 links
+                   数据的两个视角 —— 图管"画面怎么走"，这里管"键鼠交给谁"，
+                   分开放对照不起来。 -->
+              <div class="rowlabel">键鼠交接</div>
+              <div id="kvmLinks"></div>
+            </div>
+
+            <div id="devicePairPane" hidden>
+              <!-- 配对表单（设计稿 pairingForm 的生产版）。包 form 只为回车
+                   提交（onsubmit 里 preventScroll + savePair）；保存/随机/
+                   返回/取消都是 type="button" —— 桩环境不派发 submit，
+                   行为和旧 onclick 入口完全一致。 -->
+              <form class="pair-form" id="pairForm" onsubmit="event.preventDefault();savePair()">
+                <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                <h2>连接另一台电脑</h2>
+                <p>两台电脑接入同一局域网并打开 InputSwitch，填入相同配对码。</p>
+                <div>
+                  <label class="field-label" for="code">配对码</label>
+                  <div class="input-line">
+                    <input id="code" type="text" maxlength="32" placeholder="输入双方约定的配对码"
+                           autocomplete="off" spellcheck="false" aria-describedby="pairHelp"
+                           oninput="codeDirty = true">
+                    <button type="button" onclick="genCode()">随机生成</button>
+                  </div>
+                  <!-- 文案由 renderDevicePane 按配对态写：idle（最多 32
+                       字符）/ waiting（码已保存等对端确认，输入框只读、
+                       主钮禁用 + aria-busy）。空码拦截的提示走 flash
+                       （savePair 里那句「先填一个配对码」）。 -->
+                  <p class="field-help" id="pairHelp"></p>
+                </div>
+                <div class="form-actions">
+                  <button type="button" class="primary" id="pairSaveBtn" onclick="savePair()">保存并连接</button>
+                  <button type="button" class="ghost" onclick="showDevicePane('layout', true)">返回布局</button>
+                  <button type="button" class="ghost" id="unpairBtn" style="display:none" onclick="unpair()">取消配对</button>
+                </div>
+                <p class="field-help">两台填同一个码。码越长越安全；换码后两边的键鼠会重连一次。</p>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ③ 文件传输：移植设计稿 transfersView 的四块结构（transfer-target
+           / drop-zone / transfers-list / inbox-line，块间 12px 由 .page-view
+           的 gap 给 —— 设计稿挂在 #transfersView 上，生产同值）。传输记录
+           列表的数据是后端任务注册表（transfer/tasks.rs 的 snap.transfers）。
+           和生产现状的三处适配：① WebView 拖放的 dataTransfer 只有 name/size、
+           拿不到本地路径（浏览器安全模型），发不出去 —— drop 降级成触发系统
+           选择器，drag-over 高亮照原样做；② 设计稿「体验一次传输」是演示假
+           数据，生产改成「发送测试文件」（后端生成临时探针 txt，发完即删）；
+           ③ 设计稿的 view-heading 页头不设 —— 生产四页都没有页头，上下文
+           由侧栏和顶栏给，和各页保持一致。 -->
+      <section id="transfersView" class="page-view" aria-label="文件传输" hidden>
+        <div class="transfer-target">
+          <label for="recipient">发送到</label>
+          <select id="recipient" onchange="setTransferRecipient(this.value)"></select>
+          <span class="tag" id="recipientTag"></span>
+        </div>
+
+        <div class="drop-zone" id="dropZone">
+          <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
+          <h2 id="dropPeer">把文件拖到这里</h2>
+          <p>支持多文件和整个文件夹，重名文件不会覆盖</p>
+          <div class="drop-actions">
+            <button onclick="sendFilesTo()">选择文件</button>
+            <button onclick="sendFolderTo()">选择文件夹</button>
+            <button class="btn-sm ghost" onclick="sendTestTo()">发送测试文件</button>
+          </div>
+        </div>
+
+        <div class="transfers-list">
+          <div class="list-heading">
+            <span>传输记录</span>
+            <div class="filter-group" role="group" aria-label="筛选传输记录">
+              <button id="filterAll" class="selected" aria-pressed="true" onclick="setTransferFilter('all')">全部</button>
+              <button id="filterActive" aria-pressed="false" onclick="setTransferFilter('active')">进行中</button>
+              <button id="filterDone" aria-pressed="false" onclick="setTransferFilter('done')">已完成</button>
+            </div>
+          </div>
+          <div id="transferRows"></div>
+          <div class="list-pagination" id="transferPagination"></div>
+        </div>
+
+        <div class="inbox-line">
+          <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>
+          <span class="grow" id="inboxPath">接收目录：—</span>
+          <button class="btn-sm ghost" onclick="post('/api/inbox')">更改</button>
+          <button class="btn-sm ghost" onclick="post('/api/open-inbox')">打开</button>
+        </div>
+      </section>
+
+      <!-- ④ 设置：跟"我现在要干什么"无关的东西全收在这里。
+           三个常驻选项卡（移植设计稿）：快捷键 / 启动与恢复 / 外观与关于。
+           共享类控件（共用键鼠、光标速度、剪贴板同步）按同一逻辑住在
+           工作台，这里不复制；切 tab 只换面板，所有既有 ID 原样保留，
+           render.js 一行不用动。 -->
+      <section id="settingsView" class="page-view settings-page" aria-label="设置" hidden>
+        <div class="settings-tabs" role="tablist" aria-label="设置类别">
+          <button id="tab-shortcut" class="selected" role="tab" aria-selected="true" aria-controls="shortcutPanel" onclick="showSettingsTab('shortcut')">快捷键</button>
+          <button id="tab-startup" role="tab" aria-selected="false" aria-controls="startupPanel" onclick="showSettingsTab('startup')">启动与恢复</button>
+          <button id="tab-appearance" role="tab" aria-selected="false" aria-controls="appearancePanel" onclick="showSettingsTab('appearance')">外观与关于</button>
+        </div>
+
+        <div class="settings-panel" id="shortcutPanel" role="tabpanel" aria-labelledby="tab-shortcut">
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>切屏快捷键</strong>
+              <p>随时把画面切到另一个输入源。点「改键」后，到主程序弹出的窗口里按组合键。</p>
+            </div>
+            <div class="setting-ctrl">
+              <span class="setting-value" id="hotkey">—</span>
+              <button class="btn-sm" onclick="recHotkey()">改键</button>
+              <!-- 恢复默认：录了个和别的软件冲突的组合后，唯一的回头路
+                   以前是手改 config.json（后端 /api/hotkey-reset 重新注册
+                   默认键并保存，前端 resetHotkey 在 actions.js） -->
+              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">恢复默认</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>热键目标</strong>
+              <p>快捷键一下切到哪个输入源。在「管理显示器输入源」弹窗里点「设为热键」修改。</p>
+            </div>
+            <div class="setting-ctrl"><span class="setting-value" id="target">—</span></div>
+          </div>
+          <!-- 光标速度（P4 从工作台搬来，对应设计稿 sharing 选项卡）：
+               位移先按两屏分辨率比例换算，再乘这个倍率。改档后端会重建
+               共用键鼠实例，会话会断一下。 -->
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>光标速度</strong>
+              <p>仅在键鼠交给对端时生效。两个系统的指针加速曲线不同，同一串位移在两边速度必然有差 ——「回到本机变慢」就往上调一档。</p>
+            </div>
+            <div class="setting-ctrl">
+              <div id="kvmScaleRow">
+                <button id="kvmScale09" onclick="setKvmScale(0.9)">0.9</button>
+                <button id="kvmScale10" onclick="setKvmScale(1)">1.0</button>
+                <button id="kvmScale11" onclick="setKvmScale(1.1)">1.1</button>
+                <button id="kvmScale12" onclick="setKvmScale(1.2)">1.2</button>
+              </div>
+            </div>
+          </div>
+          <div class="hint" id="kvmScaleHint"></div>
+          <p class="settings-footnote">紧急断开键鼠：<kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd>，任何时候都生效，不用打开面板</p>
+        </div>
+
+        <div class="settings-panel" id="startupPanel" role="tabpanel" aria-labelledby="tab-startup" hidden>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>开机自启</strong>
+              <p>登录电脑后自动运行 InputSwitch。</p>
+            </div>
+            <button id="autoBtn" class="sw" role="switch" aria-checked="false" aria-label="开机自启" onclick="toggleAutostart()"></button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>对端上线后自动恢复共用键鼠</strong>
+              <p>不会一开机就抢键鼠：等对端上线后才接，失败会自动重试。</p>
+            </div>
+            <button id="resumeBtn" class="sw" role="switch" aria-checked="false" aria-label="对端上线后自动恢复共用键鼠" onclick="toggleAutoResume()"></button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>崩溃后自动重启</strong>
+              <p>程序意外退出时自动恢复运行。</p>
+            </div>
+            <button id="guardBtn" class="sw" role="switch" aria-checked="false" aria-label="崩溃后自动重启" onclick="toggleKeepAlive()"></button>
+          </div>
+          <div class="hint" id="bootHint"></div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>副机模式</strong>
+              <p>给<b>没接键鼠</b>的那台机器用：一次打开开机自启、自动恢复共用键鼠、崩溃后自动重启，并保持共用键鼠开启。开启前请把这台的 IP 固定下来 —— 共用键鼠按 IP 认机器，不认机器名。</p>
+            </div>
+            <button id="subBtn" class="btn-sm" onclick="toggleSubmachine()">—</button>
+          </div>
+        </div>
+
+        <div class="settings-panel" id="appearancePanel" role="tabpanel" aria-labelledby="tab-appearance" hidden>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>外观</strong>
+              <p>选择更适合当前工作环境的明暗。「跟随系统」跟着 Windows 的深浅色设置走。</p>
+            </div>
+            <div class="segmented" role="group" aria-label="外观">
+              <button id="themeOpt-light" onclick="setTheme('light')">浅色</button>
+              <button id="themeOpt-dark" onclick="setTheme('dark')">深色</button>
+              <button id="themeOpt-system" onclick="setTheme('system')">跟随系统</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>减少动态效果</strong>
+              <p>保留状态反馈，减少连接动画和页面过渡。</p>
+            </div>
+            <button id="motionBtn" class="sw" role="switch" aria-checked="false" aria-label="减少动态效果" onclick="toggleReduceMotion()"></button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>显示器</strong>
+              <p>本机当前检测到的显示器型号。</p>
+            </div>
+            <div class="setting-ctrl"><span class="setting-value" id="display">—</span></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>设备标识</strong>
+              <p>配对时用来区分本机的固定标识，两台机器各不相同。</p>
+            </div>
+            <div class="setting-ctrl"><code id="identity">—</code></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>软件更新</strong>
+              <p>查看新版本和更新说明，下载并安装。</p>
+            </div>
+            <button class="btn-sm" onclick="openUpdate()">检查更新</button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>配置与日志</strong>
+              <p>配置文件和日志都在同一个目录里，排查问题时用得着。</p>
+            </div>
+            <button class="btn-sm" onclick="post('/api/open-config')"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>打开配置文件夹</button>
+          </div>
+        </div>
+      </section>
     </div>
-  </details>
+  </div>
+
+  <!-- 页脚：配对状态（左）+ 切屏热键（中）+ 紧急断开（右）。
+       后两项是"出事了才会用到"的信息，放角落常驻可见但不抢注意力。 -->
+  <footer class="app-footer">
+    <span class="footer-connection" id="footerConnection">—</span>
+    <span class="footer-message" id="footerMessage"></span>
+    <span class="escape-hint"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd><span>紧急断开键鼠</span></span>
+  </footer>
 </div>
 
 <!-- 更新弹窗：顶栏「更新」点开。内容按 snap.update.phase 现算（update.js），
      这里只放骨架 —— 和摆位图一个路子，DOM 结构固定、文字每次轮询刷新。 -->
-<div class="modal-mask" id="updateModal" style="display:none">
-  <div class="modal glass" role="dialog" aria-label="更新">
+<div class="modal-mask" id="updateModal" style="display:none" onclick="if(event.target===this)closeModal('updateModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="更新">
     <div class="modal-head">
       <b id="updateTitle">更新</b>
       <button class="modal-x" onclick="closeUpdate()" aria-label="关闭">×</button>
     </div>
     <div id="updateBody"></div>
+  </div>
+</div>
+
+<!-- 帮助弹窗：顶栏问号图标点开。快捷键表里的热键位是活的 ——
+     render.js 每轮轮询把 snap.hotkey 写进 #helpHotkey（后端改键后
+     这里自动跟上，不写死）。「切换遇到问题？」转去排查弹窗。 -->
+<div class="modal-mask" id="helpModal" style="display:none" onclick="if(event.target===this)closeModal('helpModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="帮助">
+    <div class="modal-head">
+      <b>让设备协同起来</b>
+      <button class="modal-x" onclick="closeHelp()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>单屏切换和多屏共享可以一起使用。左侧四个页面只切换视图，各台设备仍按自己的布局工作。</p>
+      <div class="help-row"><span>切换显示器输入源</span><span class="keys" id="helpHotkey">—</span></div>
+      <div class="help-row"><span>紧急断开键鼠共享</span><span class="keys">Ctrl + Alt + Esc</span></div>
+      <div class="help-row"><span>摆放已选对端</span><span class="keys">方向键 / 拖动</span></div>
+      <div class="help-row"><span>把对端移回未摆位</span><span class="keys">Delete</span></div>
+      <div class="modal-note">方向键和 Delete 在点选一台对端后生效（它的卡片是能拖动的那张）。切屏快捷键由主程序全局注册，面板不是当前窗口时也有效。</div>
+      <div class="modal-actions">
+        <button onclick="closeHelp()">知道了</button>
+        <button class="ghost" onclick="closeHelp();openDiagnostics()">切换遇到问题？</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 排查弹窗：帮助弹窗里转来。画面切不动的四个最常见原因，
+     都是用户在自己机器上能核对的事；本机的实际检测结果在顶栏
+     「检测能否切换」。 -->
+<div class="modal-mask" id="diagModal" style="display:none" onclick="if(event.target===this)closeModal('diagModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="排查">
+    <div class="modal-head">
+      <b>切换遇到问题？</b>
+      <button class="modal-x" onclick="closeDiagnostics()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>画面在另一台电脑时，需要由对端发出切回指令。先确认对端在线，再检查显示器连接。</p>
+      <div class="help-row"><span>显示器菜单</span><span class="keys">开启 DDC/CI</span></div>
+      <div class="help-row"><span>显示器连线</span><span class="keys">优先 DP / HDMI 直连</span></div>
+      <div class="help-row"><span>另一台电脑</span><span class="keys">开机并运行 InputSwitch</span></div>
+      <div class="help-row"><span>双方配对码</span><span class="keys">完全一致</span></div>
+      <div class="modal-note">笔记本内置屏幕通常不支持 DDC/CI。顶栏「检测能否切换」给出的是本机的实际检测结果，以它为准。</div>
+      <div class="modal-actions">
+        <button onclick="closeDiagnostics()">返回工作台</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 管理输入源弹窗：工作台输入源条的「管理」点开（设计稿 ports 动作的
+     生产版）。改名 + 设为热键都在这儿；行由 renderPortsModal 按
+     snap.inputs 现算，轮询会重画它（"已设为热键"要点完就看到），但聚焦
+     输入框时让路（editingPorts，和 codeDirty / editingPort 同一套路）。 -->
+<div class="modal-mask" id="portsModal" style="display:none" onclick="if(event.target===this)closeModal('portsModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="管理显示器输入源">
+    <div class="modal-head">
+      <b>管理显示器输入源</b>
+      <button class="modal-x" onclick="closePortsModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>给输入口起一个好认的名字，或设为热键目标。</p>
+      <div class="ports-list" id="portsList"></div>
+      <div class="hint" id="portsNote" style="margin-top:12px"></div>
+      <div class="modal-actions">
+        <button onclick="closePortsModal()">取消</button>
+        <button class="primary" onclick="savePorts()">保存名称</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 扫描确认弹窗：顶栏「扫描输入口」点开。扫描真的会逐个切输入口
+     （probe.rs on_scan_ports：有对端在线且配对通畅才物理试探，否则
+     只汇总已知信息不切屏），屏幕可能黑几次 —— 先问一句再扫，别让
+     人莫名其妙看黑屏。设计稿 maintain('scan') 同款。 -->
+<div class="modal-mask" id="scanModal" style="display:none" onclick="if(event.target===this)closeModal('scanModal')">
+  <div class="modal glass" role="dialog" aria-modal="true" aria-label="扫描显示器输入源">
+    <div class="modal-head">
+      <b>扫描显示器输入口</b>
+      <button class="modal-x" onclick="closeModal('scanModal')" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>扫描会逐个尝试输入口，屏幕可能短暂变黑几次。请先保存正在编辑的内容。</p>
+      <div class="modal-note">扫描结束后会试着把画面切回本机输入口；没能切回时面板会告诉你怎么手动切回来。局域网里没有对端在线时只汇总已知信息，不切屏。</div>
+      <div class="modal-actions">
+        <button onclick="closeModal('scanModal')">暂不扫描</button>
+        <button class="primary" onclick="confirmScan()">开始扫描</button>
+      </div>
+    </div>
   </div>
 </div>
 

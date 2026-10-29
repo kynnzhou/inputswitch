@@ -49,6 +49,11 @@ pub struct Snapshot {
     pub own_value: u16,
     /// 上一次「重新检测显示器」的结论
     pub port_note: String,
+    /// 探测类维护动作（重新检测 / 扫描输入口 / 检测能否切换）是否正在跑。
+    /// 引擎线程串行执行，一个没完别接第二个 —— 面板据此禁用顶栏那三个钮，
+    /// 动作结束（含 panic）自动复位。设计稿 data-maintain 的同款状态。
+    #[serde(default)]
+    pub maint_busy: bool,
     pub autostart: bool,
     pub clipboard: bool,
     pub inbox: String,
@@ -62,6 +67,10 @@ pub struct Snapshot {
     pub inputs_hidden: Vec<InputView>,
     /// 正在进行的传输，空串表示空闲
     pub transfer: String,
+    /// 传输任务清单（本机发起）：进行中 + 最近历史，新的在前。
+    /// 由 `transfer::tasks` 注册表供给，和 `update` 字段同一个嵌法。
+    #[serde(default)]
+    pub transfers: Vec<crate::transfer::tasks::TaskView>,
     pub kvm: KvmView,
     /// 共用键鼠要的两个系统权限，**由 GUI 进程自己判断**
     ///
@@ -213,9 +222,25 @@ pub enum Action {
     /// 选文件发给对端。多机时必须点名 —— 不带 `node` 时按
     /// "握着键鼠的那台 > 唯一在线那台" 兜底，多台又没会话就直接拒绝。
     SendFiles(Option<String>),
+    /// 选**文件夹**发给对端。选路规则同 `SendFiles`；目录在后端递归展开。
+    SendFolder(Option<String>),
+    /// 发一个临时生成的测试文件（连通性自检）。文件发完即删。
+    SendTest(Option<String>),
+    /// 传输列表控制。id 是注册表里的任务号；入口只校验格式，
+    /// "任务还在不在、是不是可操作的阶段"由注册表自己答。
+    TransferPause(u64),
+    TransferResume(u64),
+    TransferCancel(u64),
+    TransferRetry(u64),
     /// 弹出原生录制窗口让用户按一下新的组合键。
     /// 放不到网页里做：网页只收得到"焦点在页面上"的按键，按不出全局热键。
     RecordHotkey,
+    /// 把切屏热键恢复成默认组合键（`ctrl+alt+s`）。
+    ///
+    /// 录制窗只"写新值"，没有反悔入口 —— 用户录了个和其他软件冲突的组合，
+    /// 以前只能手改 config.json。这个动作重新注册默认键并保存，
+    /// 和录制成功那条路（ui.rs 的 apply_hotkey + save）走同一套机制。
+    ResetHotkey,
     /// 在文件管理器里打开配置目录
     OpenConfigDir,
     /// 本机读不到 DDC（画面在对面），请对端替我把画面切到指定口
@@ -487,6 +512,10 @@ fn handle(
             dispatch(Action::RecordHotkey);
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
+        ("POST", "/api/hotkey-reset") => {
+            dispatch(Action::ResetHotkey);
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
         ("POST", "/api/open-config") => {
             dispatch(Action::OpenConfigDir);
             respond_json(&mut stream, r#"{"ok":true}"#)
@@ -504,6 +533,40 @@ fn handle(
             dispatch(Action::SendFiles(param_str(&query, "node")));
             respond_json(&mut stream, r#"{"ok":true}"#)
         }
+        // 选文件夹 / 发测试文件：和 /api/send 同一个选路规则（node 可省）
+        ("POST", "/api/send-folder") => {
+            dispatch(Action::SendFolder(param_str(&query, "node")));
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        ("POST", "/api/send-test") => {
+            dispatch(Action::SendTest(param_str(&query, "node")));
+            respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        // 传输列表控制：一个入口四个动作，和 /api/update 同模式。
+        // 阶段合法性由注册表自己判（返回 false 时前端看到的就是"点了没反应"——
+        // 那种任务本就不可操作，比假回 ok:true 诚实）。
+        ("POST", "/api/transfer") => match (param_str(&query, "action").as_deref(), param_u64(&query, "id")) {
+            (Some("pause"), Some(id)) => {
+                dispatch(Action::TransferPause(id));
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            (Some("resume"), Some(id)) => {
+                dispatch(Action::TransferResume(id));
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            (Some("cancel"), Some(id)) => {
+                dispatch(Action::TransferCancel(id));
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            (Some("retry"), Some(id)) => {
+                dispatch(Action::TransferRetry(id));
+                respond_json(&mut stream, r#"{"ok":true}"#)
+            }
+            _ => respond_json(
+                &mut stream,
+                r#"{"ok":false,"error":"action 只能是 pause/resume/cancel/retry，且要带数字 id"}"#,
+            ),
+        },
         ("POST", "/api/inbox") => {
             dispatch(Action::ChooseInbox);
             respond_json(&mut stream, r#"{"ok":true}"#)
@@ -695,6 +758,10 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn param_u16(query: &str, key: &str) -> Option<u16> {
+    param_str(query, key)?.parse().ok()
+}
+
+fn param_u64(query: &str, key: &str) -> Option<u64> {
     param_str(query, key)?.parse().ok()
 }
 
