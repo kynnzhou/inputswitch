@@ -61,7 +61,35 @@ impl Ui {
             Action::RecordHotkey => self.on_record_hotkey(),
             Action::ResetHotkey => self.on_reset_hotkey(),
             Action::OpenConfigDir => self.on_open_config_dir(),
+            Action::WindowCtl(cmd) => self.on_window_ctl(cmd),
             _ => {}
+        }
+    }
+
+    /// 自绘标题栏的窗口操作。全部在主线程做 —— 窗口对象归主线程所有，
+    /// 面板请求是从 HTTP 线程转过来的，走的就是 `UserEvent::Panel` 那条路。
+    ///
+    /// 拖拽和缩放都是"发一条消息给系统，然后由系统的循环接管到松手"，
+    /// 调用本身立刻返回，不会把事件循环卡住。
+    pub(super) fn on_window_ctl(&mut self, cmd: crate::panel::WindowCmd) {
+        use crate::panel::WindowCmd;
+
+        let Some(win) = self.panel_win.as_ref() else {
+            return;
+        };
+        match cmd {
+            WindowCmd::Drag => win.drag(),
+            WindowCmd::Minimize => win.minimize(),
+            WindowCmd::ToggleMaximize => win.toggle_maximize(),
+            WindowCmd::Resize(dir) => win.resize(dir),
+            WindowCmd::Close => {
+                // 和系统 ✕ 同一条路（ui.rs 的 CloseRequested 分支）：
+                // 先藏起来，标记待释放，下一轮 tick 里真正 drop。
+                // 不在这里直接 drop 是因为窗口回调里自毁会留下悬空引用 ——
+                // WebView 还在往一个已经没了的 HWND 里画。
+                win.hide();
+                self.panel_stale = true;
+            }
         }
     }
 }

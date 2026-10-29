@@ -128,6 +128,13 @@ pub(super) static HAS_DISPLAY: AtomicBool = AtomicBool::new(false);
 /// panic，走 Drop）复位，快照每轮轮询读它。
 pub(super) static MAINT_BUSY: AtomicBool = AtomicBool::new(false);
 
+/// 面板窗口现在是不是最大化态。
+///
+/// 窗口归主线程，快照却由工作线程写，所以用一个原子位过桥（和 MAINT_BUSY
+/// 同一套路）。主线程收到 `WindowEvent::Resized` 时读一次写进来 —— 最大化
+/// 态会被 Win+↑、双击拖拽区、系统菜单改掉，光靠点按钮自己记记不准。
+pub(super) static PANEL_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
 enum Command {
     /// 切屏，并且如果键鼠开着就跟过去（正常路径）
     SwitchRaw { name: String, value: u16 },

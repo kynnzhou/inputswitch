@@ -5,6 +5,17 @@
 //! 两者都由系统自带，不额外打包内核，安装包不会因此变大。
 //!
 //! 窗口对象跟着程序活，用户点关闭只是隐藏，下次点菜单是秒开，不用重新加载。
+//!
+//! Windows 上窗口是**无边框**的：系统那条款式老旧的标题栏去掉，换成页面里
+//! 自绘的一条（品牌 + 更新/帮助 + 最小化/最大化/关闭）。macOS 保留系统红绿灯
+//! —— 那边三个钮要处理 hover 三色和拖拽，自绘收益低。
+//!
+//! 无边框带来一个麻烦：tao 的八向 hit-test 写在**顶层窗口**的 WndProc 里，
+//! 而 WebView2 是铺满客户区的子窗口，鼠标消息先落到它身上，父窗口根本收不到
+//! （`probe` 实测客户区四边的 WindowFromPoint 全返回 Chrome_RenderWidgetHostHWND）。
+//! 所以拖拽和缩放不能指望系统，得由页面主动喊一声 —— `drag()` / `resize()`
+//! 就是那两个入口，走的都是 tao 现成的 API（内部发 WM_NCLBUTTONDOWN），
+//! 之后系统接管到松手，和点系统标题栏没区别。
 
 #[cfg(any(target_os = "macos", windows))]
 mod imp {
@@ -16,6 +27,10 @@ mod imp {
 
     const WIDTH: f64 = 820.0;
     const HEIGHT: f64 = 840.0;
+
+    /// 这个平台的窗口是不是自绘边框。编译期定死，前端靠 URL 里的
+    /// `?frame=none` 知道自己该不该画那条标题栏和三个窗口钮。
+    const SELF_DRAWN_FRAME: bool = cfg!(windows);
 
     pub struct Panel {
         // 字段顺序不能改：Rust 按声明顺序 drop，WebView 必须先于 Window 释放，
@@ -34,13 +49,25 @@ mod imp {
             title: &str,
         ) -> Result<Self, String> {
             let (width, height) = fit_screen(target);
-            let window = WindowBuilder::new()
+            let mut builder = WindowBuilder::new()
                 .with_title(title)
                 .with_inner_size(LogicalSize::new(width, height))
                 .with_min_inner_size(LogicalSize::new(600.0, 520.0))
-                .with_visible(false)
+                .with_visible(false);
+            #[cfg(windows)]
+            {
+                // 只去掉系统标题栏，不动 resizable：tao 保留四边缩放能力，
+                // 只是那条分支要靠页面主动调 resize() 才会跑到（见模块注释）。
+                builder = builder.with_decorations(false);
+            }
+            let window = builder
                 .build(target)
                 .map_err(|e| format!("建窗口失败：{e}"))?;
+
+            // 圆角必须在 show 之前打：DWM 属性是"下次合成时用"，show 之后再设
+            // 会先闪出一帧直角再变圆。
+            #[cfg(windows)]
+            round_corners(&window);
 
             center(&window, width, height);
 
@@ -48,8 +75,13 @@ mod imp {
                 position: Position::Logical(WryPos::new(0.0, 0.0)),
                 size: Size::Logical(WrySize::new(width, height)),
             };
+            let url = if SELF_DRAWN_FRAME {
+                format!("http://127.0.0.1:{port}/?frame=none")
+            } else {
+                format!("http://127.0.0.1:{port}/")
+            };
             let webview = wry::WebViewBuilder::new()
-                .with_url(format!("http://127.0.0.1:{port}/"))
+                .with_url(url)
                 .with_bounds(rect)
                 .with_background_color((244, 245, 247, 255))
                 .build_as_child(&window)
@@ -63,6 +95,13 @@ mod imp {
         }
 
         pub fn show(&self) {
+            // 窗口是在 with_visible(false) 下建的，系统会把它的初始 placement
+            // 记成最小化；直接 set_visible(true) 出来的是一个缩在任务栏上的
+            // 159×27 空壳（`INPUTSWITCH_OPEN_PANEL=1` 自测路径实测是这样，
+            // 托盘路径因为隔了几百毫秒才 show 所以没事）。先还原再显示。
+            if self.window.is_minimized() {
+                self.window.set_minimized(false);
+            }
             self.window.set_visible(true);
             self.window.set_focus();
             // 托盘程序是 LSUIElement（没有 Dock 图标），光 set_focus 抢不到前台，
@@ -75,6 +114,51 @@ mod imp {
 
         pub fn hide(&self) {
             self.window.set_visible(false);
+        }
+
+        /// 最小化到任务栏。
+        pub fn minimize(&self) {
+            self.window.set_minimized(true);
+        }
+
+        /// 最大化 / 还原。tao 只有 set_maximized（没有 toggle），状态自己翻。
+        pub fn toggle_maximize(&self) {
+            let now = self.window.is_maximized();
+            self.window.set_maximized(!now);
+        }
+
+        /// 现在是不是最大化态。面板窗口收到 Resized 时读一次写进快照，
+        /// 前端据此把「□」换成「❐」（Win+↑、双击拖拽区、系统菜单都会改这个态，
+        /// 光靠点击事件自己记是记不准的）。
+        pub fn is_maximized(&self) -> bool {
+            self.window.is_maximized()
+        }
+
+        /// 跟着鼠标拖窗口。发一条 WM_NCLBUTTONDOWN(HTCAPTION) 给系统，
+        /// 之后由系统的移动循环接管到松手 —— 和拖原生标题栏完全一样，
+        /// 边缘吸附、Win+方向键、双击最大化全都自带。
+        pub fn drag(&self) {
+            let _ = self.window.drag_window();
+        }
+
+        /// 从某条边/角开始缩放，同样交给系统的尺寸循环。
+        ///
+        /// 方向用字符串传：`panel.rs` 不引 tao 的类型，只做 HTTP 参数到
+        /// 字符串的转发，映射留在这里。
+        pub fn resize(&self, dir: &str) {
+            use tao::window::ResizeDirection as D;
+            let direction = match dir {
+                "n" => D::North,
+                "s" => D::South,
+                "e" => D::East,
+                "w" => D::West,
+                "ne" => D::NorthEast,
+                "nw" => D::NorthWest,
+                "se" => D::SouthEast,
+                "sw" => D::SouthWest,
+                _ => return,
+            };
+            let _ = self.window.drag_resize_window(direction);
         }
 
         pub fn owns(&self, id: WindowId) -> bool {
@@ -135,6 +219,38 @@ mod imp {
     #[cfg(not(target_os = "macos"))]
     fn activate_app() {}
 
+    /// Win11 的圆角。无边框窗口 DWM 默认给直角，属性 33（
+    /// DWMWA_WINDOW_CORNER_PREFERENCE）= 2 才是圆角。Win10 会返回失败，
+    /// 那里本来也没有圆角，忽略即可。
+    #[cfg(windows)]
+    fn round_corners(window: &Window) {
+        use std::ffi::c_void;
+        use tao::platform::windows::WindowExtWindows;
+
+        #[link(name = "dwmapi")]
+        extern "system" {
+            fn DwmSetWindowAttribute(
+                hwnd: isize,
+                attr: u32,
+                value: *const c_void,
+                size: u32,
+            ) -> i32;
+        }
+
+        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+        const DWMWCP_ROUND: u32 = 2;
+
+        let preference: u32 = DWMWCP_ROUND;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                window.hwnd(),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+
     /// 窗口别比屏幕还高：13 寸笔记本可用高度不到 900，840 的窗会被 Dock 吃掉底部。
     fn fit_screen<T>(target: &EventLoopWindowTarget<T>) -> (f64, f64) {
         let available = target
@@ -183,6 +299,13 @@ mod imp {
         }
         pub fn show(&self) {}
         pub fn hide(&self) {}
+        pub fn minimize(&self) {}
+        pub fn toggle_maximize(&self) {}
+        pub fn is_maximized(&self) -> bool {
+            false
+        }
+        pub fn drag(&self) {}
+        pub fn resize(&self, _dir: &str) {}
         pub fn owns(&self, _id: WindowId) -> bool {
             false
         }

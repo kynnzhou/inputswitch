@@ -54,6 +54,10 @@ pub struct Snapshot {
     /// 动作结束（含 panic）自动复位。设计稿 data-maintain 的同款状态。
     #[serde(default)]
     pub maint_busy: bool,
+    /// 面板窗口现在是不是最大化（自绘标题栏据此把「□」换成「❐」）。
+    /// 浏览器打开时永远是 false —— 那里没有窗口可最大化。
+    #[serde(default)]
+    pub maximized: bool,
     pub autostart: bool,
     pub clipboard: bool,
     pub inbox: String,
@@ -199,6 +203,24 @@ pub struct InputView {
     pub verified: bool,
 }
 
+/// 自绘标题栏那三个窗口钮 + 拖拽/缩放要的动作。
+///
+/// 只有 Windows 的无边框窗口会用到（页面靠 `?frame=none` 判断）；
+/// macOS 保留系统红绿灯，这些动作不会被请求，但留着不碍事。
+#[derive(Clone, Copy, Debug)]
+pub enum WindowCmd {
+    /// 按住标题栏拖动窗口（系统接管到松手）
+    Drag,
+    Minimize,
+    /// 最大化 / 还原（同一个按钮，状态由窗口自己翻）
+    ToggleMaximize,
+    /// 关闭面板。走的是和系统 ✕ 同一条路：先藏起来再等主线程释放，
+    /// 下次点托盘重开 —— 否则会留下一个没人管的窗口
+    Close,
+    /// 从某条边/角缩放，`dir` 是 `n` / `s` / `e` / `w` / `ne` / `nw` / `se` / `sw`
+    Resize(&'static str),
+}
+
 /// 面板能触发的动作。tray 侧负责翻译成内部命令。
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -296,6 +318,9 @@ pub enum Action {
     /// 忽略这个版本。**版本号由后端从当前状态取**，不信客户端传的 ——
     /// 否则能忽略一个压根不存在的版本。再点一次 = 撤销忽略。
     UpdateDismiss,
+    /// 自绘标题栏的窗口操作（拖拽 / 最小化 / 最大化 / 关闭 / 缩放）。
+    /// 必须回主线程做：窗口对象归主线程所有。
+    WindowCtl(WindowCmd),
 }
 
 pub type State = Arc<Mutex<Snapshot>>;
@@ -515,6 +540,36 @@ fn handle(
         ("POST", "/api/hotkey-reset") => {
             dispatch(Action::ResetHotkey);
             respond_json(&mut stream, r#"{"ok":true}"#)
+        }
+        // 自绘标题栏：拖拽 / 最小化 / 最大化 / 关闭 / 八向缩放。
+        // 一个端点收全部，因为它们的命运一样 —— 都是"把这条请求转成一次
+        // 窗口操作"，没有状态要回，面板不需要等结果。
+        ("POST", "/api/window") => {
+            let command = match param_str(&query, "action").as_deref() {
+                Some("drag") => Some(WindowCmd::Drag),
+                Some("min") => Some(WindowCmd::Minimize),
+                Some("max") => Some(WindowCmd::ToggleMaximize),
+                Some("close") => Some(WindowCmd::Close),
+                Some("resize") => match param_str(&query, "dir").as_deref() {
+                    Some("n") => Some(WindowCmd::Resize("n")),
+                    Some("s") => Some(WindowCmd::Resize("s")),
+                    Some("e") => Some(WindowCmd::Resize("e")),
+                    Some("w") => Some(WindowCmd::Resize("w")),
+                    Some("ne") => Some(WindowCmd::Resize("ne")),
+                    Some("nw") => Some(WindowCmd::Resize("nw")),
+                    Some("se") => Some(WindowCmd::Resize("se")),
+                    Some("sw") => Some(WindowCmd::Resize("sw")),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match command {
+                Some(cmd) => {
+                    dispatch(Action::WindowCtl(cmd));
+                    respond_json(&mut stream, r#"{"ok":true}"#)
+                }
+                None => respond_json(&mut stream, r#"{"ok":false,"error":"未知的窗口动作"}"#),
+            }
         }
         ("POST", "/api/open-config") => {
             dispatch(Action::OpenConfigDir);

@@ -30,7 +30,7 @@
    设置页从「高级」折叠卡改成三个常驻选项卡（快捷键 / 启动与恢复 /
    外观与关于），版式移植设计稿的 settings-tabs / setting-row；
    剪贴板同步从设置页搬到工作台共用键鼠卡下方 —— 共享类控件住工作台，
-   设置页不复制。所有既有元素 ID 不变，render.js 零改动。 */
+   设置页与工作台提供同一偏好的入口，由 render.js 同步状态。 */
 :root {
   color-scheme: light;
   /* ── 设计令牌（移植自 DESIGN.md / design/interactive/app.css :root）── */
@@ -108,6 +108,11 @@
   --faint: #8d96aa;
 }
 * { box-sizing: border-box; }
+/* 应用窗口统一用 overlay 滚动条：任何一层的滚动容器都不画常驻细条 ——
+   常驻灰条是浏览器窗口最容易露馅的地方。以前只对 body 生效，真正在滚的
+   是 .view-container / .modal / 日志区那些内层容器，所以窗口里一直露着一条。 */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; }
 html, body { min-height: 100%; }
 /* 13px 是 macOS 应用的正文尺寸（14px 是网页的）。字体栈跟设计稿一致。 */
 body {
@@ -115,11 +120,7 @@ body {
   font: 13px/1.5 "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   background: var(--stage);
   -webkit-font-smoothing: antialiased;
-  /* 滚动条不常驻：macOS 是 overlay 滚动条，静止时看不见。
-     常驻的细条是浏览器窗口最容易露馅的地方。 */
-  scrollbar-width: none;
 }
-body::-webkit-scrollbar { width: 0; height: 0; }
 button, input, select { font: inherit; color: inherit; }
 h1, h2, h3, p { margin: 0; }
 [hidden] { display: none !important; }
@@ -134,17 +135,74 @@ h1, h2, h3, p { margin: 0; }
 .app {
   height: 100dvh; min-height: 520px;
   display: grid; grid-template-columns: 178px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: 49px minmax(0, 1fr) 32px;
   overflow: hidden; background: var(--sidebar);
 }
 .app.compact-nav { grid-template-columns: 65px minmax(0, 1fr); }
+/* 侧栏贯通前两行：品牌进侧栏顶部，右边那条顶栏只属于主区。
+   以前 titlebar 是 grid-column: 1 / -1 的通栏条 —— 去掉系统标题栏之后
+   仍然是一条横栏压在侧栏上方，看起来还是"两条"，一体化就是差这一步。
+   现在左列从顶到底是一整块「窗外」，右列是一张从顶栏开始的纸。 */
+.sidebar { grid-column: 1; grid-row: 1 / 3; }
+.app-titlebar {
+  grid-column: 2; grid-row: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 0 4px 0 17px;
+  background: var(--surface);
+  border-left: 1px solid var(--line); border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line); border-radius: 12px 0 0 0;
+}
+/* 品牌区与右侧顶栏同高（49px）、不加下边框：侧栏读成一列贯通到底，
+   主区读成一张纸。窄档只留 logo。 */
+.side-brand { height: 49px; display: flex; align-items: center; gap: 9px; font-size: 14px; letter-spacing: -.025em; }
+.side-brand img { border-radius: 6px; flex: none; }
+.side-brand strong { font-weight: 600; }
+.compact-nav .side-brand { justify-content: center; padding-inline: 0; }
+.compact-nav .side-brand strong { display: none; }
+.titlebar-actions { display: flex; align-items: center; gap: 10px; }
+/* 页名：顶栏左侧的内容锚点。不加粗不放大 —— 主内容区已经有 h1 页头，
+   这里只是让人一眼看出"我在哪一页"，不需要再抢一次注意力。 */
+.titlebar-heading { font-size: 12px; color: var(--muted); letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 自绘的窗口三键。只在无边框的原生窗口里出现（core.js 按 ?frame=none 放出来），
+   关闭钮 hover 用系统的那个红 —— 这是全站唯一该硬编码色值的语义。 */
+/* 尺寸对齐系统 caption 按钮的点击感（Win11 是 46×32）。原来 32×30 缩在
+   顶栏右角，比旁边的「更新」还小一圈，点起来要瞄。宽度给 40 是折中：
+   保留本项目卡片风的圆角，又不至于像原生那样一路贴到窗口右上角。 */
+.win-controls { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
+.win-btn {
+  width: 44px; height: 34px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; color: var(--muted); cursor: default;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.win-btn .icon { width: 18px; height: 18px; }
+.win-btn:hover { background: var(--subtle); color: var(--text); }
+.win-btn.win-close:hover { background: #c42b1c; color: #fff; }
+/* 窗口边缘的缩放热区（5px / 角上 10px）。透明、只在 frame=none 时挂出来：
+   无边框窗口的鼠标消息全被 WebView2 子窗口吃掉，系统那套 hit-test 到不了
+   顶层窗口，所以由页面自己贴一圈条，按下就喊后端从那条边开始拖。 */
+.frame-handles { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
+.frame-handles .fh { position: absolute; pointer-events: auto; }
+.fh-n { top: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.fh-s { bottom: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.fh-w { left: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.fh-e { right: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.fh-nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.fh-ne { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+.fh-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+.fh-se { bottom: 0; right: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.workspace-label { font-size: 11px; color: var(--muted); padding: 0 12px 14px; }
+.sidebar-help { width: 100%; justify-content: flex-start; gap: 11px; border: 0; background: transparent; padding: 9px 12px; color: var(--muted); font-size: 12px; }
+.compact-nav .workspace-label, .compact-nav .sidebar-help span { display: none; }
+.compact-nav .sidebar-help { justify-content: center; padding-inline: 8px; }
 
 /* 侧栏：导航 + 底部本机信息。底色用设计稿 --sidebar（比主区 surface
    退一档、比画布 stage 亮一档）—— "导航在窗外，内容在纸上"。 */
 .sidebar {
-  background: var(--sidebar); padding: 23px 12px 12px;
+  background: var(--sidebar); padding: 0 12px 12px;
   display: flex; flex-direction: column; min-height: 0; gap: 4px;
 }
+/* 品牌区顶到窗口上沿，所以工作空间标签不再需要额外上边距 */
+.sidebar .workspace-label { margin-top: 2px; }
 .main-nav { display: flex; flex-direction: column; gap: 7px; }
 .nav-item {
   justify-content: flex-start; gap: 11px; min-height: 40px; padding: 9px 12px;
@@ -186,17 +244,29 @@ h1, h2, h3, p { margin: 0; }
 .compact-nav .view-container { padding: 20px 23px 16px; }
 .compact-nav .statusline { gap: 6px 13px; }
 
-/* 主区：命令栏钉顶，内容区自己滚。 */
+/* 主区：命令栏钉顶，内容区自己滚。
+   圆角和上边框让给了 .app-titlebar —— 纸的顶边现在是那条顶栏，
+   这里再画一次会出现双线和两个圆角。 */
 .app-main {
+  grid-column: 2; grid-row: 2;
   min-width: 0; min-height: 0; display: flex; flex-direction: column;
   background: var(--surface); border-left: 1px solid var(--line);
-  border-radius: 12px 0 0 0; overflow: hidden;
+  overflow: hidden;
 }
 .command-bar, .topbar {
   flex: none; padding: 17px 24px 10px;
   background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .statusline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; }
+.command-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.command-top .statusline { min-width: 0; gap: 17px; }
+.command-top .stat { min-width: 0; }
+.command-top .stat .v { max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.command-top .stat + .stat { border-left: 1px solid var(--line); padding-left: 17px; }
+.connection-fact { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.connection-fact .dot { display: inline-block; box-shadow: none; width: 6px; height: 6px; }
+.maintenance-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.hotkey-hint { min-height: 26px; padding: 0; font-size: 11px; color: var(--muted); }
 .stat { display: flex; align-items: center; gap: 7px; }
 .stat .icon { width: 15px; height: 15px; color: var(--faint); }
 .stat .k { font-size: 11px; color: var(--muted); }
@@ -239,7 +309,12 @@ h1, h2, h3, p { margin: 0; }
 /* 内容区：四页只显示一页，内部滚。页与页之间用 gap 呼吸，
    组件自己的 margin-bottom 在这一层清零（否则 gap + margin 双倍）。 */
 .view-container { flex: 1; min-height: 0; overflow: auto; padding: 23px 26px 18px; }
-.page-view { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+/* height 用 min-height 而不是固定 100%：加了全局标题栏 + 页头之后，矮窗口
+   （820×620 档实测）内容自然高度会超过视口。固定 height:100% 的结果是
+   flex:1 的场景面板被压到 min-height:0（矮窗档还显式归零），标题被压进
+   内容区、本机名和「输入源」行叠在一起。min-height:100% + height:auto
+   让 page-view 至少占满、内容多则自己撑高，交给 .view-container 滚动。 */
+.page-view { display: flex; flex-direction: column; gap: 17px; height: auto; min-height: 100%; }
 .page-view.view-enter { animation: view-in 180ms var(--ease); }
 @keyframes view-in { from { transform: translateY(4px); } to { transform: translateY(0); } }
 .page-view .card, .page-view .banner, .page-view .grid2 { margin-bottom: 0; }
@@ -250,7 +325,7 @@ h1, h2, h3, p { margin: 0; }
 
 /* 页脚：通栏一条，11px 弱化字。左边配对状态、中间热键、右边紧急断开。 */
 .app-footer {
-  grid-column: 1 / -1; background: var(--sidebar);
+  grid-column: 1 / -1; grid-row: 3; background: var(--sidebar);
   display: flex; gap: 16px; align-items: center; padding: 0 14px;
   font-size: 11px; color: var(--muted); min-width: 0; min-height: 30px;
   border-top: 1px solid var(--line);
@@ -545,12 +620,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    协议里一条链路只有上下左右四个门之一，越界判定是四向掩码。 */
 .grid {
   display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 7px; margin: 12px auto 0; max-width: 520px;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px; margin: 0 auto; max-width: 460px; width: 100%; min-height: 174px; flex: 1;
   user-select: none; -webkit-user-select: none;
 }
 .grid .cell {
   border: 1px dashed var(--line-strong); border-radius: 7px;
-  padding: 7px 6px; min-height: 74px;
+  padding: 3px 5px; min-height: 0;
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 5px; font-size: 12px; text-align: center;
   transition: border-color .14s, background .14s;
@@ -560,7 +636,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   font-weight: 650;
 }
 .grid .cell.self small { color: var(--faint); font-weight: 400; font-size: 11px; }
-.grid .cell.corner { border-style: dashed; color: var(--faint); opacity: .45; }
+.grid .cell.corner { visibility: hidden; }
 .grid .cell.hit { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 .grid .cell.bad { border-color: var(--danger); border-style: solid; background: var(--danger-soft); }
 /* 选中一台对端后，空格子亮起来告诉用户"可以点了"（点击放置的第二半）。
@@ -641,6 +717,21 @@ html.dragging, html.dragging * {
 .settings-tabs button:hover { color: var(--text); }
 .settings-tabs button.selected { border-bottom-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .settings-panel { display: flex; flex-direction: column; }
+.settings-extra { color: var(--muted); font-size: 11px; padding-top: 8px; }
+.settings-extra summary { cursor: pointer; width: fit-content; }
+#deviceLayoutPane { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 10px; }
+#devicePairPane { flex: 1; min-height: 0; display: flex; }
+#kvmGridHint { margin: 6px 0; font-size: 11px; }
+#kvmFlash:empty { display: none; }
+#deviceLayoutPane .loosetray { margin: 0; padding: 6px 10px; width: 100%; max-width: none; }
+.handover-details { flex: none; padding: 0; }
+.device-list .device-row { min-height: 52px; }
+#deviceLayoutPane > :not(.grid) { flex: none; }
+#sceneSingle, #sceneMulti { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#sceneSingle > .scene-panel, #sceneMulti > .scene-panel { height: 100%; }
+.multi-topology .topology { min-height: 0; }
+.loosetray .screen { padding: 3px 7px; font-size: 11px; }
+.settings-page > .view-heading { margin-bottom: 17px; }
 /* 一行一设：左边说这是什么，右边放控件。行高 65px 跟设计稿一致 ——
    两行字（标题 + 说明）配一个开关，矮了挤、高了空。 */
 .setting-row {
@@ -1120,4 +1211,87 @@ html.dragging, html.dragging * {
    这里连过渡一起收掉，但 :hover 变色这类不带动画的反馈不受影响。 */
 :root.reduced-motion *, :root.reduced-motion *::before, :root.reduced-motion *::after {
   transition: none !important; animation: none !important;
+}
+
+/* Match the prototype's compact density after restoring its titlebar and page headings. */
+@media (max-height: 700px) {
+  .grid { min-height: 150px; }
+}
+@media (max-width: 950px) {
+  .command-top .connection-fact { display: none; }
+  /* 状态行和主切换钮同一行时，宽窗口下面板够宽看着舒服；一进窄档就该
+     先收状态行的呼吸，而不是让两端被裁 —— 主钮宽度是固定的，状态行
+     min-width:0 会被压到文字以下、溢出被 .app-main 的 overflow:hidden
+     切掉，实测 819 宽时首项本机名和末项「N 台在线」整段消失。 */
+  .command-top { gap: 10px; }
+  .command-top .statusline { gap: 9px; }
+  .command-top .stat + .stat { padding-left: 9px; }
+  .command-top .stat .v { max-width: 96px; }
+}
+@media (max-width: 720px) {
+  .command-top { flex-wrap: wrap; }
+  .command-top .primary { flex: 1 1 100%; justify-content: center; }
+}
+@media (max-width: 720px) {
+  .command-top .stat .v { max-width: 100px; }
+  .command-top .statusline { gap: 10px; }
+  .command-top .stat + .stat { padding-left: 10px; }
+  .hotkey-hint { display: none; }
+  .setting-ctrl { gap: 5px; }
+  .view-heading h1 { font-size: 21px; }
+}
+@media (max-height: 620px) {
+  .view-container, .compact-nav .view-container { padding-top: 14px; padding-bottom: 12px; }
+  .page-view { gap: 11px; }
+  .setting-row { min-height: 56px; padding-block: 9px; }
+  .settings-footnote { padding-top: 6px; }
+}
+@media (max-height: 550px) {
+  .view-heading p { display: none; }
+  .view-heading h1 { font-size: 20px; }
+  .topbar { padding-top: 10px; padding-bottom: 7px; }
+  .page-view { gap: 10px; }
+  .setting-row { min-height: 52px; padding-block: 8px; }
+  .setting-text p { margin-top: 2px; }
+  .command-top .primary { min-height: 33px; }
+  .topbar .nextstep { font-size: 11px; }
+  .settings-page > .view-heading { margin-bottom: 10px; }
+  .settings-page { gap: 0; }
+  .settings-tabs button { min-height: 29px; padding-bottom: 6px; }
+  .settings-footnote { font-size: 11px; }
+  .settings-extra { padding-top: 4px; }
+  #deviceLayoutPane { gap: 6px; }
+  .grid { min-height: 96px; }
+  #deviceLayoutPane { gap: 4px; }
+  .detail-heading h2 { font-size: 12px; }
+  #deviceLayoutPane .loosetray { padding-block: 3px; }
+  .placement-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 17px; }
+  .grid .screen { padding: 2px 4px; min-height: 24px; font-size: 11px; }
+  .grid .sideslot { display: none; }
+  .gridhint { margin: 0; font-size: 11px; }
+  .loosehead { margin-bottom: 3px; }
+  .selected-detail { display: none; }
+  .sharing-copy p { display: none; }
+  .sharing-item { padding-block: 2px; }
+  .source-strip { padding-block: 5px; }
+  .scene-panel-head { padding-top: 8px; }
+  .scene-panel-head .tag { padding-block: 0; }
+  .screen-flow { min-height: 90px; padding-block: 5px; }
+  .computer-display { height: 62px; }
+  .computer-name { margin-top: 10px; font-size: 11px; }
+  .computer-meta { margin-top: 0; }
+  .flow-connection { margin-bottom: 16px; }
+  .quick-transfer { padding-top: 8px; }
+  .quick-transfer button { min-height: 26px; }
+  .multi-explainer { display: none; }
+  .multi-topology { padding-block: 5px; }
+  .shared-screen-tray { min-height: 32px; padding-block: 3px; margin-bottom: 5px; }
+  .shared-screen-tray .screen { padding: 2px 4px; min-height: 24px; }
+  .command-top .stat .v { max-width: 95px; }
+  .view-heading .segmented { width: auto; }
+  .view-heading { flex-wrap: nowrap; }
+}
+@media (max-width: 520px) {
+  .command-top { flex-wrap: wrap; }
+  .command-top .primary { width: 100%; }
 }

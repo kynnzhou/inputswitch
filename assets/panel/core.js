@@ -124,6 +124,13 @@ function showPage(page) {
       else nav.removeAttribute('aria-current');
     }
   }
+  // 自绘标题栏左侧的页名：跟着导航走。取 nav-item 的 title —— 那是给
+  // 图标栏档的悬停提示，正好就是页面全名，不用再维护第二份页面名映射。
+  const heading = document.getElementById('titlebarPage');
+  if (heading) {
+    const nav = document.getElementById('nav-' + page);
+    heading.textContent = (nav && nav.title) || '';
+  }
   // 入场动画：先摘掉再挂回去，否则连着点同一页不会重播。
   // offsetWidth 强制一次回流，动画才重新起跑（浏览器里的标准做法；
   // DOM 桩里这个属性是 undefined，void 掉不影响）。
@@ -203,7 +210,7 @@ function updateNavCompact() {
 /// 快捷键 / 启动与恢复 / 外观与关于。和 showPage 同一个路子：面板写死在
 /// index.html 里，切 tab 只换 hidden 和选中态。aria-selected 跟着挪
 /// （读屏软件靠它认"当前在哪格"）。共享类控件（共用键鼠、光标速度、
-/// 剪贴板同步）按同一逻辑住工作台，设置页不复制。
+/// 剪贴板同步）与工作台共用后端状态，轮询同时刷新两处开关。
 const SETTINGS_TABS = ['shortcut', 'startup', 'appearance'];
 
 function showSettingsTab(tab) {
@@ -339,3 +346,77 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   closeModal(id);
 });
+
+/* ── 自绘窗口边框 ──────────────────────────────────────────────────
+   只有无边框的原生窗口会带 ?frame=none（panelwin.rs 拼上去的）。浏览器里
+   打开、桩服务截图时没有这个参数 —— 三键不出现、拖拽热区不挂，因为那里
+   根本没有窗口可以动，画出来就是假按钮。
+
+   拖拽和缩放为什么要绕后端一圈：WebView2 是铺满客户区的子窗口，鼠标消息
+   全落在它身上，tao 写在顶层窗口里的 WM_NCHITTEST 收不到（探针实测：客户区
+   四边的 WindowFromPoint 全返回 Chrome_RenderWidgetHostHWND，顶层一次都
+   没被问到）。所以页面只负责判断"这一下是按在标题栏还是边框上"，真正动手
+   交给后端调 window.drag_window() / drag_resize_window() —— 之后由系统的
+   移动 / 尺寸循环接管到松手，边缘吸附、Win+方向键、双击最大化全都和拖
+   原生标题栏一样。 */
+const SELF_DRAWN_FRAME = (function () {
+  try {
+    return new URLSearchParams(location.search).get('frame') === 'none';
+  } catch (e) {
+    return false;   // 桩环境里没有 location，当成浏览器打开
+  }
+})();
+
+let frameReady = false;
+
+/// 请后端做一次窗口操作。action 是 drag / min / max / close / resize，
+/// resize 时带方向（n / s / e / w / ne / nw / se / sw）。
+function windowCtl(action, dir) {
+  if (!SELF_DRAWN_FRAME) return;
+  const query = '/api/window?action=' + encodeURIComponent(action)
+    + (dir ? '&dir=' + encodeURIComponent(dir) : '');
+  fetch(query, { method: 'POST' }).catch(() => {});
+}
+
+/// 把三键和边缘热区挂出来，并接上拖拽。只跑一次。
+function initFrame() {
+  if (!SELF_DRAWN_FRAME || frameReady) return;
+  frameReady = true;
+
+  const controls = document.getElementById('winControls');
+  if (controls) controls.hidden = false;
+  const handles = document.getElementById('frameHandles');
+  if (handles) handles.hidden = false;
+
+  // 标题栏拖拽：从空白处按下才拖。按钮、输入框、折叠标题上按下照旧是点它
+  // —— 否则点「更新」会变成拖窗口。
+  // 按 ID 取而不是 querySelector('.app-titlebar')：面板自测的 DOM 桩里
+  // querySelector 恒返回 null（壳层逻辑一律走 getElementById），用类选择器
+  // 等于把这段绑定排除了测试。
+  const bar = document.getElementById('appTitlebar');
+  if (bar) {
+    bar.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target && e.target.closest
+        && e.target.closest('button, a, input, select, textarea, summary, [contenteditable]')) return;
+      e.preventDefault();
+      windowCtl('drag');
+    });
+  }
+
+  // 八向缩放热区
+  if (handles) {
+    handles.addEventListener('mousedown', function (e) {
+      const dir = e.target && e.target.dataset ? e.target.dataset.dir : '';
+      if (!dir || e.button !== 0) return;
+      e.preventDefault();
+      windowCtl('resize', dir);
+    });
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initFrame);
+} else {
+  initFrame();
+}

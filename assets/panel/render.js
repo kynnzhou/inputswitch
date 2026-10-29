@@ -230,11 +230,13 @@ function renderWorkspaceScene() {
   // 共享条：开关态 + 一句状态文案（设计稿 sharing-strip 的 copy）
   const k = snap.kvm || {};
   flip('kvmSwitch', k.on);
+  flip('settingsKvmSwitch', k.on);
   const kc = document.getElementById('kvmCopy');
   if (kc) kc.textContent = k.on
     ? (isMulti ? '鼠标推到边缘即可跨屏' : '随画面切换，自动交接')
     : '已暂停，键鼠留在本机';
   flip('clipBtn', snap.clipboard);
+  flip('settingsClipSwitch', snap.clipboard);
   const cc = document.getElementById('clipCopy');
   if (cc) cc.textContent = snap.clipboard ? '文字只同步到当前使用的设备' : '已关闭，保留各自的剪贴板';
 }
@@ -300,6 +302,7 @@ function render() {
   document.getElementById('navNode').textContent = snap.node || '';
   renderHeader();
   renderUpdate();
+  renderWindowControls();
 
   // P4：场景警示（设计稿 sceneAlert 的生产分支）取代配对横幅 ——
   // 六种"现在连不上/切不了"各带一个直达动作；正常状态页脚说。
@@ -363,8 +366,7 @@ function render() {
       ? '<span class="arrow">→</span> 本机读不到这块屏，切回要由正在显示画面的那台来发指令。'
       : '<span class="arrow">→</span> 对端不在线，画面暂时切不回来。';
   } else if (tgt) {
-    main.innerHTML = icon('swap') + '<span>切到 ' + esc(tgt.label)
-      + (kvmFollowing() ? '（键鼠跟过去）' : '') + '</span>';
+    main.innerHTML = icon('swap') + '<span>切换到 ' + esc(tgt.label) + '</span>';
     main.dataset.action = 'local';
     main.dataset.value = tgt.value;
     main.dataset.name = tgt.name || '';
@@ -381,6 +383,9 @@ function render() {
     step.innerHTML = '<span class="arrow">→</span> 扫描一次可以确认别的口上有没有主机。';
   }
 
+  // 正常连接时共享条已解释键鼠跟随，提示保留在按钮上；异常仍常驻说明下一步。
+  main.title = step.textContent;
+  step.hidden = !!(snap.has_display && tgt && peer && snap.support && snap.support.startsWith('✓'));
   // P4：工作台场景（单屏 / 多屏）。renderKvm 在末尾会补摆位图的数据。
   renderWorkspaceScene();
 
@@ -417,6 +422,8 @@ function render() {
     statusLine.style.display = statusLine.textContent ? '' : 'none';
   }
   document.getElementById('hotkey').textContent = snap.hotkey || '—';
+  const commandHotkey = document.getElementById('commandHotkey');
+  if (commandHotkey) commandHotkey.textContent = snap.hotkey || '—';
   // 帮助弹窗里的热键位跟着同一份值走（后端改键后两边一起变，不写死）
   const helpHotkey = document.getElementById('helpHotkey');
   if (helpHotkey) helpHotkey.textContent = snap.hotkey || '—';
@@ -756,4 +763,23 @@ function renderTransfers() {
 // 而且 role 在 v0.6.49 之后已经降级成提示，判据跟 do_switch 不一致。
 function kvmFollowing() {
   return !!(snap && snap.kvm && snap.kvm.will_follow);
+}
+
+/// 自绘标题栏的最大化钮：图标跟着快照里的窗口态翻面。
+///
+/// 最大化态不是只有这个钮能改 —— Win+↑、双击标题栏、系统窗口菜单都会动它，
+/// 自己记一个布尔值一定会和现实对不上，所以认后端那个字段（主线程每次
+/// Resized 重新读一次窗口）。只有 frame=none 的原生窗口里这颗钮才存在，
+/// 浏览器打开时取不到元素，直接跳过。
+function renderWindowControls() {
+  const btn = document.getElementById('winMax');
+  if (!btn || typeof btn.querySelector !== 'function') return;
+  const use = btn.querySelector('use');
+  if (!use || typeof use.getAttribute !== 'function') return;
+  const want = snap.maximized ? '#i-win-restore' : '#i-win-max';
+  if (use.getAttribute('href') === want) return;
+  use.setAttribute('href', want);
+  const label = snap.maximized ? '还原' : '最大化';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
 }

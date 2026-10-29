@@ -22,7 +22,7 @@ use super::send::start_send;
 use super::{
     kvm_now, parse_port, Command, Ui, UserEvent, ID_PANEL, ID_PEER, ID_PEER_FILE, ID_PEER_HAND,
     ID_PEER_SIDE, ID_SWITCH, MENU_ASK_BACK, MENU_KVM, MENU_KVM_HOP, MENU_KVM_MODE, MENU_KVM_SIDE,
-    MENU_QUIT, MENU_RESTART,
+    MENU_QUIT, MENU_RESTART, PANEL_MAXIMIZED,
 };
 
 impl Ui {
@@ -33,6 +33,8 @@ impl Ui {
         if self.panel_stale {
             self.panel_win = None;
             self.panel_stale = false;
+            // 窗口没了，最大化态跟着归零 —— 否则下次开面板会先画成「❐」
+            PANEL_MAXIMIZED.store(false, AtomicOrdering::SeqCst);
             log_line("控制面板窗口已关闭");
         }
         // 面板状态 + 剪贴板轮询：都挂在 400ms 的 tick 上，不额外开线程

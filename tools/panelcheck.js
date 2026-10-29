@@ -595,7 +595,8 @@ ok(!/id="shortcutPanel"[^>]*hidden/.test(html), '快捷键面板默认可见');
 const workspaceHtml = html.split('id="workspaceView"')[1].split('id="devicesView"')[0];
 const settingsHtml = html.split('id="settingsView"')[1].split('id="transfersView"')[0];
 ok(/id="clipBtn"/.test(workspaceHtml), '剪贴板开关住在工作台（P4 起在共享双开关条里）');
-ok(!/id="clipBtn"/.test(settingsHtml), '设置页不再放剪贴板开关（不复制）');
+ok(/id="settingsClipSwitch"/.test(settingsHtml) && /id="settingsKvmSwitch"/.test(settingsHtml),
+  '设置页按设计稿提供共享开关，使用独立 ID 并共用后端状态');
 ok(/onclick="sendFilesTo\(\)"/.test(workspaceHtml),
   '工作台有快捷发送（发文件 + 去传输页，走发送门禁 canSend）');
 // showSettingsTab 切 tab 行为（真调函数，看 DOM 状态）
@@ -669,10 +670,57 @@ ok(/class="modal-mask" id="helpModal"/.test(html) && /class="modal-mask" id="dia
   '两个弹窗复用 modal-mask（z-40 盖过壳体）');
 ok(/id="helpHotkey"/.test(html), '帮助弹窗有热键位（render.js 每轮刷新）');
 ok(/onclick="closeHelp\(\);openDiagnostics\(\)"/.test(html), '帮助弹窗能转去排查弹窗');
-const topbarHtml = html.split('<header class="topbar glass">')[1].split('</header>')[0];
-ok(/class="icon-help"/.test(topbarHtml) && /onclick="openHelp\(\)"/.test(topbarHtml),
-  '顶栏有帮助入口（quiet 图标按钮）');
-ok((topbarHtml.match(/class="icon-help"/g) || []).length === 1, '帮助入口只有一个');
+/* 按 id 切：顶栏还带别的属性（id 就是给 core.js 的拖拽绑定用的），
+   拿「整个标签字面量」当锚点会一改就 blank。 */
+const titlebarHtml = html.split('id="appTitlebar"')[1].split('</header>')[0];
+ok(/id="updateBtn"/.test(titlebarHtml) && /id="winControls"/.test(titlebarHtml),
+  '主区顶栏含更新入口与窗口三键');
+// 一体化：品牌进侧栏顶部，顶栏只属于主区。旧的通栏品牌块不能留第二份 ——
+// 两处品牌会出现两个 logo，且暗示顶栏还是通栏的（那就等于没一体化）。
+ok(/class="side-brand"/.test(html.split('</aside>')[0]),
+  '品牌在侧栏顶部（侧栏从窗口上沿开始）');
+ok(!/class="brand"/.test(html), '不残留第二处品牌块');
+['workspace', 'devices', 'transfers', 'settings'].forEach(page => {
+  const section = html.split('id="' + page + 'View"')[1].split('</section>')[0];
+  ok(/class="view-heading"/.test(section) && /<h1>/.test(section), page + ' 页面保留设计稿页头');
+});
+ok(/class="icon-help"/.test(titlebarHtml) && /onclick="openHelp\(\)"/.test(titlebarHtml),
+  '设计稿标题栏提供帮助入口');
+ok((titlebarHtml.match(/class="icon-help"/g) || []).length === 1, '标题栏帮助入口只有一个');
+
+// ---- 自绘窗口边框（无边框原生窗口才有的那一套）----------------------
+// 判据全在 ?frame=none：浏览器打开、桩服务截图都没有这个参数，那里不该
+// 出现任何窗口钮或拖拽热区（点了也没窗口可动 = 假按钮）。
+['winMin', 'winMax', 'winClose'].forEach(id => {
+  ok(new RegExp(`id="${id}"`).test(titlebarHtml), `窗口钮 ${id} 在顶栏里`);
+});
+ok(/id="winControls"[^>]*\bhidden\b/.test(html),
+  '三键默认 hidden（浏览器里打开时没有窗口可控制）');
+ok((html.match(/data-dir="(n|s|e|w|ne|nw|se|sw)"/g) || []).length === 8,
+  '八向缩放热区方向齐全（四边 + 四角）');
+ok(/SELF_DRAWN_FRAME/.test(code) && /'frame'\) === 'none'/.test(code),
+  'core.js 按 ?frame=none 判定「我在原生无边框窗口里」');
+ok(/function windowCtl/.test(code) && /\/api\/window\?action=/.test(code),
+  'windowCtl 走 /api/window（拖拽与缩放都靠它）');
+/* 拖拽绑定必须按 ID 取容器：DOM 桩的 querySelector 恒返回 null，
+   querySelector('.app-titlebar') 会让这段绑定在自测里根本不执行 ——
+   以后谁把按钮排除列表删了也测不出来。 */
+ok(/id="appTitlebar"/.test(html) && /getElementById\('appTitlebar'\)/.test(code),
+  '标题栏拖拽按 ID 取容器（桩里 querySelector 恒 null，类选择器等于不测）');
+ok(/closest\('button, a, input, select, textarea, summary/.test(code),
+  '拖拽排除交互元素（点「更新」不会变成拖窗口）');
+ok(/function renderWindowControls/.test(code) && /snap\.maximized/.test(code),
+  '最大化钮图标跟快照翻面（Win+↑ 改的态也跟得上）');
+ok(/\.sidebar \{ grid-column: 1; grid-row: 1 \/ 3; \}/.test(html),
+  '侧栏贯通两行：左列从顶到底是一整块「窗外」');
+ok(/\.app-titlebar \{[^}]*grid-column: 2; grid-row: 1;/.test(html),
+  '顶栏只占第二列第一行（不再是一条横栏压住侧栏）');
+ok(!/\.app-main \{[^}]*border-radius/.test(html),
+  '纸的圆角归顶栏（主区再画一次就是双圆角）');
+ok(/id="titlebarPage"/.test(titlebarHtml),
+  '顶栏左侧有页名位（右侧按钮靠 space-between 自然贴边）');
+ok(/getElementById\('titlebarPage'\)/.test(code),
+  'showPage 换页时同步顶栏页名');
 // 开合行为（真调函数，看遮罩 display）
 try { vm.runInContext('openHelp()', ctx, { filename: 'panel.html' }); }
 catch (e) { console.error('openHelp 报错：', e.message); process.exit(1); }
@@ -841,6 +889,14 @@ ok(made['kvmCopy'].textContent === '随画面切换，自动交接',
 ok(made['clipBtn'].getAttribute('aria-checked') === 'true'
   && made['clipCopy'].textContent === '文字只同步到当前使用的设备',
   '共享条：剪贴板开关态与文案跟随后端');
+ok(made['settingsKvmSwitch'].getAttribute('aria-checked') === 'true'
+  && made['settingsClipSwitch'].getAttribute('aria-checked') === 'true',
+  '设置页共享开关与工作台读取同一份已开启状态');
+vm.runInContext('snap.kvm.on = false; snap.clipboard = false; renderWorkspaceScene();', ctx);
+ok(['kvmSwitch', 'settingsKvmSwitch', 'clipBtn', 'settingsClipSwitch']
+  .every(id => made[id].getAttribute('aria-checked') === 'false'),
+  '后端关闭共享后，工作台与设置页四个开关一起更新');
+vm.runInContext('snap.kvm.on = true; snap.clipboard = true; renderWorkspaceScene();', ctx);
 
 // 31. 单屏场景的卡片切换：只信本机 inputs 的 value（对端自报的 value 是
 //     它自己那块屏的编号，跨机不可信）。画面在本机时点本机卡 = 一句话打发。
@@ -944,10 +1000,26 @@ ok(/padding: 17px 24px 10px/.test(html), '命令栏内边距 = DESIGN.md:251 明
 ok(/padding: 23px 26px 18px/.test(html), '内容区内边距 = DESIGN.md:251 明文值 23/26/18');
 ok(/\.compact-nav \.view-container \{ padding: 20px 23px 16px; \}/.test(html),
   '≤950 档（820 生产窗常态）内容区 20/23/16（设计稿 app.css:357）');
-ok(/\.page-view \{[^}]*height: 100%/.test(html),
-  '.page-view height:100%（纵向填充不断裂，设计稿 app.css:143）');
+/* 断言盯的是「纵向填充不断裂」这个意图，不是某个字面属性：原来写死
+   height: 100%，加了全局标题栏 + 页头之后固定 100% 会把 flex:1 的场景
+   面板压到塌（矮窗档还显式 min-height:0），标题被压进内容区、本机名与
+   「输入源」行叠在一起。改成 min-height:100% + height:auto 后实现变了
+   但意图不变 —— 至少占满、超出则交给 .view-container 滚动。 */
+ok(/\.page-view \{[^}]*min-height: 100%/.test(html),
+  '.page-view min-height:100%（纵向填充不断裂，内容超高时转滚动，设计稿 app.css:143）');
 ok(/\.scene-panel \{[^}]*flex: 1/.test(html),
   '.scene-panel flex:1（场景面板拉伸、共享条贴底，设计稿 app.css:150）');
+/* 状态行第一项必须是「本机 + 机器名」的完整 stat。它一度被改成
+   <span id="node" hidden> 的空壳 —— render.js 照旧往里写 snap.node，
+   屏幕上却什么都没有，顶栏认不出这是哪台电脑（.stat.node .v 的样式
+   还留着，说明只是结构被改坏了）。 */
+ok(/<div class="stat node">[\s\S]{0,300}?id="node"/.test(html)
+  && !/<span id="node" hidden/.test(html),
+  '状态行第一项是「本机 + 机器名」（不是 hidden 的空 span）');
+ok(/@media \(max-width: 950px\) \{[\s\S]{0,700}?\.command-top \.stat \.v \{ max-width: 96px/.test(html),
+  '≤950 档状态行收窄（项宽 96px + 分隔 9px，不与主按钮抢宽度）');
+ok(/@media \(max-width: 720px\) \{[\s\S]{0,120}?\.command-top \{ flex-wrap: wrap; \}/.test(html),
+  '≤720 档主按钮整行换行（状态行四项不再被 overflow:hidden 从两端裁掉）');
 ok(/\.is-switching \.signal \{ opacity: 1/.test(html)
   && /@keyframes signal-travel/.test(html),
   '切换信号动画激活（.is-switching .signal + signal-travel，设计稿 app.css:174/344）');

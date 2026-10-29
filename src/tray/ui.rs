@@ -36,7 +36,7 @@ use super::log_line;
 use super::menu::{build_menu, menu_signature, own_value, refresh_menu};
 use super::snapshot::update_snapshot;
 use super::sys::load_icon;
-use super::{CLIP_BUSY, CLIP_PENDING, Command, UserEvent, PANEL_PORT};
+use super::{CLIP_BUSY, CLIP_PENDING, Command, UserEvent, PANEL_MAXIMIZED, PANEL_PORT};
 
 /// 主线程的全部可变状态。
 ///
@@ -485,6 +485,10 @@ impl Ui {
                 if let Some(win) = self.panel_win.as_ref() {
                     if win.owns(window_id) {
                         win.fit();
+                        // 最大化态会被 Win+↑、双击拖拽区、系统窗口菜单改掉，
+                        // 不是只有我们那个钮能改。每次尺寸变化重新读一次，
+                        // 快照带给前端翻「□ / ❐」。
+                        PANEL_MAXIMIZED.store(win.is_maximized(), AtomicOrdering::SeqCst);
                     }
                 }
             }

@@ -59,6 +59,11 @@
     <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
     <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 4h8v8H3zm10 0h8v8h-8zM3 14h8v7H3zm10 0h8v7h-8z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="13" rx="2"/><path d="m4 16-2 4h20l-2-4M9 20h6"/></symbol>
+    <!-- 自绘标题栏的三个窗口钮。线条按 Windows 11 原生 caption 的比例：
+         最小化是一条 10px 横线，最大化是 10px 方框，还原是两个错开的方框。 -->
+    <symbol id="i-win-min" viewBox="0 0 24 24"><path d="M7 12h10" stroke-width="1.4"/></symbol>
+    <symbol id="i-win-max" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" stroke-width="1.4"/></symbol>
+    <symbol id="i-win-restore" viewBox="0 0 24 24"><path d="M9 9h8v8H9z" stroke-width="1.4"/><path d="M7 15V7h8" stroke-width="1.4"/></symbol>
   </defs>
 </svg>
 
@@ -74,6 +79,11 @@
      两个一行字容器被列表取代；其余 ID 与 P1 一致，轮询弹窗一套代码不动。 -->
 <div class="app">
   <aside class="sidebar" aria-label="主导航">
+    <!-- 品牌搬进侧栏顶部（cc-bridge 同款一体化）：侧栏成为从顶到底的一整列
+         「窗外」，右边那条顶栏只属于主区。以前品牌压在通栏标题栏里，去掉系统
+         标题栏之后仍是一条横栏压在侧栏上方，看起来还是两条。 -->
+    <div class="side-brand"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiPg0KICA8IS0tIElucHV0U3dpdGNoIOWTgeeJjOWbvuagh++8mmlzIOWtl+agh+OAguWHoOS9leWPquaciei/meS4gOS7ve+8jOWQhOWwuuWvuCBQTkcgLyBpY25zIC8gaWNvIOeUsQ0KICAgICAgIHRvb2xzL21ha2UtaWNvbnMucHkg5LuO6L+Z6YeM55Sf5oiQ77yb5pS56aKc6Imy5Y+q6KaB5pS55bqV5LiL55qEICMyYjMzNDMgLyAjMWMyMjJkIC8gIzRlZTBiNeOAgg0KDQogICAgICAg5a2X5b2i5pivIE51bml0byAoU0lMIE9GTCAxLjEpIHdlaWdodCA5MDAg55qE55yf5a6e6L2u5buT77yM5LiN5piv5omL55S755qE5puy57q/IOKAlOKAlCDku6XliY3nmoQNCiAgICAgICDniYjmnKznlKjlh6DmrrXotJ3loZ7lsJTmi7wgc++8jOS4iuS4i+S4pOS4quW8p+WchuW/g+S4jeWQjO+8jOaOpee8neWkhOeahOabsueOh+eqgeWPmOWcqOWwj+WwuuWvuOS4i+S8muWPmOaIkA0KICAgICAgIOavm+i+ueOAguWtl+S9k+i9ruW7k+iHquW4pui/nue7reeahOabsueOh+i/h+a4oe+8jGkg5ZKMIHMg5Lmf5YWx55So5ZCM5LiA5aWX5bqm6YeP44CCDQoNCiAgICAgICDlupXmnb/mjIkgbWFjT1Mg55qE5Zu+5qCH572R5qC877ya55S75biD5YaF57ypIDEwLjIl77yIMTA0IHB477yJ44CB6LaF5qSt5ZyG5oyH5pWwIDUuM+OAgQ0KICAgICAgIOS4gOmBk+WQkeS4iyA4cHggLyDmqKHns4ogN3B4IC8gMzAlIOeahOaKleW9seOAguWunua1i+ezu+e7n+Wbvuagh++8iOWkh+W/mOW9leOAgemfs+S5kOOAgQ0KICAgICAgIOWbvemZheixoeaji+OAgeeFp+eJh++8iemDveaYr+i/meS4quinhOagvO+8jOeFp+aQrOaJjeWSjOWug+S7rOWcqCBEb2NrIOmHjOm9kOW5s+OAgiAtLT4NCiAgPGRlZnM+DQogICAgPGxpbmVhckdyYWRpZW50IGlkPSJwbGF0ZSIgeDE9IjAiIHkxPSIwIiB4Mj0iMCIgeTI9IjEiPg0KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMmIzMzQzIi8+DQogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMxYzIyMmQiLz4NCiAgICA8L2xpbmVhckdyYWRpZW50Pg0KICAgIDxmaWx0ZXIgaWQ9InNoIiB4PSItMjAlIiB5PSItMjAlIiB3aWR0aD0iMTQwJSIgaGVpZ2h0PSIxNTAlIiBmaWx0ZXJVbml0cz0ib2JqZWN0Qm91bmRpbmdCb3giPg0KICAgIDxmZU9mZnNldCBpbj0iU291cmNlQWxwaGEiIGR5PSI4Ii8+DQogICAgPGZlR2F1c3NpYW5CbHVyIHN0ZERldmlhdGlvbj0iNyIgcmVzdWx0PSJiIi8+DQogICAgPGZlRmxvb2QgZmxvb2QtY29sb3I9IiMwMDAiIGZsb29kLW9wYWNpdHk9IjAuMzAiLz4NCiAgICA8ZmVDb21wb3NpdGUgaW4yPSJiIiBvcGVyYXRvcj0iaW4iLz4NCiAgICA8ZmVNZXJnZT48ZmVNZXJnZU5vZGUvPjxmZU1lcmdlTm9kZSBpbj0iU291cmNlR3JhcGhpYyIvPjwvZmVNZXJnZT4NCiAgPC9maWx0ZXI+DQogIDwvZGVmcz4NCiAgPGcgZmlsdGVyPSJ1cmwoI3NoKSI+DQogICAgPHBhdGggZD0iTTkyMy45NiA1MTIuMDBMOTIzLjkzIDYwMS40MUw5MjMuODYgNjI4LjE0TDkyMy43NCA2NDcuMzNMOTIzLjU4IDY2Mi44Mkw5MjMuMzYgNjc2LjA0TDkyMy4xMCA2ODcuNjlMOTIyLjc5IDY5OC4xN0w5MjIuNDQgNzA3LjczTDkyMi4wMyA3MTYuNTZMOTIxLjU4IDcyNC43OEw5MjEuMDggNzMyLjQ4TDkyMC41MyA3MzkuNzRMOTE5Ljk0IDc0Ni42MUw5MTkuMjkgNzUzLjE0TDkxOC42MCA3NTkuMzdMOTE3Ljg2IDc2NS4zMUw5MTcuMDcgNzcxLjAxTDkxNi4yMyA3NzYuNDhMOTE1LjM0IDc4MS43NEw5MTQuNDAgNzg2LjgwTDkxMy40MSA3OTEuNjlMOTEyLjM3IDc5Ni40MEw5MTEuMjggODAwLjk2TDkxMC4xNCA4MDUuMzdMOTA4Ljk0IDgwOS42NEw5MDcuNzAgODEzLjc4TDkwNi40MCA4MTcuODBMOTA1LjA1IDgyMS42OUw5MDMuNjUgODI1LjQ3TDkwMi4xOSA4MjkuMTRMOTAwLjY4IDgzMi43MUw4OTkuMTEgODM2LjE3TDg5Ny40OSA4MzkuNTRMODk1LjgyIDg0Mi44Mkw4OTQuMDggODQ2LjAwTDg5Mi4yOSA4NDkuMTBMODkwLjQ0IDg1Mi4xMkw4ODguNTQgODU1LjA1TDg4Ni41NyA4NTcuOTBMODg0LjU0IDg2MC42OEw4ODIuNDUgODYzLjM4TDg4MC4zMCA4NjYuMDBMODc4LjA4IDg2OC41Nkw4NzUuODAgODcxLjA0TDg3My40NSA4NzMuNDVMODcxLjA0IDg3NS44MEw4NjguNTYgODc4LjA4TDg2Ni4wMCA4ODAuMzBMODYzLjM4IDg4Mi40NUw4NjAuNjggODg0LjU0TDg1Ny45MCA4ODYuNTdMODU1LjA1IDg4OC41NEw4NTIuMTIgODkwLjQ0TDg0OS4xMCA4OTIuMjlMODQ2LjAwIDg5NC4wOEw4NDIuODIgODk1LjgyTDgzOS41NCA4OTcuNDlMODM2LjE3IDg5OS4xMUw4MzIuNzEgOTAwLjY4TDgyOS4xNCA5MDIuMTlMODI1LjQ3IDkwMy42NUw4MjEuNjkgOTA1LjA1TDgxNy44MCA5MDYuNDBMODEzLjc4IDkwNy43MEw4MDkuNjQgOTA4Ljk0TDgwNS4zNyA5MTAuMTRMODAwLjk2IDkxMS4yOEw3OTYuNDAgOTEyLjM3TDc5MS42OSA5MTMuNDFMNzg2LjgwIDkxNC40MEw3ODEuNzQgOTE1LjM0TDc3Ni40OCA5MTYuMjNMNzcxLjAxIDkxNy4wN0w3NjUuMzEgOTE3Ljg2TDc1OS4zNyA5MTguNjBMNzUzLjE0IDkxOS4yOUw3NDYuNjEgOTE5Ljk0TDczOS43NCA5MjAuNTNMNzMyLjQ4IDkyMS4wOEw3MjQuNzggOTIxLjU4TDcxNi41NiA5MjIuMDNMNzA3LjczIDkyMi40NEw2OTguMTcgOTIyLjc5TDY4Ny42OSA5MjMuMTBMNjc2LjA0IDkyMy4zNkw2NjIuODIgOTIzLjU4TDY0Ny4zMyA5MjMuNzRMNjI4LjE0IDkyMy44Nkw2MDEuNDEgOTIzLjkzTDUxMi4wMCA5MjMuOTZMNDIyLjU5IDkyMy45M0wzOTUuODYgOTIzLjg2TDM3Ni42NyA5MjMuNzRMMzYxLjE4IDkyMy41OEwzNDcuOTYgOTIzLjM2TDMzNi4zMSA5MjMuMTBMMzI1LjgzIDkyMi43OUwzMTYuMjcgOTIyLjQ0TDMwNy40NCA5MjIuMDNMMjk5LjIyIDkyMS41OEwyOTEuNTIgOTIxLjA4TDI4NC4yNiA5MjAuNTNMMjc3LjM5IDkxOS45NEwyNzAuODYgOTE5LjI5TDI2NC42MyA5MTguNjBMMjU4LjY5IDkxNy44NkwyNTIuOTkgOTE3LjA3TDI0Ny41MiA5MTYuMjNMMjQyLjI2IDkxNS4zNEwyMzcuMjAgOTE0LjQwTDIzMi4zMSA5MTMuNDFMMjI3LjYwIDkxMi4zN0wyMjMuMDQgOTExLjI4TDIxOC42MyA5MTAuMTRMMjE0LjM2IDkwOC45NEwyMTAuMjIgOTA3LjcwTDIwNi4yMCA5MDYuNDBMMjAyLjMxIDkwNS4wNUwxOTguNTMgOTAzLjY1TDE5NC44NiA5MDIuMTlMMTkxLjI5IDkwMC42OEwxODcuODMgODk5LjExTDE4NC40NiA4OTcuNDlMMTgxLjE4IDg5NS44MkwxNzguMDAgODk0LjA4TDE3NC45MCA4OTIuMjlMMTcxLjg4IDg5MC40NEwxNjguOTUgODg4LjU0TDE2Ni4xMCA4ODYuNTdMMTYzLjMyIDg4NC41NEwxNjAuNjIgODgyLjQ1TDE1OC4wMCA4ODAuMzBMMTU1LjQ0IDg3OC4wOEwxNTIuOTYgODc1LjgwTDE1MC41NSA4NzMuNDVMMTQ4LjIwIDg3MS4wNEwxNDUuOTIgODY4LjU2TDE0My43MCA4NjYuMDBMMTQxLjU1IDg2My4zOEwxMzkuNDYgODYwLjY4TDEzNy40MyA4NTcuOTBMMTM1LjQ2IDg1NS4wNUwxMzMuNTYgODUyLjEyTDEzMS43MSA4NDkuMTBMMTI5LjkyIDg0Ni4wMEwxMjguMTggODQyLjgyTDEyNi41MSA4MzkuNTRMMTI0Ljg5IDgzNi4xN0wxMjMuMzIgODMyLjcxTDEyMS44MSA4MjkuMTRMMTIwLjM1IDgyNS40N0wxMTguOTUgODIxLjY5TDExNy42MCA4MTcuODBMMTE2LjMwIDgxMy43OEwxMTUuMDYgODA5LjY0TDExMy44NiA4MDUuMzdMMTEyLjcyIDgwMC45NkwxMTEuNjMgNzk2LjQwTDExMC41OSA3OTEuNjlMMTA5LjYwIDc4Ni44MEwxMDguNjYgNzgxLjc0TDEwNy43NyA3NzYuNDhMMTA2LjkzIDc3MS4wMUwxMDYuMTQgNzY1LjMxTDEwNS40MCA3NTkuMzdMMTA0LjcxIDc1My4xNEwxMDQuMDYgNzQ2LjYxTDEwMy40NyA3MzkuNzRMMTAyLjkyIDczMi40OEwxMDIuNDIgNzI0Ljc4TDEwMS45NyA3MTYuNTZMMTAxLjU2IDcwNy43M0wxMDEuMjEgNjk4LjE3TDEwMC45MCA2ODcuNjlMMTAwLjY0IDY3Ni4wNEwxMDAuNDIgNjYyLjgyTDEwMC4yNiA2NDcuMzNMMTAwLjE0IDYyOC4xNEwxMDAuMDcgNjAxLjQxTDEwMC4wNCA1MTIuMDBMMTAwLjA3IDQyMi41OUwxMDAuMTQgMzk1Ljg2TDEwMC4yNiAzNzYuNjdMMTAwLjQyIDM2MS4xOEwxMDAuNjQgMzQ3Ljk2TDEwMC45MCAzMzYuMzFMMTAxLjIxIDMyNS44M0wxMDEuNTYgMzE2LjI3TDEwMS45NyAzMDcuNDRMMTAyLjQyIDI5OS4yMkwxMDIuOTIgMjkxLjUyTDEwMy40NyAyODQuMjZMMTA0LjA2IDI3Ny4zOUwxMDQuNzEgMjcwLjg2TDEwNS40MCAyNjQuNjNMMTA2LjE0IDI1OC42OUwxMDYuOTMgMjUyLjk5TDEwNy43NyAyNDcuNTJMMTA4LjY2IDI0Mi4yNkwxMDkuNjAgMjM3LjIwTDExMC41OSAyMzIuMzFMMTExLjYzIDIyNy42MEwxMTIuNzIgMjIzLjA0TDExMy44NiAyMTguNjNMMTE1LjA2IDIxNC4zNkwxMTYuMzAgMjEwLjIyTDExNy42MCAyMDYuMjBMMTE4Ljk1IDIwMi4zMUwxMjAuMzUgMTk4LjUzTDEyMS44MSAxOTQuODZMMTIzLjMyIDE5MS4yOUwxMjQuODkgMTg3LjgzTDEyNi41MSAxODQuNDZMMTI4LjE4IDE4MS4xOEwxMjkuOTIgMTc4LjAwTDEzMS43MSAxNzQuOTBMMTMzLjU2IDE3MS44OEwxMzUuNDYgMTY4Ljk1TDEzNy40MyAxNjYuMTBMMTM5LjQ2IDE2My4zMkwxNDEuNTUgMTYwLjYyTDE0My43MCAxNTguMDBMMTQ1LjkyIDE1NS40NEwxNDguMjAgMTUyLjk2TDE1MC41NSAxNTAuNTVMMTUyLjk2IDE0OC4yMEwxNTUuNDQgMTQ1LjkyTDE1OC4wMCAxNDMuNzBMMTYwLjYyIDE0MS41NUwxNjMuMzIgMTM5LjQ2TDE2Ni4xMCAxMzcuNDNMMTY4Ljk1IDEzNS40NkwxNzEuODggMTMzLjU2TDE3NC45MCAxMzEuNzFMMTc4LjAwIDEyOS45MkwxODEuMTggMTI4LjE4TDE4NC40NiAxMjYuNTFMMTg3LjgzIDEyNC44OUwxOTEuMjkgMTIzLjMyTDE5NC44NiAxMjEuODFMMTk4LjUzIDEyMC4zNUwyMDIuMzEgMTE4Ljk1TDIwNi4yMCAxMTcuNjBMMjEwLjIyIDExNi4zMEwyMTQuMzYgMTE1LjA2TDIxOC42MyAxMTMuODZMMjIzLjA0IDExMi43MkwyMjcuNjAgMTExLjYzTDIzMi4zMSAxMTAuNTlMMjM3LjIwIDEwOS42MEwyNDIuMjYgMTA4LjY2TDI0Ny41MiAxMDcuNzdMMjUyLjk5IDEwNi45M0wyNTguNjkgMTA2LjE0TDI2NC42MyAxMDUuNDBMMjcwLjg2IDEwNC43MUwyNzcuMzkgMTA0LjA2TDI4NC4yNiAxMDMuNDdMMjkxLjUyIDEwMi45MkwyOTkuMjIgMTAyLjQyTDMwNy40NCAxMDEuOTdMMzE2LjI3IDEwMS41NkwzMjUuODMgMTAxLjIxTDMzNi4zMSAxMDAuOTBMMzQ3Ljk2IDEwMC42NEwzNjEuMTggMTAwLjQyTDM3Ni42NyAxMDAuMjZMMzk1Ljg2IDEwMC4xNEw0MjIuNTkgMTAwLjA3TDUxMi4wMCAxMDAuMDRMNjAxLjQxIDEwMC4wN0w2MjguMTQgMTAwLjE0TDY0Ny4zMyAxMDAuMjZMNjYyLjgyIDEwMC40Mkw2NzYuMDQgMTAwLjY0TDY4Ny42OSAxMDAuOTBMNjk4LjE3IDEwMS4yMUw3MDcuNzMgMTAxLjU2TDcxNi41NiAxMDEuOTdMNzI0Ljc4IDEwMi40Mkw3MzIuNDggMTAyLjkyTDczOS43NCAxMDMuNDdMNzQ2LjYxIDEwNC4wNkw3NTMuMTQgMTA0LjcxTDc1OS4zNyAxMDUuNDBMNzY1LjMxIDEwNi4xNEw3NzEuMDEgMTA2LjkzTDc3Ni40OCAxMDcuNzdMNzgxLjc0IDEwOC42Nkw3ODYuODAgMTA5LjYwTDc5MS42OSAxMTAuNTlMNzk2LjQwIDExMS42M0w4MDAuOTYgMTEyLjcyTDgwNS4zNyAxMTMuODZMODA5LjY0IDExNS4wNkw4MTMuNzggMTE2LjMwTDgxNy44MCAxMTcuNjBMODIxLjY5IDExOC45NUw4MjUuNDcgMTIwLjM1TDgyOS4xNCAxMjEuODFMODMyLjcxIDEyMy4zMkw4MzYuMTcgMTI0Ljg5TDgzOS41NCAxMjYuNTFMODQyLjgyIDEyOC4xOEw4NDYuMDAgMTI5LjkyTDg0OS4xMCAxMzEuNzFMODUyLjEyIDEzMy41Nkw4NTUuMDUgMTM1LjQ2TDg1Ny45MCAxMzcuNDNMODYwLjY4IDEzOS40Nkw4NjMuMzggMTQxLjU1TDg2Ni4wMCAxNDMuNzBMODY4LjU2IDE0NS45Mkw4NzEuMDQgMTQ4LjIwTDg3My40NSAxNTAuNTVMODc1LjgwIDE1Mi45Nkw4NzguMDggMTU1LjQ0TDg4MC4zMCAxNTguMDBMODgyLjQ1IDE2MC42Mkw4ODQuNTQgMTYzLjMyTDg4Ni41NyAxNjYuMTBMODg4LjU0IDE2OC45NUw4OTAuNDQgMTcxLjg4TDg5Mi4yOSAxNzQuOTBMODk0LjA4IDE3OC4wMEw4OTUuODIgMTgxLjE4TDg5Ny40OSAxODQuNDZMODk5LjExIDE4Ny44M0w5MDAuNjggMTkxLjI5TDkwMi4xOSAxOTQuODZMOTAzLjY1IDE5OC41M0w5MDUuMDUgMjAyLjMxTDkwNi40MCAyMDYuMjBMOTA3LjcwIDIxMC4yMkw5MDguOTQgMjE0LjM2TDkxMC4xNCAyMTguNjNMOTExLjI4IDIyMy4wNEw5MTIuMzcgMjI3LjYwTDkxMy40MSAyMzIuMzFMOTE0LjQwIDIzNy4yMEw5MTUuMzQgMjQyLjI2TDkxNi4yMyAyNDcuNTJMOTE3LjA3IDI1Mi45OUw5MTcuODYgMjU4LjY5TDkxOC42MCAyNjQuNjNMOTE5LjI5IDI3MC44Nkw5MTkuOTQgMjc3LjM5TDkyMC41MyAyODQuMjZMOTIxLjA4IDI5MS41Mkw5MjEuNTggMjk5LjIyTDkyMi4wMyAzMDcuNDRMOTIyLjQ0IDMxNi4yN0w5MjIuNzkgMzI1LjgzTDkyMy4xMCAzMzYuMzFMOTIzLjM2IDM0Ny45Nkw5MjMuNTggMzYxLjE4TDkyMy43NCAzNzYuNjdMOTIzLjg2IDM5NS44Nkw5MjMuOTMgNDIyLjU5WiIgZmlsbD0idXJsKCNwbGF0ZSkiLz4NCiAgICA8cGF0aCBmaWxsPSIjNGVlMGI1IiBkPSJNMzAwLjAzIDc5NS4zOVEyNjcuNzAgNzk1LjM5IDI1MC4zMCA3NzYuNDdRMjMyLjkwIDc1Ny41NiAyMzIuOTAgNzIyLjI4VjQ4My4wMlEyMzIuOTAgNDQ3LjQ3IDI1MC4zMCA0MjguNjlRMjY3LjcwIDQwOS45MSAzMDAuMDMgNDA5LjkxUTMzMi4zNiA0MDkuOTEgMzQ5LjkwIDQyOC42OVEzNjcuNDMgNDQ3LjQ3IDM2Ny40MyA0ODMuMDJWNzIyLjI4UTM2Ny40MyA3NTcuNTYgMzUwLjI3IDc3Ni40N1EzMzMuMTEgNzk1LjM5IDMwMC4wMyA3OTUuMzlaTTMwMC4wMyAzNTYuNTJRMjYzLjkzIDM1Ni41MiAyNDQuNjAgMzM5LjY3UTIyNS4yOCAzMjIuODIgMjI1LjI4IDI5MS42N1EyMjUuMjggMjYwLjI1IDI0NC42MCAyNDMuNTRRMjYzLjkzIDIyNi44MyAzMDAuMDMgMjI2LjgzUTMzNi40MSAyMjYuODMgMzU1LjYwIDI0My41NFEzNzQuNzggMjYwLjI1IDM3NC43OCAyOTEuNjdRMzc0Ljc4IDMyMi44MiAzNTUuNjAgMzM5LjY3UTMzNi40MSAzNTYuNTIgMzAwLjAzIDM1Ni41MloiLz4NCiAgICA8cGF0aCBmaWxsPSIjNGVlMGI1IiBkPSJNNjI3LjI1IDc5Ny4xN1E1OTMuMzAgNzk3LjE3IDU1OS4xOSA3OTIuMDZRNTI1LjA5IDc4Ni45NSA0OTYuODUgNzc0LjY2UTQ3OC4wMCA3NjcuMTAgNDY5Ljk1IDc1NC4wMVE0NjEuOTAgNzQwLjkxIDQ2Mi4zMSA3MjYuNjBRNDYyLjcyIDcxMi4zMCA0NzAuNTkgNzAwLjY0UTQ3OC40NiA2ODguOTcgNDkxLjgwIDY4NC4wNVE1MDUuMTQgNjc5LjEzIDUyMi4wNiA2ODUuMThRNTUzLjI2IDY5Ni42NCA1NzguNzUgNzAxLjU5UTYwNC4yMyA3MDYuNTMgNjI3LjUyIDcwNi41M1E2NTUuNTkgNzA2LjUzIDY2Ny44MCA2OTguNDBRNjgwLjAxIDY5MC4yOCA2ODAuMDEgNjc3LjU5UTY4MC4wMSA2NjYuMDAgNjcxLjkyIDY2MC4xN1E2NjMuODIgNjU0LjM0IDY0OS41NiA2NTIuMjJMNTY1Ljc4IDYzOC4zNVE1MTguOTIgNjMwLjI0IDQ5My4xNSA2MDMuOTZRNDY3LjM4IDU3Ny42NyA0NjcuMzggNTM1LjIwUTQ2Ny4zOCA0OTYuMDMgNDg5LjU4IDQ2Ny42NFE1MTEuNzggNDM5LjI2IDU1MC45MiA0MjMuNjlRNTkwLjA3IDQwOC4xMyA2NDAuNTEgNDA4LjEzUTY3NC43MyA0MDguMTMgNzAyLjYyIDQxMy4zOFE3MzAuNTIgNDE4LjYzIDc1Ny4yNCA0MzAuODVRNzczLjQxIDQzNy44NiA3ODAuMjIgNDUwLjU4UTc4Ny4wMyA0NjMuMzAgNzg1LjQ4IDQ3Ny42MVE3ODMuOTQgNDkxLjkxIDc3NS45MyA1MDMuNDdRNzY3LjkyIDUxNS4wMiA3NTQuMzQgNTE5LjMzUTc0MC43NiA1MjMuNjMgNzIzLjA5IDUxNy4xMFE2OTguMjEgNTA3LjQyIDY3OC44NCA1MDMuMDlRNjU5LjQ3IDQ5OC43NyA2NDIuNzIgNDk4Ljc3UTYxMS40NyA0OTguNzcgNTk4Ljc4IDUwNy4wM1E1ODYuMDkgNTE1LjMwIDU4Ni4wOSA1MjguMjVRNTg2LjA5IDUzNy4zNyA1OTMuMDUgNTQ0LjA5UTYwMC4wMSA1NTAuODEgNjE0LjIxIDU1My4xNEw2OTcuOTkgNTY3LjAyUTc0Ni42MyA1NzUuMTIgNzcyLjY4IDYwMC4yN1E3OTguNzIgNjI1LjQyIDc5OC43MiA2NjguNjVRNzk4LjcyIDcyOS42MSA3NTEuNzggNzYzLjM5UTcwNC44NCA3OTcuMTcgNjI3LjI1IDc5Ny4xN1oiLz4NCiAgPC9nPg0KPC9zdmc+DQo=" alt="" width="25" height="25"><strong>InputSwitch</strong></div>
+    <div class="workspace-label">我的工作空间</div>
     <nav class="main-nav">
       <!-- ID 是给 core.js 的 showPage 用的：切页要改 .selected 和 aria-current，
            按 ID 取比扫 class 直白，面板自测的 DOM 桩也测得动。 -->
@@ -83,28 +93,47 @@
       <button class="nav-item" id="nav-settings" data-page="settings" title="设置" onclick="showPage('settings')"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>设置</span></button>
     </nav>
     <div class="sidebar-bottom">
+      <button class="sidebar-help" onclick="openHelp()" title="快捷键与使用帮助"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span>使用帮助</span></button>
       <div class="local-machine"><svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg><div><strong id="navNode">—</strong><span>本机</span></div><i class="status-dot" aria-hidden="true"></i></div>
     </div>
   </aside>
+  <header class="app-titlebar" id="appTitlebar">
+    <!-- 左边是当前页名（core.js 的 showPage 跟着导航换），右边是更新/帮助 +
+         窗口三键；两者之间的空白才是真正的拖拽区（core.js 给这条 header 绑
+         mousedown，按钮被排除在判定外，否则点「更新」会变成拖窗口）。
+         三键平时 hidden：只有无边框的原生窗口（URL 带 ?frame=none）才显示，
+         浏览器里打开时没有窗口可控制，留着是假按钮。 -->
+    <div class="titlebar-heading" id="titlebarPage">工作台</div>
+    <div class="titlebar-actions">
+      <button id="updateBtn" class="upd-btn" onclick="openUpdate()"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>更新<i class="upd-dot" id="updateDot"></i></button>
+      <button class="icon-help" onclick="openHelp()" title="使用帮助" aria-label="使用帮助"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg></button>
+      <div class="win-controls" id="winControls" hidden>
+        <button class="win-btn" id="winMin" onclick="windowCtl('min')" title="最小化" aria-label="最小化"><svg class="icon" aria-hidden="true"><use href="#i-win-min"/></svg></button>
+        <button class="win-btn" id="winMax" onclick="windowCtl('max')" title="最大化" aria-label="最大化"><svg class="icon" aria-hidden="true"><use href="#i-win-max"/></svg></button>
+        <button class="win-btn win-close" id="winClose" onclick="windowCtl('close')" title="关闭" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+    </div>
+  </header>
 
   <div class="app-main">
     <!-- 顶部常驻状态条：画面 / 键鼠 / 对端 三个事实 + 主操作。
          最高频的动作（切换）以前埋在「输入源」卡片里，得往下找。 -->
     <header class="topbar glass">
+      <div class="command-top">
       <div class="statusline">
+        <!-- 本机名是状态行第一项：以前被压成一个 hidden 的空 span（render.js
+             还在往里写 snap.node，屏幕上却什么都没有），顶栏从此认不出这是
+             哪台电脑。CSS 的 .stat.node .v 一直留着，恢复成完整 stat。 -->
         <div class="stat node"><svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg><span class="k">本机</span><span class="v" id="node">…</span></div>
         <div class="stat"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg><span class="k">画面</span><span class="v" id="hdrScreen">—</span></div>
         <div class="stat"><svg class="icon" aria-hidden="true"><use href="#i-mouse"/></svg><span class="k">键鼠</span><span class="v" id="hdrKeys">—</span></div>
-        <div class="stat"><span class="k">对端</span><span class="v" id="hdrPeer">—</span></div>
+        <div class="connection-fact"><span id="hdrPeer">—</span></div>
       </div>
-      <div class="actions">
         <!-- 主按钮：**永远显示**，不能切时换文案 + .is-off，但位置形状不变。
              实心蓝只留给它一个 —— 输入口列表里的「切换」全是描边小按钮。 -->
         <button id="mainSwitch" class="primary btn-lg" onclick="quickSwitch()">切换画面</button>
-        <!-- 更新入口：常驻描边按钮，有新版本时右上角亮红点（见 update.js）。
-             不放维护那三个里 —— 它是"装新版本"，不是"排查本机"。 -->
-        <button id="updateBtn" class="upd-btn" onclick="openUpdate()"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>更新<i class="upd-dot" id="updateDot"></i></button>
-        <div class="spacer"></div>
+      </div>
+      <div class="maintenance-row">
         <!-- 三个维护动作平铺（和以前的操作习惯一致）。主按钮不再兼任"扫描"。
              探测类动作跑动中三个一起禁用（render.js 跟 snap.maint_busy），
              扫描输入口多一道确认 —— 它会真的逐个切口，屏幕会黑几次。 -->
@@ -113,9 +142,7 @@
           <button id="maintScan" onclick="openScanModal()"><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg>扫描输入口</button>
           <button id="maintCheck" onclick="post('/api/check')"><svg class="icon" aria-hidden="true"><use href="#i-check-circle"/></svg>检测能否切换</button>
         </div>
-        <!-- 帮助入口：和维护三件同一套弱化样式，但不进 flat-group ——
-             那三个是"排查本机"的动作，帮助不是。切换遇到问题从帮助弹窗里转去。 -->
-        <button class="icon-help" onclick="openHelp()" title="使用帮助" aria-label="使用帮助"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg></button>
+        <button class="hotkey-hint ghost" onclick="showPage('settings');showSettingsTab('shortcut')" title="修改切屏快捷键" aria-label="修改切屏快捷键"><span id="commandHotkey">—</span></button>
       </div>
       <!-- 只有"下一步该干什么"这一句；没有就整行消失 -->
       <div class="nextstep" id="nextStep"></div>
@@ -204,6 +231,7 @@
            #kvmLooseBox / #kvmGridHint / #kvmFlash / #kvmLinks。
            pane 默认态由 showPage('devices') 按配对态选（未配对→配对表单）。 -->
       <section id="devicesView" class="page-view" aria-label="设备与布局" hidden>
+        <div class="view-heading"><div><h1>设备与布局</h1><p>连接你的电脑，让位置和桌面上一样。</p></div><button class="btn-sm" onclick="showDevicePane('pair', true)"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加设备</button></div>
         <div class="devices-layout">
           <div class="device-list">
             <p class="list-label">这台电脑</p>
@@ -242,7 +270,6 @@
                 <div id="kvmLooseBox" class="loosebox"></div>
               </div>
 
-              <div class="gridhint" id="kvmGridHint"></div>
               <!-- 放下时的一句话（比如"斜角放不了"）。独立一行，
                    因为 #kvmGridHint 每次重绘都会被重写 -->
               <div class="gridhint" id="kvmFlash" style="color:var(--orange)"></div>
@@ -257,8 +284,7 @@
                    交接动作（转给它 / 交给它）。和上面摆位图是同一份 links
                    数据的两个视角 —— 图管"画面怎么走"，这里管"键鼠交给谁"，
                    分开放对照不起来。 -->
-              <div class="rowlabel">键鼠交接</div>
-              <div id="kvmLinks"></div>
+              <details class="settings-extra handover-details"><summary>键鼠交接与摆位说明</summary><div class="gridhint" id="kvmGridHint"></div><div id="kvmLinks"></div></details>
             </div>
 
             <div id="devicePairPane" hidden>
@@ -304,9 +330,9 @@
            拿不到本地路径（浏览器安全模型），发不出去 —— drop 降级成触发系统
            选择器，drag-over 高亮照原样做；② 设计稿「体验一次传输」是演示假
            数据，生产改成「发送测试文件」（后端生成临时探针 txt，发完即删）；
-           ③ 设计稿的 view-heading 页头不设 —— 生产四页都没有页头，上下文
-           由侧栏和顶栏给，和各页保持一致。 -->
+           页头与设计稿保持一致。 -->
       <section id="transfersView" class="page-view" aria-label="文件传输" hidden>
+        <div class="view-heading"><div><h1>文件传输</h1><p>文件与文件夹，都能直接交给另一台。</p></div></div>
         <div class="transfer-target">
           <label for="recipient">发送到</label>
           <select id="recipient" onchange="setTransferRecipient(this.value)"></select>
@@ -347,45 +373,24 @@
 
       <!-- ④ 设置：跟"我现在要干什么"无关的东西全收在这里。
            三个常驻选项卡（移植设计稿）：快捷键 / 启动与恢复 / 外观与关于。
-           共享类控件（共用键鼠、光标速度、剪贴板同步）按同一逻辑住在
-           工作台，这里不复制；切 tab 只换面板，所有既有 ID 原样保留，
-           render.js 一行不用动。 -->
+           共享偏好与工作台共用后端状态，两个入口同步呈现。 -->
       <section id="settingsView" class="page-view settings-page" aria-label="设置" hidden>
+        <div class="view-heading"><div><h1>设置</h1><p>把常用的习惯，设置成默认。</p></div></div>
         <div class="settings-tabs" role="tablist" aria-label="设置类别">
-          <button id="tab-shortcut" class="selected" role="tab" aria-selected="true" aria-controls="shortcutPanel" onclick="showSettingsTab('shortcut')">快捷键</button>
+          <button id="tab-shortcut" class="selected" role="tab" aria-selected="true" aria-controls="shortcutPanel" onclick="showSettingsTab('shortcut')">共享与快捷键</button>
           <button id="tab-startup" role="tab" aria-selected="false" aria-controls="startupPanel" onclick="showSettingsTab('startup')">启动与恢复</button>
           <button id="tab-appearance" role="tab" aria-selected="false" aria-controls="appearancePanel" onclick="showSettingsTab('appearance')">外观与关于</button>
         </div>
 
         <div class="settings-panel" id="shortcutPanel" role="tabpanel" aria-labelledby="tab-shortcut">
-          <div class="setting-row">
-            <div class="setting-text">
-              <strong>切屏快捷键</strong>
-              <p>随时把画面切到另一个输入源。点「改键」后，到主程序弹出的窗口里按组合键。</p>
-            </div>
-            <div class="setting-ctrl">
-              <span class="setting-value" id="hotkey">—</span>
-              <button class="btn-sm" onclick="recHotkey()">改键</button>
-              <!-- 恢复默认：录了个和别的软件冲突的组合后，唯一的回头路
-                   以前是手改 config.json（后端 /api/hotkey-reset 重新注册
-                   默认键并保存，前端 resetHotkey 在 actions.js） -->
-              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">恢复默认</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-text">
-              <strong>热键目标</strong>
-              <p>快捷键一下切到哪个输入源。在「管理显示器输入源」弹窗里点「设为热键」修改。</p>
-            </div>
-            <div class="setting-ctrl"><span class="setting-value" id="target">—</span></div>
-          </div>
+          <div class="setting-row"><div class="setting-text"><strong>共用键鼠</strong><p>共用一套键盘鼠标，按设备布局自动交接。</p></div><button id="settingsKvmSwitch" class="sw" role="switch" aria-checked="false" aria-label="共用键鼠" onclick="toggleKvm()"></button></div>
           <!-- 光标速度（P4 从工作台搬来，对应设计稿 sharing 选项卡）：
                位移先按两屏分辨率比例换算，再乘这个倍率。改档后端会重建
                共用键鼠实例，会话会断一下。 -->
           <div class="setting-row">
             <div class="setting-text">
               <strong>光标速度</strong>
-              <p>仅在键鼠交给对端时生效。两个系统的指针加速曲线不同，同一串位移在两边速度必然有差 ——「回到本机变慢」就往上调一档。</p>
+              <p>仅在键鼠交给对端时生效，调整后会短暂重连。</p>
             </div>
             <div class="setting-ctrl">
               <div id="kvmScaleRow">
@@ -396,8 +401,31 @@
               </div>
             </div>
           </div>
-          <div class="hint" id="kvmScaleHint"></div>
-          <p class="settings-footnote">紧急断开键鼠：<kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd>，任何时候都生效，不用打开面板</p>
+          <div class="hint" id="kvmScaleHint" hidden></div>
+          <div class="setting-row"><div class="setting-text"><strong>同步剪贴板文本</strong><p>只同步到当前使用的设备，避免多台互相覆盖。</p></div><button id="settingsClipSwitch" class="sw" role="switch" aria-checked="false" aria-label="剪贴板同步" onclick="toggleClipboard()"></button></div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>切屏快捷键</strong>
+              <p>点击改键，在弹窗中按组合键。</p>
+            </div>
+            <div class="setting-ctrl">
+              <span class="setting-value" id="hotkey">—</span>
+              <button class="btn-sm" onclick="recHotkey()">改键</button>
+              <!-- 恢复默认：录了个和别的软件冲突的组合后，唯一的回头路
+                   以前是手改 config.json（后端 /api/hotkey-reset 重新注册
+                   默认键并保存，前端 resetHotkey 在 actions.js） -->
+              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">恢复默认</button>
+            </div>
+          </div>
+          <details class="settings-extra"><summary>热键目标</summary>          <div class="setting-row">
+            <div class="setting-text">
+              <strong>热键目标</strong>
+              <p>快捷键一下切到哪个输入源。在「管理显示器输入源」弹窗里点「设为热键」修改。</p>
+            </div>
+            <div class="setting-ctrl"><span class="setting-value" id="target">—</span></div>
+          </div>
+          </details>
+          <p class="settings-footnote">紧急断开：<kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd>。光标速度变化会短暂重连。</p>
         </div>
 
         <div class="settings-panel" id="startupPanel" role="tabpanel" aria-labelledby="tab-startup" hidden>
@@ -426,7 +454,7 @@
           <div class="setting-row">
             <div class="setting-text">
               <strong>副机模式</strong>
-              <p>给<b>没接键鼠</b>的那台机器用：一次打开开机自启、自动恢复共用键鼠、崩溃后自动重启，并保持共用键鼠开启。开启前请把这台的 IP 固定下来 —— 共用键鼠按 IP 认机器，不认机器名。</p>
+              <p>给没接键鼠的电脑一次配好以上三项。请先固定 IP。</p>
             </div>
             <button id="subBtn" class="btn-sm" onclick="toggleSubmachine()">—</button>
           </div>
@@ -436,7 +464,7 @@
           <div class="setting-row">
             <div class="setting-text">
               <strong>外观</strong>
-              <p>选择更适合当前工作环境的明暗。「跟随系统」跟着 Windows 的深浅色设置走。</p>
+              <p>选择更适合当前工作环境的明暗。</p>
             </div>
             <div class="segmented" role="group" aria-label="外观">
               <button id="themeOpt-light" onclick="setTheme('light')">浅色</button>
@@ -453,20 +481,6 @@
           </div>
           <div class="setting-row">
             <div class="setting-text">
-              <strong>显示器</strong>
-              <p>本机当前检测到的显示器型号。</p>
-            </div>
-            <div class="setting-ctrl"><span class="setting-value" id="display">—</span></div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-text">
-              <strong>设备标识</strong>
-              <p>配对时用来区分本机的固定标识，两台机器各不相同。</p>
-            </div>
-            <div class="setting-ctrl"><code id="identity">—</code></div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-text">
               <strong>软件更新</strong>
               <p>查看新版本和更新说明，下载并安装。</p>
             </div>
@@ -479,6 +493,21 @@
             </div>
             <button class="btn-sm" onclick="post('/api/open-config')"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>打开配置文件夹</button>
           </div>
+          <details class="settings-extra"><summary>设备信息</summary>          <div class="setting-row">
+            <div class="setting-text">
+              <strong>显示器</strong>
+              <p>本机当前检测到的显示器型号。</p>
+            </div>
+            <div class="setting-ctrl"><span class="setting-value" id="display">—</span></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <strong>设备标识</strong>
+              <p>配对时用来区分本机的固定标识，两台机器各不相同。</p>
+            </div>
+            <div class="setting-ctrl"><code id="identity">—</code></div>
+          </div>
+          </details>
         </div>
       </section>
     </div>
@@ -491,7 +520,21 @@
     <span class="footer-message" id="footerMessage"></span>
     <span class="escape-hint"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd><span>紧急断开键鼠</span></span>
   </footer>
-</div>
+  <!-- 窗口边缘的缩放热区：无边框窗口的鼠标消息全落在 WebView2 子窗口上，
+       tao 写在顶层窗口里的八向 hit-test 根本收不到（探针实测：客户区四边的
+       WindowFromPoint 全返回 Chrome_RenderWidgetHostHWND）。所以在页面上贴一圈
+       5px 的透明条，按下就喊后端从那一条边开始拖 —— 之后由系统接管到松手。
+       同样只在 ?frame=none 时显示。 -->
+  <div class="frame-handles" id="frameHandles" hidden>
+    <div class="fh fh-n" data-dir="n"></div>
+    <div class="fh fh-s" data-dir="s"></div>
+    <div class="fh fh-w" data-dir="w"></div>
+    <div class="fh fh-e" data-dir="e"></div>
+    <div class="fh fh-nw" data-dir="nw"></div>
+    <div class="fh fh-ne" data-dir="ne"></div>
+    <div class="fh fh-sw" data-dir="sw"></div>
+    <div class="fh fh-se" data-dir="se"></div>
+  </div></div>
 
 <!-- 更新弹窗：顶栏「更新」点开。内容按 snap.update.phase 现算（update.js），
      这里只放骨架 —— 和摆位图一个路子，DOM 结构固定、文字每次轮询刷新。 -->
