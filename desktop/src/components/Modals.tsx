@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { Snapshot } from "../lib/types";
 import { Modal, ModalHead } from "./Modal";
 import { setLabel, setTarget, scanPorts, updateAction } from "../lib/api";
@@ -10,17 +10,17 @@ export function HelpModal({ snap, onClose, onDiagnostics }: { snap: Snapshot; on
       <ModalHead title="让设备协同起来" onClose={onClose} />
       <div className="modal-body">
         <p>单屏切换和多屏共享可以一起使用。左侧四个页面只切换视图，各台设备仍按自己的布局工作。</p>
-        <div className="help-row"><span>切换显示器输入源</span><span className="keys">{snap.hotkey || "—"}</span></div>
-        <div className="help-row"><span>紧急断开键鼠共享</span><span className="keys">Ctrl + Alt + Esc</span></div>
-        <div className="help-row"><span>摆放已选对端</span><span className="keys">方向键 / 拖动</span></div>
-        <div className="help-row"><span>把对端移回未摆位</span><span className="keys">Delete</span></div>
+        <div className="help-row"><span>切换显示器输入源</span><span>{(snap.hotkey || "—").split("+").map((k) => <kbd key={k}>{k.trim()}</kbd>)}</span></div>
+        <div className="help-row"><span>紧急断开键鼠共享</span><span><kbd>Ctrl + Alt + Esc</kbd></span></div>
+        <div className="help-row"><span>摆放已选对端</span><span>方向键 / 拖动</span></div>
+        <div className="help-row"><span>把对端移回未摆位</span><span><kbd>Delete</kbd></span></div>
         <div className="modal-note">方向键和 Delete 在点选一台对端后生效。切屏快捷键由主程序全局注册，面板不是当前窗口时也有效。</div>
-        <div className="modal-actions">
-          <button onClick={onClose}>知道了</button>
-          <button className="ghost" onClick={onDiagnostics}>
-            切换遇到问题？
-          </button>
-        </div>
+      </div>
+      <div className="modal-actions">
+        <button onClick={onClose}>知道了</button>
+        <button className="text-button" onClick={onDiagnostics}>
+          切换遇到问题？
+        </button>
       </div>
     </Modal>
   );
@@ -32,14 +32,14 @@ export function DiagnosticsModal({ onClose }: { onClose: () => void }) {
       <ModalHead title="切换遇到问题？" onClose={onClose} />
       <div className="modal-body">
         <p>画面在另一台电脑时，需要由对端发出切回指令。先确认对端在线，再检查显示器连接。</p>
-        <div className="help-row"><span>显示器菜单</span><span className="keys">开启 DDC/CI</span></div>
-        <div className="help-row"><span>显示器连线</span><span className="keys">优先 DP / HDMI 直连</span></div>
-        <div className="help-row"><span>另一台电脑</span><span className="keys">开机并运行 InputSwitch</span></div>
-        <div className="help-row"><span>双方配对码</span><span className="keys">完全一致</span></div>
+        <div className="help-row"><span>显示器菜单</span><span>开启 DDC/CI</span></div>
+        <div className="help-row"><span>显示器连线</span><span>优先 DP / HDMI 直连</span></div>
+        <div className="help-row"><span>另一台电脑</span><span>开机并运行 InputSwitch</span></div>
+        <div className="help-row"><span>双方配对码</span><span>完全一致</span></div>
         <div className="modal-note">笔记本内置屏幕通常不支持 DDC/CI。顶栏「检测能否切换」给出的是本机的实际检测结果，以它为准。</div>
-        <div className="modal-actions">
-          <button onClick={onClose}>返回工作台</button>
-        </div>
+      </div>
+      <div className="modal-actions">
+        <button onClick={onClose}>返回工作台</button>
       </div>
     </Modal>
   );
@@ -53,19 +53,19 @@ export function ScanModal({ onClose, refresh, flash }: { onClose: () => void; re
       <div className="modal-body">
         <p>扫描会逐个尝试输入口，屏幕可能短暂变黑几次。请先保存正在编辑的内容。</p>
         <div className="modal-note">扫描结束后会试着把画面切回本机输入口；没能切回时面板会告诉你怎么手动切回来。局域网里没有对端在线时只汇总已知信息，不切屏。</div>
-        <div className="modal-actions">
-          <button onClick={onClose}>暂不扫描</button>
-          <button
-            className="primary"
-            onClick={() => {
-              onClose();
-              flash("正在扫描，屏幕会黑几次…");
-              void scanPorts().then(refresh);
-            }}
-          >
-            开始扫描
-          </button>
-        </div>
+      </div>
+      <div className="modal-actions">
+        <button onClick={onClose}>暂不扫描</button>
+        <button
+          className="primary"
+          onClick={() => {
+            onClose();
+            flash("正在扫描，屏幕会黑几次…");
+            void scanPorts().then(refresh);
+          }}
+        >
+          开始扫描
+        </button>
       </div>
     </Modal>
   );
@@ -103,7 +103,7 @@ export function PortsModal({
         <p>给输入口起一个好认的名字，或设为热键目标。</p>
         <div className="ports-list">
           {snap.inputs.length === 0 && (
-            <div className="empty">没有检测到输入源。接好显示器后点顶部「重新检测」再读一次。</div>
+            <div className="list-empty">没有检测到输入源。接好显示器后点顶部「重新检测」再读一次。</div>
           )}
           {snap.inputs.map((i) => {
             const dead = i.presence === "invalid";
@@ -124,12 +124,12 @@ export function PortsModal({
                   <small>{meta}</small>
                 </div>
                 {dead || i.current ? (
-                  <button className="btn-sm" disabled title={i.current ? "这是当前输入源" : "显示器固件不接受这个输入口"}>
+                  <button className="small-button" disabled title={i.current ? "这是当前输入源" : "显示器固件不接受这个输入口"}>
                     设为热键
                   </button>
                 ) : (
                   <button
-                    className="btn-sm"
+                    className="small-button"
                     onClick={() => {
                       void setTarget(i.value).then(refresh);
                       flash(`热键目标已设为 ${i.label}`);
@@ -142,13 +142,13 @@ export function PortsModal({
             );
           })}
         </div>
-        {snap.port_note && <div className="hint" style={{ marginTop: 12 }}>上次检测：{snap.port_note}</div>}
-        <div className="modal-actions">
-          <button onClick={onClose}>取消</button>
-          <button className="primary" onClick={() => void save()}>
-            保存名称
-          </button>
-        </div>
+        {snap.port_note && <div className="field-help" style={{ marginTop: 12 }}>上次检测：{snap.port_note}</div>}
+      </div>
+      <div className="modal-actions">
+        <button onClick={onClose}>取消</button>
+        <button className="primary" onClick={() => void save()}>
+          保存名称
+        </button>
       </div>
     </Modal>
   );
@@ -165,11 +165,12 @@ export function UpdateModal({ snap, onClose, refresh, flash }: { snap: Snapshot;
     if (a === "download") flash("开始下载…");
     if (a === "dismiss") onClose();
   };
+  // 弹窗头写"这是什么"，状态写进正文 —— 标题不该是一句话
   const title =
     u.phase === "downloading" ? "正在下载更新" :
     u.phase === "ready" ? "更新已就绪" :
     u.phase === "available" ? `发现新版本 ${u.latest}` :
-    `当前已是最新版（v${u.current}）`;
+    "软件更新";
   return (
     <Modal label="更新" onClose={onClose}>
       <ModalHead title={title} onClose={onClose} />
@@ -180,21 +181,26 @@ export function UpdateModal({ snap, onClose, refresh, flash }: { snap: Snapshot;
             {u.notes && <div className="modal-note">{u.notes}</div>}
           </>
         )}
-        {u.error && <p style={{ color: "var(--red)" }}>{u.error}</p>}
+        {(u.phase === "idle" || u.phase === "up_to_date" || u.phase === "checking") && (
+          <p>{u.phase === "checking" ? "正在检查新版本…" : `当前版本 v${u.current} 已是最新。`}</p>
+        )}
+        {u.error && <p style={{ color: "var(--danger)" }}>{u.error}</p>}
         {u.phase === "downloading" && u.total > 0 && (
-          <div className="progress">
-            <i style={{ width: `${Math.round((u.downloaded / u.total) * 100)}%` }} />
+          <div className="progress-track" role="progressbar" aria-valuenow={Math.round((u.downloaded / u.total) * 100)} aria-valuemin={0} aria-valuemax={100}>
+            <i style={{ "--progress": u.downloaded / u.total } as CSSProperties} />
           </div>
         )}
-        <div className="modal-actions">
-          {(u.phase === "idle" || u.phase === "failed") && <button onClick={() => act("check")}>检查更新</button>}
-          {u.phase === "available" && <button className="primary" onClick={() => act("download")}>下载更新</button>}
-          {u.phase === "ready" && <button className="primary" onClick={() => act("install")}>重启并安装</button>}
-          {u.latest && u.latest !== u.current && u.phase !== "downloading" && (
-            <button className="ghost" onClick={() => act("dismiss")}>跳过此版本</button>
-          )}
-          <button className="ghost" onClick={onClose}>关闭</button>
-        </div>
+      </div>
+      <div className="modal-actions">
+        {(u.phase === "idle" || u.phase === "failed" || u.phase === "up_to_date") && (
+          <button onClick={() => act("check")}>检查更新</button>
+        )}
+        {u.phase === "available" && <button className="primary" onClick={() => act("download")}>下载更新</button>}
+        {u.phase === "ready" && <button className="primary" onClick={() => act("install")}>重启并安装</button>}
+        {u.latest && u.latest !== u.current && u.phase !== "downloading" && (
+          <button className="text-button" onClick={() => act("dismiss")}>跳过此版本</button>
+        )}
+        <button className="text-button" onClick={onClose}>关闭</button>
       </div>
     </Modal>
   );

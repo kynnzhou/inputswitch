@@ -76,6 +76,7 @@ export type UpdatePhase =
   | "available"
   | "downloading"
   | "ready"
+  | "up_to_date"
   | "restarting"
   | "failed"
   | string;

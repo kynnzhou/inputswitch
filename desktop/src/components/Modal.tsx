@@ -1,9 +1,10 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { Icon } from "./IconSprite";
 
 /**
- * 弹窗骨架（对照批3 openModal/closeModal 三件套）：
- * - Esc 关最上层（多层各关各的）；遮罩点击关闭；开时焦点进框、关时还焦
- * - role=dialog + aria-modal；标题由 aria-label 给
+ * 弹窗骨架 = 设计稿的 <dialog class="modal"> + .modal-content：
+ * - 原生 dialog.showModal()：Esc 关闭、外点关闭、焦点困在框内都由平台负责
+ * - 关闭后把焦点还给打开它的那个按钮
  */
 export function Modal({
   label,
@@ -14,45 +15,49 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
-  const boxRef = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
   const openerRef = useRef<Element | null>(null);
+  // onClose 是调用方每次渲染新建的箭头函数（快照 400ms 一刷 → 每次都是新的）。
+  // 直接进依赖数组会让「关掉再打开」每 400ms 跑一遍，弹窗闪、焦点跳；
+  // 用 ref 顶住，挂载/卸载只在真正开合时发生。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     openerRef.current = document.activeElement;
-    boxRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
+    const d = ref.current;
+    if (d && !d.open && typeof d.showModal === "function") d.showModal();
+    const onCancel = (e: Event) => {
+      e.preventDefault();
+      onCloseRef.current();
     };
-    document.addEventListener("keydown", onKey, true);
+    d?.addEventListener("cancel", onCancel);
     return () => {
-      document.removeEventListener("keydown", onKey, true);
+      d?.removeEventListener("cancel", onCancel);
+      if (d?.open && typeof d.close === "function") d.close();
       (openerRef.current as HTMLElement | null)?.focus?.();
     };
-  }, [onClose]);
+  }, []);
 
   return (
-    <div
-      className="modal-mask"
+    <dialog
+      ref={ref}
+      aria-label={label}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal glass" role="dialog" aria-modal="true" aria-label={label} ref={boxRef} tabIndex={-1}>
-        {children}
-      </div>
-    </div>
+      <div className="modal-content">{children}</div>
+    </dialog>
   );
 }
 
 export function ModalHead({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <div className="modal-head">
-      <b>{title}</b>
-      <button className="modal-x" onClick={onClose} aria-label="关闭">
-        ×
+      <h2>{title}</h2>
+      <button className="icon-button" onClick={onClose} aria-label="关闭对话框">
+        <Icon name="close" />
       </button>
     </div>
   );
