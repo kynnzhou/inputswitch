@@ -57,7 +57,7 @@ const RUST_BASELINE = {
   'src/peer.rs': 547,
   'src/support.rs': 249,
   'src/transfer.rs': 568,
-  'src/tray/mod.rs': 498,
+  'src/tray/mod.rs': 502,
   'src/config/mod.rs': 28,
   'src/switcher/mod.rs': 71,
   'src/kvm/event/mod.rs': 51

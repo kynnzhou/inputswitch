@@ -70,7 +70,7 @@ pub(super) fn restart_app() {
     std::process::exit(0);
 }
 
-pub(super) fn open_config_dir() {
+pub fn open_config_dir() {
     let dir = crate::config::config_dir();
     let _ = std::fs::create_dir_all(&dir);
     #[cfg(target_os = "macos")]
@@ -102,7 +102,7 @@ pub(super) fn mask_code(code: &str) -> String {
     format!("{head}**{tail}")
 }
 
-pub(super) fn open_path(path: &std::path::Path) {
+pub fn open_path(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");

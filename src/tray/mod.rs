@@ -41,6 +41,10 @@ use crate::{transfer, Switcher};
 mod actions;
 pub mod engine;
 pub use self::menu::port_rows_for_snapshot;
+// Tauri 壳（desktop/src-tauri）复用的桥：与旧壳同一份实现，绝不复制逻辑。
+pub use self::kvmctl::{kvm_boot, perms_ok, pick_peer, restart_kvm};
+pub use self::send::{pick_files, pick_folder, resolve_peer};
+pub use self::sys::{open_config_dir, open_path};
 mod events;
 mod hotkey;
 mod kvmctl;
@@ -96,7 +100,7 @@ pub(super) static PANEL_PORT: AtomicU16 = AtomicU16::new(0);
 /// 放静态而不是传参：整个进程只有一个，而需要它的地方分散在 UI 线程
 /// （菜单开关）、工作线程（切屏后叫键鼠跟过去）、面板（按钮）。
 /// 硬传下去要给 `engine_loop` 加一整串参数，收益不抵成本。
-static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
+pub static KVM: Mutex<Option<Arc<kvm::Kvm>>> = Mutex::new(None);
 
 /// 本机剪贴板里"等着按需传输"的文件清单。
 ///
@@ -107,7 +111,7 @@ static CLIP_PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static CLIP_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// 取当前实例的克隆。没有就是共用键鼠没开。
-fn kvm_now() -> Option<Arc<kvm::Kvm>> {
+pub fn kvm_now() -> Option<Arc<kvm::Kvm>> {
     KVM.lock().ok().and_then(|slot| slot.clone())
 }
 

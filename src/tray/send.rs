@@ -20,7 +20,7 @@ use super::kvm_now;
 use super::UserEvent;
 
 /// 调系统文件选择器。浏览器给不了本地绝对路径，只能走系统对话框。
-fn pick_files() -> Vec<PathBuf> {
+pub fn pick_files() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let script = "set out to \"\"\nrepeat with f in (choose file with multiple selections allowed)\nset out to out & (POSIX path of f) & linefeed\nend repeat\nreturn out";
@@ -79,7 +79,7 @@ fn pick_files() -> Vec<PathBuf> {
     }
 }
 
-pub(super) fn pick_folder() -> Option<PathBuf> {
+pub fn pick_folder() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("/usr/bin/osascript")
@@ -132,7 +132,7 @@ pub(super) fn pick_folder() -> Option<PathBuf> {
 ///
 /// 原来是死写 `peers.first()`：一机四台时文件必然发给排序第一的那台，
 /// 而且界面上没有任何地方能看出"到底发给谁了"。
-fn resolve_peer(mesh: &Mesh, target: Option<&str>) -> Result<Peer, String> {
+pub fn resolve_peer(mesh: &Mesh, target: Option<&str>) -> Result<Peer, String> {
     let peers = mesh.live_peers();
     if peers.is_empty() {
         return Err("局域网里没找到对端，先让对面那台也开着本程序".to_string());
