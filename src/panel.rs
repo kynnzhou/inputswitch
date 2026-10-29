@@ -389,6 +389,23 @@ fn handle(
 
     match (method.as_str(), route.as_str()) {
         ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", PANEL_INDEX),
+        // 新前端（React/Vite 构建，P0 起逐页迁入；构建产物内嵌见 build.rs 的
+        // emit_panel_dist）。`/app` 与 `/app/` 都给 index.html，`/app/<file>`
+        // 查产物表。没跑过 npm build 时表为空，回一句提示而不是 404 ——
+        // 面板窗口开在 /app/ 时用户至少知道发生了什么。
+        ("GET", "/app") | ("GET", "/app/") => respond(
+            &mut stream,
+            200,
+            "text/html; charset=utf-8",
+            panel_dist::lookup_html("index.html"),
+        ),
+        (_, p) if method == "GET" && p.starts_with("/app/") => {
+            let name = p.trim_start_matches("/app/");
+            match panel_dist::PANEL_DIST.iter().find(|(u, _, _)| *u == name) {
+                Some((_, mime, bytes)) => respond_bytes(&mut stream, 200, mime, bytes),
+                None => respond(&mut stream, 404, "text/plain; charset=utf-8", "not found"),
+            }
+        }
         // 页面源件。本机回环上多几个请求零开销；不合并、不压缩 ——
         // 保持"改哪个文件、cargo build 就生效"的直接性。
         ("GET", "/panel.css") => {
@@ -827,6 +844,45 @@ fn respond(
     stream.write_all(head.as_bytes())?;
     stream.write_all(body.as_bytes())?;
     stream.flush()
+}
+
+/// `respond` 的二进制版：前端产物（js/css/字体）是 `&[u8]`，别走 lossy 的字符串。
+fn respond_bytes(
+    stream: &mut TcpStream,
+    code: u16,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 {code} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        if code == 200 { "OK" } else { "Not Found" },
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+/// 新前端（React）构建产物的内嵌表，由 build.rs 的 `emit_panel_dist` 生成。
+/// 没跑过 `npm build` 时表为空，`/app/` 回提示页 —— cargo 单独构建不依赖 node。
+mod panel_dist {
+    include!(concat!(env!("OUT_DIR"), "/panel_dist.rs"));
+
+    /// 找不到产物时给一句人话，而不是空白页/404。
+    pub(super) fn lookup_html(name: &str) -> &'static str {
+        for (url, _, bytes) in PANEL_DIST {
+            if *url == name {
+                return std::str::from_utf8(bytes).unwrap_or(FALLBACK);
+            }
+        }
+        FALLBACK
+    }
+
+    const FALLBACK: &str = "<!DOCTYPE html><html lang=zh-CN><meta charset=utf-8>\
+<title>InputSwitch</title><body style=\"font:14px system-ui;padding:24px\">\
+新前端还没有构建产物：先在 desktop/ 跑 <code>npm ci && npm run build</code>，\
+再跑 <code>node tools/copy-panel-dist.mjs</code>，然后重新 cargo build。\
+旧面板在 <a href=/ >这里</a>。</body></html>";
 }
 
 pub fn human(bytes: u64) -> String {
