@@ -1,0 +1,12 @@
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/ico-caa3d9cdb10d3002.d: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/macros.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/bmpdepth.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/icondir.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/image.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/restype.rs
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libico-caa3d9cdb10d3002.rlib: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/macros.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/bmpdepth.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/icondir.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/image.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/restype.rs
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libico-caa3d9cdb10d3002.rmeta: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/macros.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/bmpdepth.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/icondir.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/image.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/restype.rs
+
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/lib.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/macros.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/bmpdepth.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/icondir.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/image.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ico-0.6.0/src/restype.rs:

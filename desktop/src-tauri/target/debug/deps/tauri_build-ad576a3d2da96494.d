@@ -1,0 +1,11 @@
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/tauri_build-ad576a3d2da96494.d: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/acl.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/manifest.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/mobile.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/windows-app-manifest.xml
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libtauri_build-ad576a3d2da96494.rlib: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/acl.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/manifest.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/mobile.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/windows-app-manifest.xml
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libtauri_build-ad576a3d2da96494.rmeta: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/acl.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/manifest.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/mobile.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/windows-app-manifest.xml
+
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/lib.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/acl.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/manifest.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/mobile.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-build-2.7.4/src/windows-app-manifest.xml:

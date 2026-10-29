@@ -1,0 +1,3 @@
+cargo:rerun-if-changed=assets/AppIcon.ico
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=assets/panel-dist

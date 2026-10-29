@@ -1,0 +1,26 @@
+[package]
+name = "inputswitch-tauri"
+version = "0.6.90"
+edition = "2021"
+description = "InputSwitch 的 Tauri 2 桌面壳（托盘/热键/面板窗口）"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 与根 crate 同版本号由 scripts/sync-version.mjs 同步（真源在根 Cargo.toml）。
+# 后端逻辑全部来自根 lib（kvm/transfer/panel…），壳只管窗口、托盘与热键。
+inputswitch = { path = "../.." }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ⚠️ 明确不引的东西（细案 D3 / 探针结论）：
+# - tauri-plugin-updater：会拖进 reqwest → rustls → aws-lc-sys（C 工具链），
+#   毁掉「Zig 交叉编译不需要 C 工具链」的前提。自动更新继续走自研 update/ 模块。
+# - tauri-plugin-dialog / clipboard-manager：这两块自研已稳定且带历史教训，
+#   换插件收益为负。P2 先不引，确有需要再单独评估。
+
+[features]
+default = []

@@ -1,0 +1,10 @@
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/global_hotkey-9449f586b914c196.d: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/error.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/hotkey.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/mod.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/mod.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/ffi.rs
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libglobal_hotkey-9449f586b914c196.rmeta: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/error.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/hotkey.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/mod.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/mod.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/ffi.rs
+
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/lib.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/error.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/hotkey.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/mod.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/mod.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/global-hotkey-0.6.4/src/platform_impl/macos/ffi.rs:

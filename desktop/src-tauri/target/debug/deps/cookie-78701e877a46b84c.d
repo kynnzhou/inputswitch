@@ -1,0 +1,12 @@
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/cookie-78701e877a46b84c.d: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs
+
+/Users/zhouke/Project/inputswitch-rs/desktop/src-tauri/target/debug/deps/libcookie-78701e877a46b84c.rmeta: /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs /Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs
+
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs:
+/Users/zhouke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs:
