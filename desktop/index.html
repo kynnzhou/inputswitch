@@ -4,6 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>InputSwitch · 切屏控制台</title>
+  <script>
+    // 主题防闪（与旧面板同一段代码、同一 localStorage 键）：首屏 paints 前落 data-theme。
+    (function(){try{
+      var t = localStorage.getItem('inputswitch.panel.theme') || 'system';
+      var dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      if (localStorage.getItem('inputswitch.panel.reduce-motion') === '1') {
+        document.documentElement.classList.add('reduced-motion');
+      }
+    }catch(e){}})();
+  </script>
 </head>
 <body>
   <div id="root"></div>
