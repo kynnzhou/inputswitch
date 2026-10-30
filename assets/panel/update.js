@@ -49,7 +49,9 @@ function renderRestartOverlay(u) {
 function renderUpdateDialog(u) {
   const title = document.getElementById('updateTitle');
   const body = document.getElementById('updateBody');
-  const closeBtn = '<button class="btn-sm ghost" onclick="closeUpdate()">关闭</button>';
+  // 关闭钮用普通按钮而不是 btn-sm ghost：同一行还有主按钮时，一个 32 高
+  // 实心蓝 + 一个 28 高裸文字，高低和宽窄都对不上（实测蓝块占 356px）。
+  const closeBtn = '<button onclick="closeUpdate()">关闭</button>';
   const cur = u.current || '—';
   // 发布日期只取日期段：ISO 时间戳对用户没有意义，还占一行
   const pubDate = (u.pub_date || '').slice(0, 10);
@@ -85,8 +87,8 @@ function renderUpdateDialog(u) {
       <div class="upd-hint">安装包已下载并通过 SHA-256 校验。安装过程中本程序会退出，
         装完自动重启（大约几十秒）；不想现在装就关掉，随时可以再打开。</div>
       <div class="upd-row">
-        <button class="primary" onclick="updateAction('install')">安装并重启</button>
         ${closeBtn}
+        <button class="strong" onclick="updateAction('install')">安装并重启</button>
       </div>`;
     return;
   }
@@ -96,7 +98,9 @@ function renderUpdateDialog(u) {
       <div class="upd-ver">v${esc(cur)} → v${esc(u.latest || '…')}</div>
       <div class="upd-hint">倒计时结束就安装。取消可以继续用当前版本，安装包还在。</div>
       <div class="upd-row">
-        <button class="primary" onclick="updateAction('cancel')">取消重启</button>
+        <!-- 取消不是主操作：它挂 primary 时是本弹窗里最重的按钮，
+            语义正好反了（"中断"看起来比"继续"更该点）。 -->
+        <button onclick="updateAction('cancel')">取消重启</button>
       </div>`;
     return;
   }
@@ -105,8 +109,10 @@ function renderUpdateDialog(u) {
     body.innerHTML = `
       <div class="upd-ver">当前版本 v${esc(cur)} 已是最新。</div>
       <div class="upd-row">
-        <button class="primary" onclick="updateAction('check')">重新检查</button>
         ${closeBtn}
+        <!-- 「已是最新」这一屏没有要用户办的事，两个都是退出的路，
+             谁也别比谁重。 -->
+        <button onclick="updateAction('check')">重新检查</button>
       </div>`;
     return;
   }
@@ -117,8 +123,8 @@ function renderUpdateDialog(u) {
       <div class="upd-notes">${esc(u.error || '未知错误')}</div>
       ${u.code ? `<div class="upd-ver">错误分类：${esc(u.code)}</div>` : ''}
       <div class="upd-row">
-        <button class="primary" onclick="updateAction('check')">重试</button>
         ${closeBtn}
+        <button class="strong" onclick="updateAction('check')">重试</button>
       </div>`;
     return;
   }
@@ -136,9 +142,9 @@ function renderUpdateDialog(u) {
       ${skipped ? '<div class="upd-hint">已忽略这个版本：顶栏不再显示徽章，但更新仍然可以装。</div>' : ''}
       ${u.notes ? `<div class="upd-notes">${esc(u.notes)}</div>` : ''}
       <div class="upd-row">
-        <button class="primary" onclick="updateAction('download')">下载并安装</button>
         ${dismissBtn}
         ${closeBtn}
+        <button class="strong" onclick="updateAction('download')">下载并安装</button>
       </div>`;
     return;
   }
@@ -147,8 +153,8 @@ function renderUpdateDialog(u) {
   body.innerHTML = `
     <div class="upd-ver">当前版本 v${esc(cur)}，还没检查过更新。</div>
     <div class="upd-row">
-      <button class="primary" onclick="updateAction('check')">检查更新</button>
       ${closeBtn}
+      <button class="strong" onclick="updateAction('check')">检查更新</button>
     </div>`;
 }
 

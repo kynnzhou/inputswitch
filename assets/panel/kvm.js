@@ -26,8 +26,9 @@ function renderKvm() {
     node.classList.toggle('sel', Math.abs(v - scale) < 0.001);
   });
   if (el('kvmScaleHint')) {
-    el('kvmScaleHint').textContent = '当前 ×' + scale.toFixed(1)
-      + '。只影响键鼠在对端、你在本机操作时的速度。';
+    // 只报当前值：上面那行说明已经讲清了「什么时候生效、调了会重连」，
+    // 这里再解释一遍就是同一句话说两遍。
+    el('kvmScaleHint').textContent = '当前 ×' + scale.toFixed(1);
   }
 
   // 缺权限时给一条明路。注意这两个值由 GUI 进程自己上报，不看 CLI 探针
@@ -204,7 +205,10 @@ function renderKvmGrid(k) {
 
   const cell = (slot) => {
     if (slot === 'self') {
-      return `<div class="cell self" data-drop="self">本机<small>${esc(snap.node || '—')}</small></div>`;
+      // 主副不能反：左边名册里这台机器是「DESKTOP-岩 / 本机」（名字大、
+      // 角色小），格子里的同一台机器也必须长一样。反过来写就成了
+      // 「本机 / DESKTOP-岩」，同一台机器在同一个页面上有两套层次。
+      return `<div class="cell self" data-drop="self"><strong>${esc(snap.node || '—')}</strong><small>本机</small></div>`;
     }
     if (slot === 'corner') {
       // 协议里只有上下左右四个门，四角永远不能放。留空比写四个「斜角不连」安静
@@ -217,7 +221,11 @@ function renderKvmGrid(k) {
     const inner = taken
       ? screenCard(taken.node, taken)
       : '<span class="dropzone">' + (kvmSelected ? '放到这里' : '拖到这里') + '</span>';
-    return `<div class="cell${aim}" data-drop="${slot}"><span class="sideslot">${SIDE_NAME[slot]}</span>${inner}</div>`;
+    // 空槽补一个加号：两行灰字看不出这是"可以放东西的地方"，设计稿每个
+    // 空槽都是 加号 / 槽名 / 动作 三行。有设备的格子不加。
+    return `<div class="cell${aim}" data-drop="${slot}">`
+      + (taken ? '' : icon('plus', 'slot-plus'))
+      + `<span class="sideslot">${SIDE_NAME[slot]}</span>${inner}</div>`;
   };
   box.innerHTML = GRID_ROWS.map(row => row.map(cell).join('')).join('');
 
@@ -287,15 +295,21 @@ function renderWorkspaceTopology(k) {
 
   const slotHtml = (slot) => {
     if (slot === 'self') {
+      // 同 renderKvmGrid 的 cell('self')：名字当标题、角色当副标题。
       return '<div class="topology-slot self slot-self">' + icon('windows')
-        + '<strong>本机</strong><small>' + esc(snap.node || '—') + '</small></div>';
+        + '<strong>' + esc(snap.node || '—') + '</strong><small>本机</small></div>';
     }
     const taken = bySide[slot];
     // 同 renderKvmGrid 的 cell()：选中一台后空槽亮 aim、文案变「点这里放下」
     const aim = kvmSelected && !taken ? ' aim' : '';
+    // 空槽里加一个「+」：光两行灰字看不出这是"可以放东西的地方"，
+    // 设计稿每个空槽都有加号（上方 + 槽名 + 放置设备三行）。
+    const hint = kvmSelected
+      ? '<em>点这里放下</em>'
+      : '<em>' + SIDE_NAME[slot] + '</em><small>放置设备</small>';
     const inner = taken
       ? screenCard(taken.node, taken)
-      : '<span class="slothint">' + (kvmSelected ? '点这里放下' : SIDE_NAME[slot] + '<br>放置设备') + '</span>';
+      : '<span class="slothint">' + icon('plus') + hint + '</span>';
     return '<div class="topology-slot' + (taken ? ' occupied' : '') + aim + ' slot-' + slot
       + '" data-drop="' + slot + '">' + inner + '</div>';
   };

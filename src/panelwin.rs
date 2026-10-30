@@ -71,6 +71,13 @@ mod imp {
 
             center(&window, width, height);
 
+            // 建窗时 with_visible(false)：系统可能把这扇窗的初始 placement 记成
+            // 最小化。这里先还原一次 —— show() 里那次检查不够，因为启动即开面板
+            // 时 show() 跑在窗口刚建好、还没进任务栏的那一刻，is_minimized()
+            // 仍返回 false，等系统补记最小化态时已经晚了（实测窗口停在
+            // -32000,-32000，IsIconic=1，页脚全在屏幕外）。
+            window.set_minimized(false);
+
             let rect = Rect {
                 position: Position::Logical(WryPos::new(0.0, 0.0)),
                 size: Size::Logical(WrySize::new(width, height)),
@@ -103,6 +110,11 @@ mod imp {
                 self.window.set_minimized(false);
             }
             self.window.set_visible(true);
+            // 显示之后再查一次：最小化是系统在 ShowWindow 时才补记的，显示
+            // 之前那次查询可能还是 false（启动即开面板时实测就是这样）。
+            if self.window.is_minimized() {
+                self.window.set_minimized(false);
+            }
             self.window.set_focus();
             // 托盘程序是 LSUIElement（没有 Dock 图标），光 set_focus 抢不到前台，
             // 窗口会藏在别的 app 后面，用户会以为点了没反应。

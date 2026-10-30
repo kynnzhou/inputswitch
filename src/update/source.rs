@@ -2,7 +2,8 @@
 //!
 //! ## 只有两级
 //!
-//! ```
+//! 不是示意图代码，标 text 别让 rustdoc 当 Rust 编译。
+//! ```text
 //! ghproxy.net  →  github.com 直连
 //! ```
 //!

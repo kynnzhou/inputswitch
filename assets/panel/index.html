@@ -93,8 +93,18 @@
       <button class="nav-item" id="nav-settings" data-page="settings" title="设置" onclick="showPage('settings')"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>设置</span></button>
     </nav>
     <div class="sidebar-bottom">
-      <button class="sidebar-help" onclick="openHelp()" title="快捷键与使用帮助"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span>使用帮助</span></button>
-      <div class="local-machine"><svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg><div><strong id="navNode">—</strong><span>本机</span></div><i class="status-dot" aria-hidden="true"></i></div>
+      <!-- 这里原来还有一个「使用帮助」，和顶栏问号调的是同一个 openHelp()、
+           开的是同一个弹窗。窄栏（appW<950，125% DPI 下恒成立）两个问号同屏
+           出现，纯冗余 —— 帮助入口只留顶栏那个（挨着窗口三键，Windows 惯例位）。
+           侧栏底部留给本机信息。 -->
+      <!-- 本机块原来是纯展示 div，但窄栏下文字全收、只剩一个图标，
+           尺寸和导航项一模一样（49×39 vs 49×40）—— 看着就是第五个导航按钮，
+           点下去却毫无反应。改成真入口：点它去设备页看本机详情。
+           图标用 i-laptop 而不用 i-windows：实心四格与「工作台」的 i-grid 在 20px
+           下轮廓都是 2×2 四宫格，窄栏纯图形语境里会被读成工作台。设备页与状态行
+           仍用 i-windows —— 那两处都有文字兜底，符号只作装饰。 -->
+      <div class="local-machine" role="button" tabindex="0" onclick="showPage('devices')"
+           title="查看本机设备与布局"><svg class="icon" aria-hidden="true"><use href="#i-laptop"/></svg><div><strong id="navNode">—</strong><span>本机</span></div><i class="status-dot" aria-hidden="true"></i></div>
     </div>
   </aside>
   <header class="app-titlebar" id="appTitlebar">
@@ -231,7 +241,7 @@
            #kvmLooseBox / #kvmGridHint / #kvmFlash / #kvmLinks。
            pane 默认态由 showPage('devices') 按配对态选（未配对→配对表单）。 -->
       <section id="devicesView" class="page-view" aria-label="设备与布局" hidden>
-        <div class="view-heading"><div><h1>设备与布局</h1><p>连接你的电脑，让位置和桌面上一样。</p></div><button class="btn-sm" onclick="showDevicePane('pair', true)"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加设备</button></div>
+        <div class="view-heading"><div><h1>设备与布局</h1><p>连接你的电脑，让位置和桌面上一样。</p></div><button class="page-action" onclick="showDevicePane('pair', true)"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加设备</button></div>
         <div class="devices-layout">
           <div class="device-list">
             <p class="list-label">这台电脑</p>
@@ -247,7 +257,7 @@
             <div class="pair-summary">
               <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
               <span id="pairSummaryText">尚未配对</span>
-              <button class="ghost" onclick="showDevicePane('pair', true)">管理配对</button>
+              <button class="ghost" onclick="showDevicePane('pair', true)">管理配对<svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
             </div>
           </div>
 
@@ -311,7 +321,7 @@
                   <p class="field-help" id="pairHelp"></p>
                 </div>
                 <div class="form-actions">
-                  <button type="button" class="primary" id="pairSaveBtn" onclick="savePair()">保存并连接</button>
+                  <button type="button" class="strong" id="pairSaveBtn" onclick="savePair()">保存并连接</button>
                   <button type="button" class="ghost" onclick="showDevicePane('layout', true)">返回布局</button>
                   <button type="button" class="ghost" id="unpairBtn" style="display:none" onclick="unpair()">取消配对</button>
                 </div>
@@ -344,8 +354,8 @@
           <h2 id="dropPeer">把文件拖到这里</h2>
           <p>支持多文件和整个文件夹，重名文件不会覆盖</p>
           <div class="drop-actions">
-            <button onclick="sendFilesTo()">选择文件</button>
-            <button onclick="sendFolderTo()">选择文件夹</button>
+            <button class="page-action" onclick="sendFilesTo()">选择文件</button>
+            <button class="page-action" onclick="sendFolderTo()">选择文件夹</button>
             <button class="btn-sm ghost" onclick="sendTestTo()">发送测试文件</button>
           </div>
         </div>
@@ -392,29 +402,38 @@
               <strong>光标速度</strong>
               <p>仅在键鼠交给对端时生效，调整后会短暂重连。</p>
             </div>
-            <div class="setting-ctrl">
+            <div class="setting-ctrl ctrl-stack">
               <div id="kvmScaleRow">
                 <button id="kvmScale09" onclick="setKvmScale(0.9)">0.9</button>
                 <button id="kvmScale10" onclick="setKvmScale(1)">1.0</button>
                 <button id="kvmScale11" onclick="setKvmScale(1.1)">1.1</button>
                 <button id="kvmScale12" onclick="setKvmScale(1.2)">1.2</button>
               </div>
+              <!-- 当前档位是算出来的、不在按钮上写死，所以单独一行（render 每轮
+                   写「当前 ×1.1」）。这个元素原来带 hidden 且没人摘 —— kvm.js
+                   一直往里写 textContent，屏幕上永远是空的。
+                   必须挂在 .setting-ctrl 里面：作为行的下一个兄弟节点时它落在
+                   行底那条分隔线**下面**，读起来像属于下一行。 -->
+              <div class="hint" id="kvmScaleHint"></div>
             </div>
           </div>
-          <div class="hint" id="kvmScaleHint" hidden></div>
           <div class="setting-row"><div class="setting-text"><strong>同步剪贴板文本</strong><p>只同步到当前使用的设备，避免多台互相覆盖。</p></div><button id="settingsClipSwitch" class="sw" role="switch" aria-checked="false" aria-label="剪贴板同步" onclick="toggleClipboard()"></button></div>
           <div class="setting-row">
             <div class="setting-text">
               <strong>切屏快捷键</strong>
-              <p>点击改键，在弹窗中按组合键。</p>
+              <p>点击键帽改键，在弹出的小窗口里按组合键。</p>
             </div>
             <div class="setting-ctrl">
-              <span class="setting-value" id="hotkey">—</span>
-              <button class="btn-sm" onclick="recHotkey()">改键</button>
+              <!-- 键帽按钮本身就是改键入口（设计稿 .keybind）：值不再是
+                   一行点不了的死文字，也不需要旁边再站一个「改键」——
+                   同一行两个描边按钮，用户看不出点哪个。内容由 render 按
+                   snap.hotkey 写成 <kbd> 串。 -->
+              <button class="keybind" id="hotkey" onclick="recHotkey()"
+                      title="点击改键：按下想要的组合键" aria-label="切屏快捷键，点击修改">—</button>
               <!-- 恢复默认：录了个和别的软件冲突的组合后，唯一的回头路
                    以前是手改 config.json（后端 /api/hotkey-reset 重新注册
                    默认键并保存，前端 resetHotkey 在 actions.js） -->
-              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">恢复默认</button>
+              <button class="btn-sm ghost" onclick="resetHotkey()" title="恢复默认组合键 Ctrl + Alt + S">重置</button>
             </div>
           </div>
           <details class="settings-extra"><summary>热键目标</summary>          <div class="setting-row">
@@ -425,7 +444,7 @@
             <div class="setting-ctrl"><span class="setting-value" id="target">—</span></div>
           </div>
           </details>
-          <p class="settings-footnote">紧急断开：<kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd>。光标速度变化会短暂重连。</p>
+          <p class="settings-footnote"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>紧急断开：<kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Esc</kbd>。光标速度变化会短暂重连。</p>
         </div>
 
         <div class="settings-panel" id="startupPanel" role="tabpanel" aria-labelledby="tab-startup" hidden>
@@ -566,7 +585,7 @@
       <div class="modal-note">方向键和 Delete 在点选一台对端后生效（它的卡片是能拖动的那张）。切屏快捷键由主程序全局注册，面板不是当前窗口时也有效。</div>
       <div class="modal-actions">
         <button onclick="closeHelp()">知道了</button>
-        <button class="ghost" onclick="closeHelp();openDiagnostics()">切换遇到问题？</button>
+        <button onclick="closeHelp();openDiagnostics()">切换遇到问题？</button>
       </div>
     </div>
   </div>
@@ -611,7 +630,7 @@
       <div class="hint" id="portsNote" style="margin-top:12px"></div>
       <div class="modal-actions">
         <button onclick="closePortsModal()">取消</button>
-        <button class="primary" onclick="savePorts()">保存名称</button>
+        <button class="strong" onclick="savePorts()">保存名称</button>
       </div>
     </div>
   </div>
@@ -632,7 +651,7 @@
       <div class="modal-note">扫描结束后会试着把画面切回本机输入口；没能切回时面板会告诉你怎么手动切回来。局域网里没有对端在线时只汇总已知信息，不切屏。</div>
       <div class="modal-actions">
         <button onclick="closeModal('scanModal')">暂不扫描</button>
-        <button class="primary" onclick="confirmScan()">开始扫描</button>
+        <button class="strong" onclick="confirmScan()">开始扫描</button>
       </div>
     </div>
   </div>

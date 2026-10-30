@@ -232,9 +232,11 @@ function renderWorkspaceScene() {
   flip('kvmSwitch', k.on);
   flip('settingsKvmSwitch', k.on);
   const kc = document.getElementById('kvmCopy');
+  // 开关关掉是"已关闭"，不是"已暂停" —— 旁边同一排的剪贴板开关写的是
+  // 「已关闭」，两个并排的开关用两套说法会让人以为键鼠还能自己恢复。
   if (kc) kc.textContent = k.on
     ? (isMulti ? '鼠标推到边缘即可跨屏' : '随画面切换，自动交接')
-    : '已暂停，键鼠留在本机';
+    : '已关闭，键鼠留在本机';
   flip('clipBtn', snap.clipboard);
   flip('settingsClipSwitch', snap.clipboard);
   const cc = document.getElementById('clipCopy');
@@ -279,9 +281,14 @@ function renderPortsModal() {
       const meta = '0x' + i.value.toString(16).toUpperCase().padStart(2, '0') + ' · '
         + (dead ? '该口不存在' : i.presence === 'occupied' ? '有主机' : i.presence === 'idle' ? '无信号' : '状态未知')
         + ' · ' + (i.verified ? '本机确认' : '待确认');
+      // 「已设为热键」必须是**状态**，不能和「设为热键」长得一模一样：
+      // 两者原来都是 92×28 白底，用户看不出哪一行已经生效。挂 .is-on
+      // （淡绿底 + 绿字），和「已配对」那类徽标同一套语言，也不抢主操作。
+      const onTarget = isTargetPort(i);
       const tgt = dead || i.current
         ? '<button class="btn-sm" disabled title="' + (i.current ? '这是当前输入源' : '显示器固件不接受这个输入口') + '">设为热键</button>'
-        : '<button class="btn-sm" onclick="setTarget(' + i.value + ')">' + (isTargetPort(i) ? '已设为热键' : '设为热键') + '</button>';
+        : '<button class="btn-sm' + (onTarget ? ' is-on' : '') + '" onclick="setTarget(' + i.value + ')">'
+          + (onTarget ? '已设为热键' : '设为热键') + '</button>';
       return '<div class="port-row"><div>'
         + '<input type="text" maxlength="24" value="' + esc(i.label) + '" aria-label="输入口名称"'
         + ' data-port-name="' + esc(i.name) + '" onfocus="editingPorts=true" onblur="editingPorts=false">'
@@ -421,7 +428,10 @@ function render() {
     statusLine.textContent = idleStatus ? '' : (snap.status || '');
     statusLine.style.display = statusLine.textContent ? '' : 'none';
   }
-  document.getElementById('hotkey').textContent = snap.hotkey || '—';
+  // 设置页的键帽按钮：innerHTML 而不是 textContent —— 键帽是 <kbd> 串，
+  // 写成纯文本就退化成一行灰字，点上去也不知道能改键
+  const hotkeyEl = document.getElementById('hotkey');
+  if (hotkeyEl) hotkeyEl.innerHTML = hotkeyKeys(snap.hotkey);
   const commandHotkey = document.getElementById('commandHotkey');
   if (commandHotkey) commandHotkey.textContent = snap.hotkey || '—';
   // 帮助弹窗里的热键位跟着同一份值走（后端改键后两边一起变，不写死）
@@ -631,7 +641,8 @@ function transferRow(item) {
   else {
     const pct = transferPercent(item);
     status = '<span>' + (phase === 'paused' ? '已暂停' : '正在发送') + ' · ' + pct + '%</span>'
-      + '<div class="progress-track" role="progressbar" aria-label="' + esc(item.name)
+      + '<div class="progress-track' + (phase === 'paused' ? ' paused' : '')
+      + '" role="progressbar" aria-label="' + esc(item.name)
       + ' 传输进度" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">'
       + '<i style="--progress:' + (pct / 100) + '"></i></div>';
   }

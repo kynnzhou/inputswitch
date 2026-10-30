@@ -191,9 +191,7 @@ h1, h2, h3, p { margin: 0; }
 .fh-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
 .fh-se { bottom: 0; right: 0; width: 10px; height: 10px; cursor: nwse-resize; }
 .workspace-label { font-size: 11px; color: var(--muted); padding: 0 12px 14px; }
-.sidebar-help { width: 100%; justify-content: flex-start; gap: 11px; border: 0; background: transparent; padding: 9px 12px; color: var(--muted); font-size: 12px; }
-.compact-nav .workspace-label, .compact-nav .sidebar-help span { display: none; }
-.compact-nav .sidebar-help { justify-content: center; padding-inline: 8px; }
+.compact-nav .workspace-label { display: none; }
 
 /* 侧栏：导航 + 底部本机信息。底色用设计稿 --sidebar（比主区 surface
    退一档、比画布 stage 亮一档）—— "导航在窗外，内容在纸上"。 */
@@ -217,11 +215,20 @@ h1, h2, h3, p { margin: 0; }
   color: var(--muted);
 }
 .sidebar-bottom { margin-top: auto; }
+/* 本机块 = 真入口（点它去设备页）。它不能写成 <button>：里面要放
+   <div><strong>+<span> 两行文字，button 只收 phrasing content。
+   所以用 role=button + tabindex，键盘补齐在 core.js 的 keydown 委托里。
+   hover / 焦点环要和导航项一致，否则它仍然"看着不像能点"。 */
 .local-machine {
   border-top: 1px solid var(--line); margin-top: 12px; padding: 17px 3px 1px;
   display: flex; gap: 9px; align-items: center; min-width: 0;
+  cursor: pointer; border-radius: 7px;
+  transition: background-color 160ms, color 160ms;
 }
+.local-machine:hover { background: var(--subtle); }
+.local-machine:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .local-machine > .icon { width: 20px; height: 20px; color: var(--muted); flex: none; }
+.local-machine:hover > .icon { color: var(--text); }
 .local-machine strong { display: block; font-size: 11px; font-weight: 600; }
 .local-machine span { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .local-machine .status-dot { margin-left: auto; width: 5px; height: 5px; flex: none; }
@@ -273,8 +280,9 @@ h1, h2, h3, p { margin: 0; }
 .stat .v { font-size: 12.5px; font-weight: 600; }
 .stat .v .sub { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 4px; }
 .stat.node .v { font-weight: 550; color: var(--muted); }
-.actions { display: flex; gap: 8px; margin-top: 11px; flex-wrap: wrap; align-items: center; }
-.actions .spacer { flex: 1; }
+/* .actions 这条容器规则已经没人用了（顶栏拆成 command-top +
+   maintenance-row + titlebar-actions 之后就没这个 class）。留着只会
+   让后来的人以为顶栏还是那套结构 —— 同批删除。 */
 .flat-group { display: flex; gap: 8px; flex-wrap: wrap; }
 /* 维护三件 = 设计稿的 quiet-button：27px / 11px / 1px 边 / 弱化色。
    按内容宽度排，不要拉满整行 —— 拉满之后三个按钮隔得老远，
@@ -409,6 +417,9 @@ button:focus-visible, input:focus-visible, select:focus-visible,
 .screen:focus-visible, [tabindex]:focus-visible, .sw:focus-visible, .rename:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 3px;
 }
+/* 弹窗容器是 openModal 的焦点落点（tabindex=-1），它自己不该画焦点环 ——
+   整块弹窗外面套一圈蓝边比框住 ✕ 更难看。里面每个控件仍各自有环。 */
+.modal:focus-visible { outline: none; }
 .btn-sm { min-height: 28px; padding: 3px 10px; font-size: 12px; gap: 6px; }
 .btn-lg { min-height: 37px; padding: 7px 16px; font-size: 13px; }
 button.primary {
@@ -418,6 +429,18 @@ button.primary {
   min-height: 37px; padding: 7px 16px;
 }
 button.primary:hover { background: var(--accent-hover); border-color: transparent; }
+/* 弹窗 / pane 里的主操作：深色实心（设计稿 app.css:81 的 .strong-button）。
+   --ink 底 + --surface 字，深色主题下自动反相成浅块深字 —— 正好是
+   Win11 深色主题主按钮的样子，不用另写一套覆盖。
+   为什么不是 primary：蓝色只留给顶栏那一个「切换画面」。弹窗一开遮罩
+   就盖住顶栏，「任何一刻屏上最多一个蓝块」照样成立，但用户在弹窗里看到的
+   主次关系是**深色 vs 描边**，和顶栏的**蓝 vs 描边**是两套语言，不会串味。 */
+button.strong {
+  background: var(--ink); color: var(--surface);
+  border-color: transparent; font-weight: 600;
+  min-height: 37px; padding: 7px 16px;
+}
+button.strong:hover { background: var(--muted); color: var(--surface); border-color: transparent; }
 /* 实心蓝只留给顶栏那一个主按钮（更新弹窗里的主操作是唯一例外：
    遮罩盖上时顶栏那个根本看不见，「任何一刻屏上只有一个蓝块」没破）。
    副机模式"已开启"不靠变蓝表达 —— 用 .is-on：淡绿底 + 正常字色，
@@ -564,7 +587,7 @@ kbd {
 .field-help { color: var(--muted); font-size: 11px; margin-top: 6px; min-height: 17px; }
 .field-help.error { color: var(--danger); }
 .form-actions { display: flex; align-items: center; gap: 10px; }
-.form-actions .primary { flex: none; }
+.form-actions .strong { flex: none; }
 
 /* 链路行：一台对端一行。
    卡片只有半屏宽，名字和状态横排会互相挤 —— 状态那串徽标不许换行、名字又
@@ -614,6 +637,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   color: var(--faint); font-size: 11px; width: 100%;
   border: 1px dashed var(--line-strong); border-radius: 7px; padding: 9px 4px;
 }
+/* 摆位图里的空格：格子本身就是虚线投放区，内层那个 .dropzone 再画一圈虚线，
+   就成了框套框 —— 四个空格每个两层虚线，比旁边实心的设备卡片还重，格子也被
+   内层 padding 顶得装不下三行（实测文字被压出格子外）。内层只留文字。
+   加号单独一个类：同一格里有设备时那张卡片的显示器图标不能被这条改小。 */
+.grid .cell .dropzone { width: auto; border: 0; padding: 0; }
+.grid .cell .slot-plus { width: 15px; height: 15px; color: var(--line-strong); }
 
 /* ── 3×3 摆位图 ─────────────────────────────────────────────── */
 /* 中心本机、四边对端，可拖。四角仍然"斜角不连"：
@@ -636,6 +665,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   font-weight: 650;
 }
 .grid .cell.self small { color: var(--faint); font-weight: 400; font-size: 11px; }
+/* 中央格的主标题是机器名（角色「本机」降为副标题，见 kvm.js 的 cell('self')）。
+   机器名长度不可控，窄格给省略号，别把格子撑破。 */
+.grid .cell.self strong,
+.topology-slot.self strong {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 650; color: var(--ink);
+}
 .grid .cell.corner { visibility: hidden; }
 .grid .cell.hit { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
 .grid .cell.bad { border-color: var(--danger); border-style: solid; background: var(--danger-soft); }
@@ -699,7 +735,13 @@ html.dragging, html.dragging * {
   font-size: 12px; font-weight: 500; color: var(--muted); }
 #kvmScaleRow > button:hover { background: rgba(255,255,255,.6); }
 #kvmScaleRow > button.sel { background: var(--surface); color: var(--ink);
-  font-weight: 600; box-shadow: 0 1px 3px rgba(23,35,57,.12); }
+  font-weight: 600; box-shadow: 0 1px 3px rgba(23,35,57,.16), inset 0 0 0 1px rgba(23,35,57,.07); }
+/* 深色下 --surface(#20252f) 比 --subtle(#292f3a) 还暗，选中项等于"陷进去"，
+   屏幕上四档长得一模一样（截图核对过）。改成提亮 + 内描边。 */
+:root[data-theme="dark"] #kvmScaleRow > button.sel {
+  background: rgba(255,255,255,.11);
+  box-shadow: 0 1px 4px #0007, inset 0 0 0 1px rgba(255,255,255,.16);
+}
 /* 深色档的分段控件悬停：跟着 data-theme 走（原来是 prefers-color-scheme） */
 :root[data-theme="dark"] #kvmScaleRow > button:hover { background: rgba(255,255,255,.08); }
 
@@ -716,7 +758,10 @@ html.dragging, html.dragging * {
 }
 .settings-tabs button:hover { color: var(--text); }
 .settings-tabs button.selected { border-bottom-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-.settings-panel { display: flex; flex-direction: column; }
+/* 占满剩余高度：全局说明行（紧急断开）用 margin-top:auto 压到页脚上方，
+   和设计稿一致。以前它紧跟在最后一个设置行下面，下面拖着两百多像素空白 ——
+   一条"全局提示"悬在内容中间，看起来像忘在那里的残行。 */
+.settings-panel { display: flex; flex-direction: column; flex: 1; }
 .settings-extra { color: var(--muted); font-size: 11px; padding-top: 8px; }
 .settings-extra summary { cursor: pointer; width: fit-content; }
 #deviceLayoutPane { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 10px; }
@@ -743,12 +788,33 @@ html.dragging, html.dragging * {
 .setting-text p { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .setting-ctrl { display: flex; align-items: center; gap: 10px; flex: none; min-width: 0; }
 .setting-value { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+/* 切屏快捷键：键帽按钮（描边，看着像个输入框）+「重置」纯文字
+   —— 设计稿 .keybind / .shortcut-control 同款。
+   以前是「纯文本值 + 改键 + 恢复默认」三个控件：值只是一行字，点不了；
+   旁边紧跟两个描边按钮，用户不知道该点哪个。现在键帽本身就是入口，
+   「改键」删掉，只留「重置」—— 它才是那个不常用的回头路。 */
+.keybind { min-height: 33px; padding: 4px 9px; gap: 4px; font-size: 11px; color: var(--muted); }
+.keybind:hover { color: var(--text); }
+.keybind kbd {
+  font-family: inherit; font-size: 10.5px; font-weight: 600; line-height: 1.5;
+  border: 1px solid var(--line-strong); border-bottom-width: 2px;
+  border-radius: 4px; padding: 0 4px; color: var(--muted); background: var(--surface);
+}
+.keybind:hover kbd { color: var(--text); }
+.keybind .keybind-empty { font-size: 12.5px; font-weight: 600; }
 /* 行间插的解释文字（如自动恢复的说明）：贴紧上面的开关组 */
 .settings-panel > .hint { margin: 2px 0 6px; }
+/* 控件列里带解释的那种（光标速度）：按钮组在上、说明在下，整体靠右对齐
+   —— 要和上面那排档位按钮的右边缘成一条线。 */
+.setting-ctrl.ctrl-stack { flex-direction: column; align-items: flex-end; gap: 7px; }
+/* 当前档位那行右对齐：它注释的是上一行右侧那排档位按钮，靠左挂会
+   读成"下一段的标题"。 */
+#kvmScaleHint { text-align: right; margin: 0; }
 .settings-footnote {
-  font-size: 11px; color: var(--muted); padding-top: 12px;
+  font-size: 11px; color: var(--muted); padding-top: 12px; margin-top: auto;
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
+.settings-footnote .icon { width: 13px; height: 13px; color: var(--faint); }
 .settings-footnote kbd {
   font-family: inherit; font-size: 10.5px; color: var(--muted);
   border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 4px;
@@ -910,7 +976,13 @@ html.dragging, html.dragging * {
    丢掉 grid-area 掉进自动排列（2026-10-28 实测抓到的脱钩）。 */
 .slot-top { grid-area: 1 / 2; } .slot-left { grid-area: 2 / 1; } .slot-self { grid-area: 2 / 2; }
 .slot-right { grid-area: 2 / 3; } .slot-bottom { grid-area: 3 / 2; }
-.slothint { font-size: 11px; color: var(--faint); text-align: center; line-height: 1.5; }
+/* 空槽：加号 + 槽名 + 「放置设备」。三行竖排居中，加号用最浅的线色 ——
+   它是"这里空着"的暗示，不该和槽里的设备卡片抢注意力。 */
+.slothint { display: flex; flex-direction: column; align-items: center; gap: 1px;
+  font-size: 11px; color: var(--faint); text-align: center; line-height: 1.45; }
+.slothint .icon { width: 14px; height: 14px; color: var(--line-strong); margin-bottom: 1px; }
+.slothint em { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.slothint small { font-size: 10.5px; color: var(--faint); }
 .multi-explainer { width: 145px; display: flex; justify-content: center; flex-direction: column; gap: 9px; flex: none; padding-right: 12px; }
 .multi-explainer h3 { line-height: 1.6; font-size: 12px; }
 .multi-explainer p { color: var(--muted); font-size: 11px; line-height: 1.8; }
@@ -929,6 +1001,10 @@ html.dragging, html.dragging * {
 /* 管理输入源弹窗（设计稿 ports 动作的生产版） */
 .ports-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .port-row { display: flex; align-items: center; gap: 10px; }
+/* 右侧「设为热键 / 已设为热键」文案长度不同：按钮按内容撑宽，同一列表里
+   三行的输入框右边缘就参差（实测 639 / 625 / 639）。定宽 + 不收缩，
+   让三行输入框都对齐到同一条竖线。 */
+.port-row > button { flex: none; min-width: 92px; }
 .port-row > div { flex: 1; min-width: 0; }
 .port-row input[type=text] { width: 100%; }
 .port-row small { display: block; color: var(--faint); font-size: 11px; margin-top: 3px; }
@@ -1065,8 +1141,17 @@ html.dragging, html.dragging * {
   background: var(--subtle); border: 1px solid var(--line);
   border-radius: 8px; padding: 10px 12px; margin-top: 10px;
   max-height: 180px; overflow: auto; }
-.upd-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
-.upd-row > .primary { flex: 1; min-width: 132px; }
+.upd-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; justify-content: flex-end; }
+/* 宽度按内容走，高度统一 —— 这两件事必须分开处理。
+   上一版为了修"高低不齐"给每个按钮加 flex:1，整齐是整齐了，主次也没了：
+   实测「取消」191px /「保存名称」199px，只差 8px；帮助弹窗里次要操作
+   甚至比主操作还宽 4px。等宽 = 一样重，和"分主次"直接冲突。
+   所以：flex:none 让主操作按自己的内容撑开（设计稿「保存名称」86px vs
+   「取消」40px，2.15 倍），min-height 统一到主按钮的 37px 保住行内齐平。
+   字号也统一到 13px：次要操作挂 .btn-sm 时自带 12px，同一行里「忽略本次」
+   12px /「关闭」13px /「下载并安装」13px —— 三种字号并排，看着像三套组件。
+   这里的特异性 (0,1,1) 压得过 .btn-sm 的 (0,1,0)，不用 !important。 */
+.upd-row > button { flex: none; min-height: 37px; font-size: 13px; }
 
 /* 帮助 / 排查弹窗的正文（P2.5）：行式键位表 + 灰底注记。
    键位表一行一条：左动作右按键，底部 1px 线分 —— 和设置行同一个版式。
@@ -1083,17 +1168,37 @@ html.dragging, html.dragging * {
   background: var(--subtle); border-radius: 8px; padding: 12px;
   margin-top: 16px; font-size: 11px; line-height: 1.7;
 }
-.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
-.modal-actions > button { flex: 1; min-width: 120px; }
-/* 顶栏帮助入口：和维护三件同一套弱化样式（27px 图标键），但不进
-   flat-group —— 那三个是"排查本机"的动作，帮助不是。 */
-.actions .icon-help {
-  min-height: 27px; width: 27px; padding: 0; border-radius: 6px;
+.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; justify-content: flex-end; }
+/* 靠右排、按内容定宽（设计稿 app.css:330 同款）。别拉等宽 —— 理由见
+   .upd-row 上面那段：等宽会把主次抹平。换行仍右对齐。 */
+.modal-actions > button { flex: none; min-height: 37px; font-size: 13px; }
+/* ── 页面级主动作（一个页面一个"先点这里"）────────────────────────
+   问题：一屏之内有重量感的只有两处 —— 顶栏蓝块（切换画面）和弹窗墨块。
+   其余按钮全是 28px 白底，而白底 --surface 和卡片底同色，只靠 1px 边框，
+   实际读不出层级。传输页最该先点的「选择文件」64×28，和「上一页」47×23
+   同一档，比维护三件（27px 透明描边）还矮。
+   做法：不给实心底色，改给墨色描边 + 墨色字 + 600，尺寸抬到 34px。
+   实心只有两个语义必须独占 —— 蓝=切换画面，墨=弹窗确认；页面级动作
+   再用实心会把这套语言稀释掉。墨边描边是"描边里最重的"，边界清楚。
+   深色主题下 --ink 变浅，描边自动成浅色，和深底仍有对比，不用另写规则。 */
+.page-action {
+  border-color: var(--ink); color: var(--ink);
+  font-weight: 600; font-size: 12px; min-height: 34px; padding: 5px 14px;
+}
+.page-action:hover { border-color: var(--ink); background: var(--subtle); color: var(--ink); }
+.page-action .icon { width: 14px; height: 14px; }
+/* 顶栏帮助入口：安静图标钮。
+   原来挂的是 `.actions .icon-help` —— 顶栏改成 titlebar-actions 之后那层
+   容器整个没了，这组规则**整组失效**，问号退化成通用 button（表面色 + 32 高 +
+   默认内边距），深色主题里就是顶栏右角一块白贴片。改挂 .icon-help 本身，
+   尺寸和同一行的「更新」对齐（32 高），不再靠容器。 */
+.icon-help {
+  min-height: 32px; width: 32px; padding: 0; border-radius: 7px;
   color: var(--muted); background: transparent;
   border: 1px solid var(--line); box-shadow: none;
 }
-.actions .icon-help:hover { background: var(--subtle); border-color: var(--line-strong); color: var(--text); }
-.actions .icon-help .icon { width: 13px; height: 13px; }
+.icon-help:hover { background: var(--subtle); border-color: var(--line-strong); color: var(--text); }
+.icon-help .icon { width: 14px; height: 14px; }
 
 /* 重启过渡层：比弹窗更"重"（遮得更暗、z-index 更高）—— 它出现时
    整个程序马上就要没了，视觉上必须压过一切 */
@@ -1130,8 +1235,14 @@ html.dragging, html.dragging * {
 .drop-zone > .icon { width: 26px; height: 26px; color: var(--accent-ink); }
 .drop-zone h2 { font-size: 13px; font-weight: 600; margin: 0; }
 .drop-zone p { font-size: 11px; color: var(--muted); margin: 0; }
-.drop-actions { display: flex; gap: 8px; margin-top: 1px; flex-wrap: wrap; justify-content: center; }
-.drop-actions button { font-size: 11px; min-height: 28px; padding: 3px 9px; }
+/* align-items: center 是必须的：flex 默认 stretch，会把同排的「发送测试文件」
+   从 28px 拉到和 .page-action 一样的 34px —— 高度差一没，主次就只剩边框在撑。
+   实测过：574 宽时三个按钮全是 34 高。 */
+.drop-actions { display: flex; gap: 8px; margin-top: 1px; flex-wrap: wrap; justify-content: center; align-items: center; }
+/* 这一组里的次要按钮压到 11px/28px，但 .page-action 必须放行：
+   `.drop-actions button` 是 (0,1,1)，比 .page-action 的 (0,1,0) 高一级，
+   不加 :not() 会把页面级主动作又按回 28px —— 实测就是"改了没生效"。 */
+.drop-actions button:not(.page-action) { font-size: 11px; min-height: 28px; padding: 3px 9px; }
 /* 传输记录：筛选组 + 行 + 分页 */
 .transfers-list { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 8px; font-size: 11px; color: var(--muted); }
@@ -1150,6 +1261,9 @@ html.dragging, html.dragging * {
 .transfer-status .icon { width: 13px; height: 13px; }
 .progress-track { background: var(--line); height: 3px; border-radius: 3px; overflow: hidden; margin-top: 5px; }
 .progress-track > i { display: block; width: 100%; height: 100%; background: var(--accent); transform: scaleX(var(--progress, 0)); transform-origin: left; transition: transform 220ms linear; }
+/* 暂停那条进度条不能还是满亮的强调色 —— 一条静止的红蓝条比灰色更像"卡住
+   了"，也会和旁边真在跑的那条抢注意力。 */
+.progress-track.paused > i { background: var(--line-strong); }
 .transfer-actions { display: flex; width: 58px; justify-content: flex-end; flex: none; gap: 2px; }
 .transfer-actions .icon-button { width: 26px; height: 27px; min-height: 27px; padding: 3px; }
 .transfer-actions .icon { width: 15px; height: 15px; }

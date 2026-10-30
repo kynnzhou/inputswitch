@@ -66,6 +66,14 @@ function esc(text) {
   return String(text == null ? '' : text).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+/// 把 "Ctrl+Alt+S" 拆成一排键帽（设计稿 keys() 同款）：
+/// <kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd>。
+/// 空值给一个破折号 —— 后端还没报热键时，键帽按钮里不能是空白的描边框。
+function hotkeyKeys(combo) {
+  if (!combo) return '<span class="keybind-empty">—</span>';
+  return String(combo).split('+').map(k => '<kbd>' + esc(k) + '</kbd>').join('');
+}
+
 /// 图标：<svg class="icon"><use href="#i-名字"/></svg>。
 /// symbol 都预埋在 index.html 顶部的 sprite 里，这里只管引用。
 /// extra 是附加类名（busy-icon / btn-sm 里的小尺寸等）。
@@ -303,10 +311,14 @@ function openModal(id) {
   modalStack.push({ id: id, opener: document.activeElement });
   mask.style.display = '';
   const box = mask.querySelector && mask.querySelector('.modal');
-  const first = box && box.querySelector
-    ? box.querySelector('button, input, select, textarea, [href]') : null;
-  if (first && typeof first.focus === 'function') first.focus({ preventScroll: true });
-  else if (box && typeof box.focus === 'function') box.focus({ preventScroll: true });
+  // 焦点落在**弹窗容器**上，不落在第一个按钮上：那个按钮永远是右上角的 ✕，
+  // 打开弹窗第一眼看到的就是一圈蓝色焦点环框住关闭钮，像它被选中了。
+  // 容器带 tabindex=-1，拿得到焦点但不进 Tab 序列；键盘用户按一下 Tab
+  // 就进到第一个控件，Esc 照旧可用。
+  if (box) {
+    if (!box.hasAttribute('tabindex')) box.setAttribute('tabindex', '-1');
+    if (typeof box.focus === 'function') box.focus({ preventScroll: true });
+  }
 }
 
 /// 关闭遮罩，焦点还给打开它的那枚钮（节点还在文档树上的话；
@@ -345,6 +357,17 @@ document.addEventListener('keydown', e => {
   if (!id) return;
   e.preventDefault();
   closeModal(id);
+});
+
+// 侧栏底部「本机」块是 div 而不是 button（里面要放两行文字，button 只收
+// phrasing content），所以 Enter / Space 得自己补 —— role=button 只骗得到
+// 读屏软件，骗不到键盘。和 kvm.js 里 .screen 的委托同一个模式。
+document.addEventListener('keydown', e => {
+  const el = e.target && e.target.closest && e.target.closest('.local-machine');
+  if (!el) return;
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault();
+  showPage('devices');
 });
 
 /* ── 自绘窗口边框 ──────────────────────────────────────────────────

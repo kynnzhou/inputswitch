@@ -209,6 +209,17 @@ function ok(cond, label) {
 ok(/CHINAMI-0DFF1JU/.test(grid) && !/CHINAMI-0DFF1JU/.test(loose),
   '0DFF1JU（有门/右侧）画在格子里，不在托盘');
 ok(/右侧/.test(grid), '格子上标了「右侧」');
+/* 空槽要三行（加号 / 槽名 / 动作）：两行灰字的空格看不出"这里能放东西"。
+   加号必须带独立类 —— 和"有设备的格子"共用 .icon 时，那条改尺寸的规则会
+   连累卡片里的显示器图标。 */
+ok(/<div class="cell[^"]*" data-drop="top"><svg class="icon slot-plus"/.test(grid),
+  '空格子画加号（独立 .slot-plus 类，不连累设备卡片的图标）');
+ok(/<span class="sideslot">上方<\/span><span class="dropzone">拖到这里<\/span>/.test(grid),
+  '空格子三行：加号 + 槽名 + 动作');
+/* 格子本身就是虚线投放区，内层 .dropzone 再画一圈虚线就是框套框 ——
+   四个空格每个两层虚线，比旁边实心的设备卡片还重，三行字还被 padding 顶出去。 */
+ok(/\.grid \.cell \.dropzone \{[^}]*border: 0/.test(html),
+  '格子内层 dropzone 不画第二层虚线');
 // 2. 没有门的对端（真 follow 链路）进托盘，标签是「共用一块屏」
 ok(/data-node="CHINAMI-MC5K9SJ"/.test(loose), 'MC5K9SJ（follow）画在托盘里');
 ok(/title="CHINAMI-MC5K9SJ · 共用一块屏/.test(loose), 'MC5K9SJ 的标签是「共用一块屏」');
@@ -242,8 +253,12 @@ const wsTop = made['wsTopology'].innerHTML;
 const wsLoose = made['wsLooseBox'].innerHTML;
 ok(/slot-right" data-drop="right"><div class="screen" data-node="CHINAMI-0DFF1JU"/.test(wsTop),
   '多屏摆位图：有门的对端落在右槽（和设备页 3×3 同一份归集逻辑）');
-ok(/slot-self/.test(wsTop) && /<strong>本机<\/strong>/.test(wsTop) && /Mac 本机/.test(wsTop),
-  '多屏摆位图：中心槽是本机');
+/* 中心槽：机器名当标题、「本机」当副标题 —— 必须和左侧名册
+   （名字大、角色小）以及设备页 3×3 中央格一致。反过来写就是同一台
+   机器在同一个界面上有两套层次。 */
+ok(/slot-self/.test(wsTop) && /<strong>Mac 本机<\/strong>/.test(wsTop)
+  && /<small>本机<\/small>/.test(wsTop),
+  '多屏摆位图：中心槽 = 机器名（标题）+ 本机（副标题）');
 ok(/data-node="CHINAMI-MC5K9SJ"/.test(wsLoose), '多屏托盘：follow 对端进共用屏栏');
 // 槽位类名必须和链路 side 一一对应且都有 grid-area：CSS 里写成 up/down
 // 而 JS 生成 top/bottom 时，上下两槽会丢掉 grid-area 掉进自动排列 ——
@@ -318,6 +333,20 @@ ok(handUrl === '/api/kvm-handover?node=CHINAMI-0DFF1JU',
 ok(made['kvmScale11'].classList.contains('sel'), '倍率 1.1 那一档高亮');
 ok(!made['kvmScale10'].classList.contains('sel'), '1.0 那一档没有高亮');
 ok(/×1\.1/.test(made['kvmScaleHint'].textContent), '提示里写清当前是 ×1.1');
+/* 这一行原来带着 hidden 且没人摘：kvm.js 每轮往里写 textContent，
+   断言也照测内容，屏幕上却永远是空的。判据必须包含"看得见"这一层，
+   不能只测文字 —— 桩里的元素不带真实布局，所以查源件的属性。 */
+ok(!/id="kvmScaleHint"[^>]*\bhidden\b/.test(html),
+  '当前档位提示不带 hidden（写进去的字看得见）');
+// 深色下 --surface 比 --subtle 更暗，选中档会"陷进去" ⇒ 必须有专门的
+// 深色覆盖（提亮 + 内描边），否则四个档位看起来一模一样。
+ok(/:root\[data-theme="dark"\] #kvmScaleRow > button\.sel \{[^}]*rgba\(255,255,255/.test(html),
+  '深色主题下档位选中态有提亮覆盖（不再是 surface 压 subtle）');
+/* 「当前 ×1.x」必须挂在 .setting-ctrl 里面。作为 setting-row 的下一个
+   兄弟节点时，它落在行底那条分隔线**下面**，读起来像属于下一行。 */
+ok(/<div class="setting-ctrl ctrl-stack">[\s\S]{0,900}?id="kvmScaleHint"/.test(html)
+  && /\.setting-ctrl\.ctrl-stack \{[^}]*flex-direction: column/.test(html),
+  '当前档位提示挂在控件列里（不落到分隔线下面去）');
 // 10. 「收回键鼠」按钮已删：发送中光标被钉死点不到，被控时按一下鼠标就已
 //     物理抢回 —— UI 上留着只会误导。接口 /api/kvm-takeback 仍保留给脚本。
 //     真正能用的收回方式（Ctrl+Alt+Esc）写在多屏场景的交接钮上（见下面
@@ -424,6 +453,17 @@ ok(/disabled/.test(curRow) && /title="这是当前输入源"/.test(curRow),
 const liveRow = rowOf('hdmi1');
 ok(!/disabled/.test(liveRow) && /<button class="btn-sm" onclick="setTarget\(17\)">设为热键/.test(liveRow),
   '有信号的口可以设为热键');
+// 状态和动作必须长得不一样：设过一次之后那一行是「已设为热键」，以前它和
+// 「设为热键」都是 92×28 白底，只有两个字不同，看不出哪行已经生效。
+try {
+  vm.runInContext("snap.target = 'HDMI-1'; renderPortsModal();", ctx, { filename: 'panel.html' });
+  const onRow = (made['portsList'].innerHTML.split('<div class="port-row">')
+    .find(r => r.indexOf('data-port-name="hdmi1"') >= 0) || '');
+  ok(/class="btn-sm is-on"/.test(onRow) && /已设为热键<\/button>/.test(onRow),
+    '热键目标那一行是「已设为热键」且挂 .is-on（淡绿，和动作按钮区分开）');
+  vm.runInContext("snap.target = ''; renderPortsModal();", ctx, { filename: 'panel.html' });
+  ok(!/is-on/.test(made['portsList'].innerHTML), '没设目标时没有 .is-on 残留');
+} catch (e) { console.error('热键目标态报错：', e.message); process.exit(1); }
 const strip3 = made['sceneSingle'].innerHTML;
 ok(/source-button current" onclick="switchTo\(15\)"[^>]*disabled/.test(strip3),
   '当前口在输入源条里打勾且禁点');
@@ -670,6 +710,9 @@ ok(/class="modal-mask" id="helpModal"/.test(html) && /class="modal-mask" id="dia
   '两个弹窗复用 modal-mask（z-40 盖过壳体）');
 ok(/id="helpHotkey"/.test(html), '帮助弹窗有热键位（render.js 每轮刷新）');
 ok(/onclick="closeHelp\(\);openDiagnostics\(\)"/.test(html), '帮助弹窗能转去排查弹窗');
+/* 两个按钮得是同一个形状。以前「切换遇到问题？」挂 .ghost：同一行里一个
+   描边一个无框，无框那个看起来像没画完的按钮（文字悬在半空）。 */
+ok(!/class="ghost"[^>]*>切换遇到问题/.test(html), '帮助弹窗两个按钮同一形状（不挂 ghost）');
 /* 按 id 切：顶栏还带别的属性（id 就是给 core.js 的拖拽绑定用的），
    拿「整个标签字面量」当锚点会一改就 blank。 */
 const titlebarHtml = html.split('id="appTitlebar"')[1].split('</header>')[0];
@@ -687,6 +730,141 @@ ok(!/class="brand"/.test(html), '不残留第二处品牌块');
 ok(/class="icon-help"/.test(titlebarHtml) && /onclick="openHelp\(\)"/.test(titlebarHtml),
   '设计稿标题栏提供帮助入口');
 ok((titlebarHtml.match(/class="icon-help"/g) || []).length === 1, '标题栏帮助入口只有一个');
+// 帮助入口曾经有俩：顶栏问号 + 侧栏「使用帮助」，同名函数同名弹窗。窄栏
+// （appW<950，125% DPI 下窗口逻辑宽 834，恒成立）两个问号同屏，纯冗余。
+// 判据盯总数而不是盯某一个 —— 换个地方再挂一个同样能抓住。
+ok((html.match(/onclick="openHelp\(\)"/g) || []).length === 1,
+  `帮助入口全屏只有一个（实测 ${(html.match(/onclick="openHelp\(\)"/g) || []).length} 个）`);
+ok(!/sidebar-help/.test(html) && !/sidebar-help/.test(code),
+  '侧栏不再残留「使用帮助」按钮（样式与 DOM 一起清掉，不留死选择器）');
+// 侧栏底部「本机」块：窄栏下文字全收、只剩实心四格图标，尺寸和导航项一样
+// （49×39 vs 49×40），看着就是第五个导航按钮 —— 原来它是纯 div，点了毫无反应。
+ok(/class="local-machine" role="button" tabindex="0" onclick="showPage\('devices'\)"/.test(html),
+  '「本机」块是真入口：role=button + tabindex + 点它去设备页');
+ok(/\.local-machine \{[^}]*cursor: pointer/.test(html),
+  '「本机」块用 pointer 光标（否则看不出来能点）');
+ok(/closest\('\.local-machine'\)[\s\S]{0,240}?showPage\('devices'\)/.test(code),
+  '「本机」块补了 Enter / Space 键盘委托（div 不是 button，role 骗不到键盘）');
+// 图标形状撞车：窄栏（appW<950）下本机块只剩图标，而 i-windows 是实心四格、
+// 「工作台」的 i-grid 是描边四格 —— 20px 下两者轮廓都是 2×2 四宫格，配合
+// 「同宽同高同 hover 底」，本机块被读成第五个导航项。换 i-laptop 让形状自带
+// 「这是一台电脑」的语义。判据盯「本机块不含 i-windows」+「导航区不含 i-laptop」，
+// 两头都焊死，单独把任一边改回去都会红。
+ok(/class="local-machine"[\s\S]{0,220}?href="#i-laptop"/.test(html),
+  '「本机」块用 i-laptop（实心四格在窄栏里与「工作台」的 i-grid 撞形状）');
+ok(!/class="local-machine"[\s\S]{0,220}?href="#i-windows"/.test(html),
+  '「本机」块不再用 i-windows');
+{
+  const navRegion = (html.match(/<nav class="main-nav"[\s\S]*?<\/nav>/) || [''])[0];
+  ok(navRegion.length > 0 && !/href="#i-laptop"/.test(navRegion),
+    '导航区四个图标不含 i-laptop（本机符号不外溢成导航项）');
+}
+
+// ---- 结构改了、样式没跟上（死选择器）----------------------------------
+// 顶栏从 .actions 拆成 command-top / maintenance-row / titlebar-actions 时，
+// `.actions .icon-help` 这一组整组失效 —— 问号键退化成通用 button（表面色 +
+// 32 高 + 默认内边距），深色主题里就是顶栏右角一块白贴片。这类"容器没了
+// 选择器还在"的失效不会报错，只能靠断言盯住。
+ok(!/^\.actions[ ,{]/m.test(html), '不残留 .actions 容器的样式（顶栏已拆成三个新容器）');
+ok(/^\.icon-help \{/m.test(html), '帮助钮挂在自己的类上（不再依赖父容器）');
+ok(/\.icon-help \.icon \{ width: 14px/.test(html), '帮助钮图标尺寸在册');
+ok(/\.port-row > button \{ flex: none; min-width: 92px/.test(html),
+  '输入源弹窗右侧按钮定宽（「设为热键/已设为热键」长度不同，不定宽三行输入框右边缘会参差）');
+// ---- 按钮主次（P3.5）：等宽能修高低不齐，但顺手把主次也抹平了 ----
+// 上一版给每个按钮 flex:1，实测「取消」191×37 /「保存名称」199×37 —— 只差
+// 8px；帮助弹窗里次要操作「知道了」191 反而比主操作「切换遇到问题？」195 窄
+// 4px。设计稿 .modal-actions 是 flex-end 按内容排：保存名称 86 vs 取消 40，
+// 2.15 倍。所以判据不是"等宽"，是"宽度按内容、高度统一、靠右排"三件事分开。
+ok(/\.upd-row \{[^}]*justify-content: flex-end/.test(html), '更新弹窗按钮靠右排');
+ok(/\.upd-row > button \{ flex: none; min-height: 37px/.test(html),
+  '更新弹窗按钮按内容定宽、高度统一 37px（flex:1 会把主次抹平）');
+ok(/\.modal-actions \{[^}]*justify-content: flex-end/.test(html),
+  '弹窗底部按钮靠右排（设计稿 app.css:330 同款）');
+ok(/\.modal-actions > button \{ flex: none; min-height: 37px/.test(html),
+  '弹窗底部按钮按内容定宽、高度统一 37px');
+ok(!/\.modal-actions > button \{[^}]*flex: 1/.test(html)
+  && !/\.upd-row > button \{[^}]*flex: 1/.test(html),
+  '没有哪条规则再把同一行按钮拉成等宽');
+// 深色实心主操作（设计稿 app.css:81 的 .strong-button）：--ink 底 + --surface 字
+ok(/button\.strong \{[^}]*background: var\(--ink\)/.test(html),
+  '弹窗主操作是深色实心（--ink 底，蓝色只留给顶栏）');
+ok(/button\.strong \{[^}]*color: var\(--surface\)/.test(html),
+  '深色实心用 --surface 做字色（深色主题自动反相成浅块深字）');
+// 全页实心蓝只剩顶栏那一个。上面那条 blueLines 判据只要求"带 primary 的行
+// 得同时带 mainSwitch"，改回蓝色的人也照样能过；这里直接钉数量。
+const primaryCount = (html.match(/class="[^"]*\bprimary\b/g) || []).length;
+ok(primaryCount === 1, `实心蓝只有顶栏「切换画面」一个（实测 ${primaryCount} 个）`);
+ok(!/class="primary" onclick="savePorts\(\)"/.test(code), '「保存名称」不再用实心蓝');
+ok(!/class="primary" onclick="confirmScan\(\)"/.test(code), '「开始扫描」不再用实心蓝');
+ok(!/class="primary" onclick="updateAction\('install'\)"/.test(code), '「安装并重启」不再用实心蓝');
+// 取消不该是最重的按钮：它原来挂 primary，语义正好反了
+ok(!/class="primary" onclick="updateAction\('cancel'\)"/.test(code),
+  '「取消重启」不是主操作');
+// 主操作排在行尾（设计稿「暂不扫描」在前、「开始扫描」在后）
+ok(/closePortsModal\(\)">取消<\/button>\s*<button class="strong" onclick="savePorts\(\)"/.test(html),
+  '输入源弹窗：取消在左、保存名称在右');
+ok(/closeModal\('scanModal'\)">暂不扫描<\/button>\s*<button class="strong" onclick="confirmScan\(\)"/.test(html),
+  '扫描弹窗：暂不扫描在左、开始扫描在右');
+// 同一行按钮字号必须一致。实测「忽略本次」挂 .btn-sm 自带 12px，旁边「关闭」
+// 13px、「下载并安装」13px —— 一排三种字号，看着像三套组件拼的。
+ok(/\.upd-row > button \{[^}]*font-size: 13px/.test(html),
+  '更新弹窗按钮行字号统一 13px（不被 .btn-sm 的 12px 带偏）');
+ok(/\.modal-actions > button \{[^}]*font-size: 13px/.test(html),
+  '弹窗底部按钮行字号统一 13px');
+
+// ---- 页面级主动作（.page-action）----
+// 一屏之内有重量感的原本只有两处：顶栏蓝块、弹窗墨块。其余全是 28px 白底，
+// 而白底和卡片同色，只靠 1px 边，实际读不出层级。这一档用墨色描边 + 墨色字
+// + 600 把"页面里先点这里"标出来，且**不许用实心底** —— 实心只有两个语义：
+// 蓝 = 切换画面、墨 = 弹窗确认，再来第三种实心就把这套语言稀释了。
+ok(/\.page-action \{[^}]*border-color: var\(--ink\)/.test(html)
+  && /\.page-action \{[^}]*color: var\(--ink\)/.test(html)
+  && /\.page-action \{[^}]*font-weight: 600/.test(html),
+  '页面级主动作：墨色描边 + 墨色字 + 600');
+ok(!/\.page-action \{[^}]*background: var\(--(ink|accent)\)/.test(html),
+  '页面级主动作用描边不用实心底（实心只留给切换画面与弹窗确认）');
+ok(/<button class="page-action" onclick="sendFilesTo\(\)">选择文件/.test(html),
+  '传输页「选择文件」是页面级主动作');
+ok(/<button class="page-action" onclick="sendFolderTo\(\)">选择文件夹/.test(html),
+  '传输页「选择文件夹」同档（同一个动作的两种方式，不拆主次）');
+ok(/<button class="page-action" onclick="showDevicePane\('pair', true\)"><svg/.test(html),
+  '设备页「添加设备」是页面级主动作');
+// 名册底那条「连接新设备」是全宽列表尾行，不是页面动作：挂上 page-action 会
+// 变成一整个深边宽框压在列表底下，比页面标题还重。
+ok(/<button class="add-device"/.test(html), '「连接新设备」保持列表尾样式，不抬档');
+// .drop-actions button 是 (0,1,1)，高于 .page-action 的 (0,1,0)。不排除的话
+// 传输页那两个主动作会被 11px/28px 的组规则按回原形（实测过一次"改了没生效"）。
+ok(/\.drop-actions button:not\(\.page-action\)/.test(html),
+  '传输页组规则放行 .page-action（否则特异性压回去）');
+// flex 默认 align-items: stretch，会把 28px 的「发送测试文件」拉到 34px，
+// 和页面级主动作一样高 —— 高度差是这组里唯一还在工作的层级线索，不能被抹。
+ok(/\.drop-actions \{[^}]*align-items: center/.test(html),
+  '传输页按钮组居中排，不把次要按钮拉伸到主动作高度');
+// 管理配对在设计稿里带一个 chevron（79px），实现只剩 50px 纯文字 —— 少了
+// "点进去"的指向感
+ok(/class="ghost" onclick="showDevicePane\('pair', true\)">管理配对<svg/.test(html),
+  '「管理配对」补回 chevron 指向箭头');
+
+// ---- 切屏快捷键：键帽本身就是改键入口（设计稿 .keybind / .shortcut-control）
+// 以前是「纯文本值 + 改键 + 恢复默认」：值那行点不了，旁边又并排两个描边
+// 按钮，看不出该点哪个。现在值本身就是按钮，「改键」那条路删掉。
+ok(/<button class="keybind" id="hotkey" onclick="recHotkey\(\)"/.test(html),
+  '快捷键值本身就是改键按钮（.keybind 挂 recHotkey）');
+ok(!/onclick="recHotkey\(\)">改键/.test(html), '不再有独立的「改键」按钮');
+ok(/\.keybind kbd \{[^}]*border-bottom-width: 2px/.test(html),
+  '键帽有下边加粗的立体感（kbd 视觉，不是一行灰字）');
+ok(/function hotkeyKeys\(/.test(code) && /\.split\('\+'\)/.test(code),
+  'hotkeyKeys 把 Ctrl+Alt+S 拆成键帽串');
+ok(!/btn-sm ghost' onclick="closeUpdate/.test(code),
+  '更新弹窗的「关闭」是普通按钮（与主按钮同高）');
+ok(/\.settings-footnote \{[^}]*margin-top: auto/.test(html),
+  '设置页底部说明压到页脚上方（紧跟内容会悬在中间）');
+ok(/\.modal:focus-visible \{ outline: none/.test(html),
+  '弹窗容器自身不画焦点环（套一圈蓝边比框住 ✕ 更难看）');
+ok(/hasAttribute\('tabindex'\)/.test(code) && /box\.focus\(\{ preventScroll: true \}\)/.test(code),
+  'openModal 把焦点放到弹窗容器上（不落在右上角 ✕ 上）');
+ok(/icon\('plus'\)/.test(code) && /\.slothint \.icon/.test(html),
+  '摆位图空槽有加号（设计稿的空槽三行：加号 / 槽名 / 放置设备）');
 
 // ---- 自绘窗口边框（无边框原生窗口才有的那一套）----------------------
 // 判据全在 ?frame=none：浏览器打开、桩服务截图都没有这个参数，那里不该
@@ -739,6 +917,10 @@ ctx.__fixture = snap;
 try { vm.runInContext('snap = __fixture; render();', ctx, { filename: 'panel.html' }); }
 catch (e) { console.error('helpHotkey render 报错：', e.message); process.exit(1); }
 ok(made['helpHotkey'].textContent === 'Ctrl+Alt+S', '帮助弹窗显示当前切屏热键');
+// 设置页那颗键帽按钮：写的是 innerHTML（<kbd> 串），不是 textContent ——
+// 写成纯文本会退化成一行灰字，看着就不像能点。
+ok(/<kbd>Ctrl<\/kbd><kbd>Alt<\/kbd><kbd>S<\/kbd>/.test(made['hotkey'].innerHTML),
+  '设置页快捷键渲染成三个键帽（Ctrl / Alt / S）');
 
 // ---- P3 传输页：设计稿四块结构 + 传输记录列表 ----
 // 28. transfersView 结构在册（源码级）：transfer-target / drop-zone /
@@ -777,6 +959,18 @@ const rowsT = made['transferRows'].innerHTML;
 ok(/3 MB · 发往 CHINAMI-0DFF1JU/.test(rowsT), '传输行写清文件名 · 大小 · 发往对端');
 ok(/正在发送 · 33%/.test(rowsT), '进行中显示百分比（sent/total 四舍五入）');
 ok(/--progress:0\.33/.test(rowsT), '进度条按 sent/total 给 --progress');
+/* 暂停的那条不能还是满亮的强调色：一条静止的蓝条比灰条更像"卡住了"，
+   也会和旁边真在跑的那条抢注意力。夹具第一页没有 paused 行，直接调
+   渲染函数造一行。 */
+let pausedRow = '';
+try {
+  pausedRow = vm.runInContext(
+    "transferRow({ id: 9, peer: 'CHINAMI-ZZZZ', name: 'b.iso', total: 100, sent: 40, phase: 'paused' })",
+    ctx, { filename: 'panel.html' });
+} catch (e) { console.error('transferRow 报错：', e.message); process.exit(1); }
+ok(/class="progress-track paused"/.test(pausedRow), '暂停的行进度条挂 paused 类');
+ok(/\.progress-track\.paused > i \{[^}]*background: var\(--line-strong\)/.test(html),
+  'paused 进度条画成灰条（不再和进行中同色）');
 ok(/a&lt;b&gt;&amp;c\.txt/.test(rowsT), '文件名经 esc 转义（< > & 不直出）');
 ok(/已完成/.test(rowsT), '终态显示 已完成');
 ok(/transferAction\(1,'pause'\)/.test(rowsT) && /transferAction\(1,'cancel'\)/.test(rowsT),
